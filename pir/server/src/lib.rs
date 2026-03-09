@@ -180,7 +180,7 @@ impl<'a> TierServer<'a> {
         let pqr_byte_len = u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
         let payload_len = query_bytes.len() - U64_BYTES;
         anyhow::ensure!(
-            pqr_byte_len % U64_BYTES == 0,
+            pqr_byte_len.is_multiple_of(U64_BYTES),
             "pqr_byte_len {} not a multiple of 8",
             pqr_byte_len
         );
@@ -194,7 +194,7 @@ impl<'a> TierServer<'a> {
         anyhow::ensure!(pqr_byte_len > 0, "pqr section is empty");
         anyhow::ensure!(remaining > 0, "pub_params section is empty");
         anyhow::ensure!(
-            remaining % U64_BYTES == 0,
+            remaining.is_multiple_of(U64_BYTES),
             "pub_params section {} bytes not a multiple of {}",
             remaining, U64_BYTES
         );

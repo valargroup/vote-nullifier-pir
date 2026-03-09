@@ -75,6 +75,9 @@ const RANGE_BYTES: usize = FP_BYTES * 2;
 /// the root because they all reduce to the same empty subtree hashes.
 pub type Range = [Fp; 2];
 
+/// Return type for [`load_full_tree`]: `(ranges, levels, root, height)`.
+pub type FullTreeData = (Vec<Range>, Vec<Vec<Fp>>, Fp, Option<u64>);
+
 /// Build gap ranges from a sorted nullifier set.
 ///
 /// For each consecutive pair of nullifiers, the gap `[low, width]` is emitted
@@ -326,7 +329,7 @@ pub fn save_full_tree(
 /// read directly from the file using bulk I/O and parallel parsing.
 ///
 /// Backwards-compatible: files written without the height trailer return `None`.
-pub fn load_full_tree(path: &Path) -> Result<(Vec<Range>, Vec<Vec<Fp>>, Fp, Option<u64>)> {
+pub fn load_full_tree(path: &Path) -> Result<FullTreeData> {
     let t0 = Instant::now();
     let buf = std::fs::read(path)?;
     info!(

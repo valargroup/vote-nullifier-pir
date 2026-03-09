@@ -33,7 +33,7 @@ pub fn validate_export_height(height: u64) -> anyhow::Result<()> {
         NU5_ACTIVATION_HEIGHT
     );
     anyhow::ensure!(
-        height % 10 == 0,
+        height.is_multiple_of(10),
         "height {} must be a multiple of 10",
         height
     );

@@ -102,8 +102,8 @@ pub fn build_pir_tree(ranges: Vec<Range>) -> Result<PirTree> {
 pub fn extend_root(root26: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
     let hasher = PoseidonHasher::new();
     let mut root = root26;
-    for level in PIR_DEPTH..FULL_DEPTH {
-        root = hasher.hash(root, empty_hashes[level]);
+    for empty_hash in &empty_hashes[PIR_DEPTH..FULL_DEPTH] {
+        root = hasher.hash(root, *empty_hash);
     }
     root
 }

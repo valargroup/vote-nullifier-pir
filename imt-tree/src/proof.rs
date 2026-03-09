@@ -84,7 +84,7 @@ mod tests {
         let value = fp(15);
         let mut proof = tree.prove(value).unwrap();
 
-        proof.path[0] = proof.path[0] + Fp::one();
+        proof.path[0] += Fp::one();
         assert!(
             !proof.verify(value),
             "tampered auth_path[0] should fail verification"

@@ -628,7 +628,7 @@ mod tests {
         all_nfs.extend_from_slice(raw_nfs);
         all_nfs.sort();
         all_nfs.dedup();
-        build_nf_ranges(all_nfs.into_iter())
+        build_nf_ranges(all_nfs)
     }
 
     /// Build a tree and export all three tier blobs.

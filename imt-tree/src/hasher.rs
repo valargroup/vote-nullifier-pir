@@ -18,6 +18,12 @@ pub struct PoseidonHasher {
     initial_capacity: Fp,
 }
 
+impl Default for PoseidonHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PoseidonHasher {
     /// Create a new hasher, computing round constants and MDS matrix once.
     pub fn new() -> Self {

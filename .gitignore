@@ -6,4 +6,4 @@ nullifiers.tree
 nullifiers.index
 pir-data/
 rust-toolchain.toml
-settings.json
+.vscode/

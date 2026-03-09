@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_helpers::{fp, four_nullifiers};
-use ff::Field;
 use halo2_gadgets::poseidon::primitives::{self as poseidon, ConstantLength, P128Pow5T3};
 
 #[test]

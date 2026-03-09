@@ -149,9 +149,9 @@ impl NullifierTree {
         let idx = find_range_for_value(&self.ranges, value)?;
         let mut path = [Fp::zero(); TREE_DEPTH];
         let mut pos = idx;
-        for level in 0..TREE_DEPTH {
+        for (level, sibling_hash) in path.iter_mut().enumerate().take(TREE_DEPTH) {
             let sibling = pos ^ 1;
-            path[level] = if sibling < self.levels[level].len() {
+            *sibling_hash = if sibling < self.levels[level].len() {
                 self.levels[level][sibling]
             } else {
                 self.empty_hashes[level]

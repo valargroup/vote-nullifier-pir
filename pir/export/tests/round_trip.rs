@@ -26,7 +26,7 @@ fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<[Fp; 2]> {
     all_nfs.extend_from_slice(raw_nfs);
     all_nfs.sort();
     all_nfs.dedup();
-    build_nf_ranges(all_nfs.into_iter())
+    build_nf_ranges(all_nfs)
 }
 
 /// Perform local proof construction from tier data (mirrors pir_client::fetch_proof_local).
@@ -79,9 +79,7 @@ fn construct_proof(
     }
 
     // Path padding (depth 26 → 29)
-    for level in PIR_DEPTH..TREE_DEPTH {
-        path[level] = empty_hashes[level];
-    }
+    path[PIR_DEPTH..TREE_DEPTH].copy_from_slice(&empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
     let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_idx;
     let (low, width) = tier2.leaf_record(leaf_idx);

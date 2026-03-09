@@ -205,7 +205,7 @@ pub fn load_nullifiers_up_to(dir: &Path, byte_offset: u64) -> Result<Vec<Fp>> {
     }
 
     let byte_offset = byte_offset as usize;
-    if byte_offset % NULLIFIER_SIZE != 0 {
+    if !byte_offset.is_multiple_of(NULLIFIER_SIZE) {
         anyhow::bail!(
             "byte_offset {} is not a multiple of {}",
             byte_offset,
@@ -305,7 +305,7 @@ pub fn load_all_nullifiers(dir: &Path) -> Result<Vec<Fp>> {
 /// (value >= the Pallas field modulus).
 pub fn parse_nullifier_bytes(data: &[u8]) -> Result<Vec<Fp>> {
     anyhow::ensure!(
-        data.len() % NULLIFIER_SIZE == 0,
+        data.len().is_multiple_of(NULLIFIER_SIZE),
         "data length {} is not a multiple of {}",
         data.len(),
         NULLIFIER_SIZE
