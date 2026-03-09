@@ -8,11 +8,11 @@ rand = "0.8"
 
 [features]
 default = []
-cli = ["dep:nullifier-service"]
+cli = ["dep:nf-ingest"]
 
 [dependencies]
 imt-tree = { path = "../../imt-tree" }
-nullifier-service = { path = "../../nullifier-service", optional = true }
+nf-ingest = { path = "../../nf-ingest", optional = true }
 anyhow = "1.0"
 hex = "0.4"
 ff = "0.13"

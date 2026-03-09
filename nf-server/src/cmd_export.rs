@@ -6,8 +6,8 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Args as ClapArgs;
 
-use nullifier_service::config;
-use nullifier_service::file_store;
+use nf_ingest::config;
+use nf_ingest::file_store;
 
 #[derive(ClapArgs)]
 pub struct Args {

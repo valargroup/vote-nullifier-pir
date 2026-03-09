@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  DEPLOY_PATH: /opt/nullifier-ingest
+  DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
   resync:
@@ -42,13 +42,13 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           command_timeout: 60m
           script: |
-            cd /opt/nullifier-ingest && \
+            cd /opt/nf-ingest && \
               ./nf-server ingest \
-                --data-dir /opt/nullifier-ingest \
+                --data-dir /opt/nf-ingest \
                 --lwd-url https://zec.rocks:443 \
                 --invalidate \
                 --max-height ${{ steps.round_height.outputs.value }} && \
               ./nf-server export \
-                --data-dir /opt/nullifier-ingest \
-                --output-dir /opt/nullifier-ingest/pir-data && \
+                --data-dir /opt/nf-ingest \
+                --output-dir /opt/nf-ingest/pir-data && \
               sudo systemctl restart nullifier-query-server

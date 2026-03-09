@@ -6,8 +6,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use tracing::{info, warn};
 
-use nullifier_service::file_store;
-use nullifier_service::sync_nullifiers;
+use nf_ingest::file_store;
+use nf_ingest::sync_nullifiers;
 
 use super::state::{AppState, ServerPhase};
 
@@ -55,7 +55,7 @@ pub(crate) async fn post_snapshot_prepare(
 ) -> impl IntoResponse {
     let height = req.height;
 
-    if let Err(e) = nullifier_service::config::validate_export_height(height) {
+    if let Err(e) = nf_ingest::config::validate_export_height(height) {
         return (
             StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": e.to_string() })),

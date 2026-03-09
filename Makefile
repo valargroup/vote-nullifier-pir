@@ -1,4 +1,4 @@
-# nullifier-ingest
+# nf-ingest
 # Top-level Makefile — delegates to nf-server (unified binary) and subcrates
 #
 # Storage: flat binary files (no SQLite).
@@ -17,7 +17,7 @@
 # (--invalidate) so the next export rebuilds from the updated data.
 
 IMT_DIR     := imt-tree
-SERVICE_DIR := nullifier-service
+SERVICE_DIR := nf-ingest
 NF_DIR      := nf-server
 
 # ── Configuration (override with env vars) ───────────────────────────

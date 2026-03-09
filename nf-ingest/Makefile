@@ -1,4 +1,4 @@
-# nullifier-service Makefile
+# nf-ingest Makefile
 # Library crate — no binaries. Use nf-server for ingest/export/serve.
 
 .PHONY: build test clean help
