@@ -2,6 +2,9 @@
 
 Private Information Retrieval (PIR) system for Zcash nullifier non-membership proofs. Allows a client to prove that a nullifier does **not** exist in the on-chain nullifier set without revealing *which* nullifier it is querying — a key building block for shielded voting.
 
+- [ZIP Specification (PR)](https://github.com/zcash/zips/pull/1198)
+- [PIR Parameter Selection](docs/params.md)
+
 ## Architecture
 
 The system is organised as a Cargo workspace with eight crates split across three layers:
@@ -115,3 +118,10 @@ All data is stored as flat binary files:
 - `nullifiers.index` — Height-to-offset index for subset loading
 - `nullifiers.tree` — Serialised NullifierTree sidecar
 - `pir-data/` — Tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`)
+
+## PIR Write Ups
+
+- [YPIR Security](https://x.com/akhtariev/status/2030768109196316712)
+- [PIR Applications in Zcash](https://www.akhtariev.ca/blog/sync-tax)
+- [Motivation for Compression/Packing](https://x.com/akhtariev/status/2030449201335705640)
+- [GPU Optimizations](https://www.akhtariev.ca/blog/pir-gpu-acceleration)
