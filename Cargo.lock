@@ -1306,6 +1306,7 @@ dependencies = [
  "pasta_curves",
  "rand",
  "rayon",
+ "tracing",
 ]
 
 [[package]]
@@ -1571,6 +1572,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tower-http 0.4.4",
+ "tracing",
 ]
 
 [[package]]
@@ -1736,6 +1738,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

@@ -27,7 +27,7 @@ use super::state::{AppState, ServerPhase};
 /// `GET /tier0` — Return the full Tier 0 binary blob (plaintext, small).
 pub(crate) async fn get_tier0(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         s.tier0_data.clone(),
@@ -38,21 +38,21 @@ pub(crate) async fn get_tier0(State(state): State<Arc<AppState>>) -> impl IntoRe
 /// `GET /params/tier1` — Return the Tier 1 YPIR scenario parameters as JSON.
 pub(crate) async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
     axum::Json(s.tier1_scenario.clone()).into_response()
 }
 
 /// `GET /params/tier2` — Return the Tier 2 YPIR scenario parameters as JSON.
 pub(crate) async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
     axum::Json(s.tier2_scenario.clone()).into_response()
 }
 
 /// `GET /hint/tier1` — Return precomputed YPIR hint for Tier 1.
 pub(crate) async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         s.tier1_hint.clone(),
@@ -63,7 +63,7 @@ pub(crate) async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl I
 /// `GET /hint/tier2` — Return precomputed YPIR hint for Tier 2.
 pub(crate) async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         s.tier2_hint.clone(),
@@ -102,7 +102,7 @@ async fn post_tier_query(state: &AppState, tier: &str, body: Bytes) -> axum::res
         )
             .into_response();
     }
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("checked is_none above");
 
     info!(req_id, tier, body_bytes = body.len(), inflight_requests = inflight, "pir_request_started");
 
@@ -208,7 +208,7 @@ async fn get_tier_row(
 /// `GET /root` — Return the current tree root hash and metadata as JSON.
 pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
-    let s = guard.as_ref().unwrap();
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
     let info = RootInfo {
         root29: s.metadata.root29.clone(),
         root26: s.metadata.root26.clone(),

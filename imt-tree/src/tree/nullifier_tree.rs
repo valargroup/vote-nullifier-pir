@@ -4,6 +4,7 @@ use std::time::Instant;
 use anyhow::Result;
 use ff::{Field, PrimeField as _};
 use pasta_curves::Fp;
+use tracing::info;
 
 use super::{
     build_levels, build_nf_ranges, commit_ranges, find_range_for_value, load_full_tree, load_tree,
@@ -60,13 +61,13 @@ impl NullifierTree {
     pub(crate) fn from_ranges(ranges: Vec<Range>) -> Self {
         let t0 = Instant::now();
         let leaves = commit_ranges(&ranges);
-        eprintln!("  Leaf hashing: {} leaves in {:.1}s", leaves.len(), t0.elapsed().as_secs_f64());
+        info!(count = leaves.len(), elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()), "leaf hashing");
 
         let empty_hashes = precompute_empty_hashes();
 
         let t1 = Instant::now();
         let (root, levels) = build_levels(leaves, &empty_hashes, TREE_DEPTH);
-        eprintln!("  Tree build ({} levels): {:.1}s", levels.len(), t1.elapsed().as_secs_f64());
+        info!(level_count = levels.len(), elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()), "tree built");
 
         Self { ranges, levels, empty_hashes, root, height: None }
     }

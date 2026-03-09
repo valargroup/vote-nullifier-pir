@@ -1,19 +1,7 @@
 use super::*;
+use crate::test_helpers::{fp, four_nullifiers};
 use ff::Field;
 use halo2_gadgets::poseidon::primitives::{self as poseidon, ConstantLength, P128Pow5T3};
-
-/// Helper: make an Fp from a u64.
-fn fp(v: u64) -> Fp {
-    Fp::from(v)
-}
-
-// 4 nullifiers: 10, 20, 30, 40
-// Expected 5 gap ranges (low, width):
-//   [0, 9]    [11, 8]    [21, 8]    [31, 8]    [41, MAX-41]
-
-fn four_nullifiers() -> Vec<Fp> {
-    vec![fp(10), fp(20), fp(30), fp(40)]
-}
 
 #[test]
 fn test_build_ranges_from_4_nullifiers() {
@@ -454,18 +442,20 @@ fn test_duplicate_nullifiers_produce_same_tree() {
 fn test_sentinel_tree_all_ranges_under_2_250() {
     let tree = build_sentinel_tree(&[]).unwrap();
 
-    let two_250 = Fp::from(2u64).pow([250, 0, 0, 0]);
-
+    // Directly check each width against the same constraint used
+    // by verify_range_widths: byte 31 of the LE repr < 0x04 means
+    // the value fits in 250 bits (bits 250-255 are zero).
     for (i, [low, width]) in tree.ranges().iter().enumerate() {
-        let max_width = two_250 - Fp::one();
-        let check = max_width - *width;
-        let repr = check.to_repr();
+        let repr = width.to_repr();
         assert!(
-            repr.as_ref()[31] < 0x40,
+            repr.as_ref()[31] < 0x04,
             "range {} has width >= 2^250: low={:?}, width={:?}",
             i, low, width
         );
     }
+
+    // Also verify via the production method.
+    tree.verify_range_widths().expect("sentinel tree should pass width verification");
 }
 
 #[test]

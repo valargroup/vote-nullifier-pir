@@ -1,87 +1,29 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::Result;
-use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use tracing::{info, warn};
 
-use pir_server::{OwnedTierState, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS, TIER2_ROW_BYTES};
-
 use nullifier_service::file_store;
 use nullifier_service::sync_nullifiers;
 
-use super::state::{AppState, ServerPhase, ServingState};
-
-/// Load tier files from disk and construct ServingState.
-///
-/// Raw tier data is read into temporary buffers, passed to `OwnedTierState::new()`
-/// (which copies it into YPIR's internal representation), then dropped — saving
-/// ~6 GB that was previously kept alive redundantly.
-pub(crate) fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState> {
-    let t_total = Instant::now();
-
-    let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
-    info!(bytes = tier0_data.len(), "Tier 0 loaded");
-
-    let tier1_data = std::fs::read(pir_data_dir.join("tier1.bin"))?;
-    info!(bytes = tier1_data.len(), rows = tier1_data.len() / TIER1_ROW_BYTES, "Tier 1 loaded");
-    anyhow::ensure!(
-        tier1_data.len() == TIER1_ROWS * TIER1_ROW_BYTES,
-        "tier1.bin size mismatch: got {} bytes, expected {}",
-        tier1_data.len(),
-        TIER1_ROWS * TIER1_ROW_BYTES
-    );
-
-    let tier2_data = std::fs::read(pir_data_dir.join("tier2.bin"))?;
-    info!(bytes = tier2_data.len(), rows = tier2_data.len() / TIER2_ROW_BYTES, "Tier 2 loaded");
-    anyhow::ensure!(
-        tier2_data.len() == TIER2_ROWS * TIER2_ROW_BYTES,
-        "tier2.bin size mismatch: got {} bytes, expected {}",
-        tier2_data.len(),
-        TIER2_ROWS * TIER2_ROW_BYTES
-    );
-
-    let metadata: pir_export::PirMetadata =
-        serde_json::from_str(&std::fs::read_to_string(pir_data_dir.join("pir_root.json"))?)?;
-    info!(num_ranges = metadata.num_ranges, "Metadata loaded");
-
-    info!("Initializing YPIR servers");
-    let tier1_scenario = pir_server::tier1_scenario();
-    let mut tier1 = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
-    drop(tier1_data);
-    let tier1_hint = Bytes::from(tier1.take_hint_bytes());
-    info!(hint_bytes = tier1_hint.len(), "Tier 1 YPIR ready");
-
-    let tier2_scenario = pir_server::tier2_scenario();
-    let mut tier2 = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
-    drop(tier2_data);
-    let tier2_hint = Bytes::from(tier2.take_hint_bytes());
-    info!(hint_bytes = tier2_hint.len(), "Tier 2 YPIR ready");
-
-    info!(elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()), "Server ready");
-
-    Ok(ServingState {
-        tier0_data,
-        tier1,
-        tier2,
-        tier1_scenario,
-        tier2_scenario,
-        tier1_hint,
-        tier2_hint,
-        metadata,
-    })
-}
+use super::state::{AppState, ServerPhase};
 
 // ── Snapshot management endpoints ─────────────────────────────────────────────
 
+/// Request body for `POST /snapshot/prepare`.
 #[derive(serde::Deserialize)]
 pub(crate) struct PrepareRequest {
+    /// Target block height to rebuild the snapshot at.
     height: u64,
 }
 
+/// Query the chain SDK for an active voting round.
+///
+/// Returns `Some(round_id)` if a round is currently active, `None` otherwise.
+/// Used to prevent rebuilds during active rounds which would invalidate proofs.
 async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
     let url = format!("{}/shielded-vote/v1/rounds/active", chain_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
@@ -113,25 +55,10 @@ pub(crate) async fn post_snapshot_prepare(
 ) -> impl IntoResponse {
     let height = req.height;
 
-    if height < sync_nullifiers::NU5_ACTIVATION_HEIGHT {
+    if let Err(e) = nullifier_service::config::validate_export_height(height) {
         return (
             StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": format!(
-                    "height {} is below NU5 activation ({})",
-                    height,
-                    sync_nullifiers::NU5_ACTIVATION_HEIGHT
-                )
-            })),
-        )
-            .into_response();
-    }
-    if height % 10 != 0 {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": format!("height {} must be a multiple of 10", height)
-            })),
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response();
     }
@@ -324,7 +251,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     }
 
     let pd = pir_data_dir.clone();
-    let new_serving = tokio::task::spawn_blocking(move || load_serving_state(&pd)).await??;
+    let new_serving = tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd)).await??;
 
     {
         let mut serving = state.serving.write().await;

@@ -24,6 +24,9 @@ pub use pir_export::{
     TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
+const U64_BYTES: usize = std::mem::size_of::<u64>();
+const AVX512_ALIGN: usize = 64;
+
 /// 64-byte aligned u64 buffer for AVX-512 operations.
 struct Aligned64 {
     ptr: *mut u64,
@@ -34,8 +37,8 @@ struct Aligned64 {
 impl Aligned64 {
     fn new(len: usize) -> Self {
         assert!(len > 0, "Aligned64::new called with zero length");
-        let size = len.checked_mul(8).expect("Aligned64 size overflow");
-        let layout = Layout::from_size_align(size, 64).expect("Aligned64 invalid layout");
+        let size = len.checked_mul(U64_BYTES).expect("Aligned64 size overflow");
+        let layout = Layout::from_size_align(size, AVX512_ALIGN).expect("Aligned64 invalid layout");
         let ptr = unsafe { alloc_zeroed(layout) as *mut u64 };
         if ptr.is_null() {
             handle_alloc_error(layout);
@@ -174,10 +177,10 @@ impl<'a> TierServer<'a> {
             "query too short: {} bytes",
             query_bytes.len()
         );
-        let pqr_byte_len = u64::from_le_bytes(query_bytes[..8].try_into().unwrap()) as usize;
-        let payload_len = query_bytes.len() - 8; // safe: checked >= 8
+        let pqr_byte_len = u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
+        let payload_len = query_bytes.len() - U64_BYTES;
         anyhow::ensure!(
-            pqr_byte_len % 8 == 0,
+            pqr_byte_len % U64_BYTES == 0,
             "pqr_byte_len {} not a multiple of 8",
             pqr_byte_len
         );
@@ -191,24 +194,24 @@ impl<'a> TierServer<'a> {
         anyhow::ensure!(pqr_byte_len > 0, "pqr section is empty");
         anyhow::ensure!(remaining > 0, "pub_params section is empty");
         anyhow::ensure!(
-            remaining % 8 == 0,
-            "pub_params section {} bytes not a multiple of 8",
-            remaining
+            remaining % U64_BYTES == 0,
+            "pub_params section {} bytes not a multiple of {}",
+            remaining, U64_BYTES
         );
         let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
 
-        let pqr_u64_len = pqr_byte_len / 8;
-        let pp_u64_len = remaining / 8;
+        let pqr_u64_len = pqr_byte_len / U64_BYTES;
+        let pp_u64_len = remaining / U64_BYTES;
 
         // Copy into 64-byte aligned memory for AVX-512 operations.
         let decode_start = Instant::now();
         let mut pqr = Aligned64::new(pqr_u64_len);
-        for (i, chunk) in query_bytes[8..8 + pqr_byte_len].chunks_exact(8).enumerate() {
+        for (i, chunk) in query_bytes[U64_BYTES..U64_BYTES + pqr_byte_len].chunks_exact(U64_BYTES).enumerate() {
             pqr.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
         }
 
         let mut pub_params = Aligned64::new(pp_u64_len);
-        for (i, chunk) in query_bytes[8 + pqr_byte_len..].chunks_exact(8).enumerate() {
+        for (i, chunk) in query_bytes[U64_BYTES + pqr_byte_len..].chunks_exact(U64_BYTES).enumerate() {
             pub_params.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
         }
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
@@ -236,6 +239,7 @@ impl<'a> TierServer<'a> {
         })
     }
 
+    /// Return the YPIR scenario parameters for this tier.
     pub fn scenario(&self) -> &YpirScenario {
         &self.scenario
     }
@@ -354,12 +358,21 @@ impl Drop for InflightGuard<'_> {
 /// Used by both `pir-server` and `nf-server` to expose server-side stage
 /// timing so the client can split RTT into server vs network/queue.
 pub fn write_timing_headers(headers: &mut axum::http::HeaderMap, req_id: u64, timing: QueryTiming) {
-    headers.insert("x-pir-req-id", HeaderValue::from_str(&req_id.to_string()).expect("req_id header"));
-    headers.insert("x-pir-server-total-ms", HeaderValue::from_str(&format!("{:.3}", timing.total_ms)).expect("timing header"));
-    headers.insert("x-pir-server-validate-ms", HeaderValue::from_str(&format!("{:.3}", timing.validate_ms)).expect("timing header"));
-    headers.insert("x-pir-server-decode-copy-ms", HeaderValue::from_str(&format!("{:.3}", timing.decode_copy_ms)).expect("timing header"));
-    headers.insert("x-pir-server-compute-ms", HeaderValue::from_str(&format!("{:.3}", timing.online_compute_ms)).expect("timing header"));
-    headers.insert("x-pir-server-response-bytes", HeaderValue::from_str(&timing.response_bytes.to_string()).expect("timing header"));
+    let entries: [(&str, String); 6] = [
+        ("x-pir-req-id", req_id.to_string()),
+        ("x-pir-server-total-ms", format!("{:.3}", timing.total_ms)),
+        ("x-pir-server-validate-ms", format!("{:.3}", timing.validate_ms)),
+        ("x-pir-server-decode-copy-ms", format!("{:.3}", timing.decode_copy_ms)),
+        ("x-pir-server-compute-ms", format!("{:.3}", timing.online_compute_ms)),
+        ("x-pir-server-response-bytes", timing.response_bytes.to_string()),
+    ];
+    for (name, value) in entries {
+        // HeaderValue::from_str only fails on non-visible-ASCII; numeric
+        // formatting always produces valid values.
+        if let Ok(hv) = HeaderValue::from_str(&value) {
+            headers.insert(name, hv);
+        }
+    }
 }
 
 /// Read a single row from a tier binary file on disk.
@@ -370,4 +383,89 @@ pub fn read_tier_row(path: &std::path::Path, offset: u64, len: usize) -> std::io
     let mut buf = vec![0u8; len];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+// ── ServingState ─────────────────────────────────────────────────────────────
+
+use axum::body::Bytes;
+
+/// All data needed to serve PIR queries for all tiers.
+///
+/// Holds loaded tier data, initialized YPIR servers, precomputed hints,
+/// and tree metadata. Used by both the standalone `pir-server` binary
+/// and `nf-server` in serve mode.
+///
+/// Raw tier data is NOT kept in memory — YPIR copies it into its own
+/// internal representation during construction. Hints and tier0 use
+/// `Bytes` (reference-counted) to avoid cloning on each HTTP response.
+pub struct ServingState {
+    pub tier0_data: Bytes,
+    pub tier1: OwnedTierState,
+    pub tier2: OwnedTierState,
+    pub tier1_scenario: YpirScenario,
+    pub tier2_scenario: YpirScenario,
+    pub tier1_hint: Bytes,
+    pub tier2_hint: Bytes,
+    pub metadata: pir_export::PirMetadata,
+}
+
+/// Load tier files from disk, initialize YPIR servers, and return a
+/// ready-to-serve [`ServingState`].
+///
+/// Reads `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` from
+/// `pir_data_dir`. Raw tier data is consumed during YPIR initialization
+/// and dropped to save ~6 GB.
+pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState> {
+    let t_total = Instant::now();
+
+    let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
+    info!(bytes = tier0_data.len(), "Tier 0 loaded");
+
+    let tier1_data = std::fs::read(pir_data_dir.join("tier1.bin"))?;
+    info!(bytes = tier1_data.len(), rows = tier1_data.len() / TIER1_ROW_BYTES, "Tier 1 loaded");
+    anyhow::ensure!(
+        tier1_data.len() == TIER1_ROWS * TIER1_ROW_BYTES,
+        "tier1.bin size mismatch: got {} bytes, expected {}",
+        tier1_data.len(),
+        TIER1_ROWS * TIER1_ROW_BYTES
+    );
+
+    let tier2_data = std::fs::read(pir_data_dir.join("tier2.bin"))?;
+    info!(bytes = tier2_data.len(), rows = tier2_data.len() / TIER2_ROW_BYTES, "Tier 2 loaded");
+    anyhow::ensure!(
+        tier2_data.len() == TIER2_ROWS * TIER2_ROW_BYTES,
+        "tier2.bin size mismatch: got {} bytes, expected {}",
+        tier2_data.len(),
+        TIER2_ROWS * TIER2_ROW_BYTES
+    );
+
+    let metadata: pir_export::PirMetadata =
+        serde_json::from_str(&std::fs::read_to_string(pir_data_dir.join("pir_root.json"))?)?;
+    info!(num_ranges = metadata.num_ranges, "Metadata loaded");
+
+    info!("Initializing YPIR servers");
+    let tier1_scenario = tier1_scenario();
+    let mut tier1 = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
+    drop(tier1_data);
+    let tier1_hint = Bytes::from(tier1.take_hint_bytes());
+    info!(hint_bytes = tier1_hint.len(), "Tier 1 YPIR ready");
+
+    let tier2_scenario = tier2_scenario();
+    let mut tier2 = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
+    drop(tier2_data);
+    let tier2_hint = Bytes::from(tier2.take_hint_bytes());
+    info!(hint_bytes = tier2_hint.len(), "Tier 2 YPIR ready");
+
+    info!(elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()), "Server ready");
+
+    Ok(ServingState {
+        tier0_data,
+        tier1,
+        tier2,
+        tier1_scenario,
+        tier2_scenario,
+        tier1_hint,
+        tier2_hint,
+        metadata,
+    })
 }

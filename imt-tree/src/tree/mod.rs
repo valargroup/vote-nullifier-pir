@@ -6,6 +6,7 @@ use anyhow::Result;
 use ff::PrimeField as _;
 use pasta_curves::Fp;
 use rayon::prelude::*;
+use tracing::info;
 
 pub(crate) use crate::hasher::PoseidonHasher;
 pub use crate::proof::ImtProofData;
@@ -23,6 +24,12 @@ mod tests;
 /// We plan for this circuit to support up to 256M nullifiers, so the tree
 /// needs capacity for ~2^28 leaves: `log2(256 << 20) + 1 = 29`.
 pub const TREE_DEPTH: usize = 29;
+
+/// Byte size of one serialized `Fp` field element (Pallas base field).
+const FP_BYTES: usize = 32;
+
+/// Byte size of one serialized `Range` (`[low, width]` = 2 `Fp` values).
+const RANGE_BYTES: usize = FP_BYTES * 2;
 
 /// A gap range `[low, width]` representing an interval between two adjacent
 /// on-chain nullifiers. `low` is the interval start and `width = high - low`
@@ -226,26 +233,30 @@ pub fn load_tree(path: &Path) -> Result<Vec<Range>> {
     let t0 = Instant::now();
     let buf = std::fs::read(path)?;
     anyhow::ensure!(buf.len() >= 8, "tree file too small");
-    let count = u64::from_le_bytes(buf[..8].try_into().unwrap()) as usize;
-    let expected = 8 + count * 64;
+    let count = u64::from_le_bytes(
+        buf[..8].try_into().expect("load_tree: header slice is exactly 8 bytes"),
+    ) as usize;
+    let expected = 8 + count * RANGE_BYTES;
     anyhow::ensure!(
         buf.len() >= expected,
         "tree file truncated: expected {} bytes, got {}",
         expected,
         buf.len()
     );
-    let ranges: Vec<Range> = buf[8..8 + count * 64]
-        .par_chunks_exact(64)
+    let ranges: Vec<Range> = buf[8..8 + count * RANGE_BYTES]
+        .par_chunks_exact(RANGE_BYTES)
         .map(|chunk| {
-            let low = Fp::from_repr(chunk[..32].try_into().unwrap()).unwrap();
-            let width = Fp::from_repr(chunk[32..64].try_into().unwrap()).unwrap();
+            let low_arr: [u8; FP_BYTES] = chunk[..FP_BYTES].try_into().expect("chunk is exactly FP_BYTES");
+            let width_arr: [u8; FP_BYTES] = chunk[FP_BYTES..RANGE_BYTES].try_into().expect("chunk is exactly FP_BYTES");
+            let low = Fp::from_repr(low_arr).expect("non-canonical Fp in tree file");
+            let width = Fp::from_repr(width_arr).expect("non-canonical Fp in tree file");
             [low, width]
         })
         .collect();
-    eprintln!(
-        "  File read: {} ranges loaded in {:.1}s",
-        ranges.len(),
-        t0.elapsed().as_secs_f64()
+    info!(
+        count = ranges.len(),
+        elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()),
+        "ranges loaded from file"
     );
     Ok(ranges)
 }
@@ -299,12 +310,12 @@ pub fn save_full_tree(
     // Height trailer (0 means unknown)
     f.write_all(&height.unwrap_or(0).to_le_bytes())?;
 
-    eprintln!(
-        "  Full tree saved: {} ranges, {} levels, height={:?} in {:.1}s",
-        ranges.len(),
-        levels.len(),
-        height,
-        t0.elapsed().as_secs_f64(),
+    info!(
+        range_count = ranges.len(),
+        level_count = levels.len(),
+        ?height,
+        elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()),
+        "full tree saved"
     );
     Ok(())
 }
@@ -318,10 +329,10 @@ pub fn save_full_tree(
 pub fn load_full_tree(path: &Path) -> Result<(Vec<Range>, Vec<Vec<Fp>>, Fp, Option<u64>)> {
     let t0 = Instant::now();
     let buf = std::fs::read(path)?;
-    eprintln!(
-        "  File read: {:.1} MB in {:.1}s",
-        buf.len() as f64 / (1024.0 * 1024.0),
-        t0.elapsed().as_secs_f64()
+    info!(
+        size_mb = format!("{:.1}", buf.len() as f64 / (1024.0 * 1024.0)),
+        elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()),
+        "full tree file read"
     );
 
     let t1 = Instant::now();
@@ -339,14 +350,18 @@ pub fn load_full_tree(path: &Path) -> Result<(Vec<Range>, Vec<Vec<Fp>>, Fp, Opti
     }
 
     // Ranges
-    let range_count = u64::from_le_bytes(read_bytes!(8).try_into().unwrap()) as usize;
-    let range_bytes = &buf[pos..pos + range_count * 64];
-    pos += range_count * 64;
+    let range_count = u64::from_le_bytes(
+        read_bytes!(8).try_into().expect("header slice is exactly 8 bytes"),
+    ) as usize;
+    let range_bytes = &buf[pos..pos + range_count * RANGE_BYTES];
+    pos += range_count * RANGE_BYTES;
     let ranges: Vec<Range> = range_bytes
-        .par_chunks_exact(64)
+        .par_chunks_exact(RANGE_BYTES)
         .map(|chunk| {
-            let low = Fp::from_repr(chunk[..32].try_into().unwrap()).unwrap();
-            let width = Fp::from_repr(chunk[32..64].try_into().unwrap()).unwrap();
+            let low_arr: [u8; FP_BYTES] = chunk[..FP_BYTES].try_into().expect("chunk is exactly FP_BYTES");
+            let width_arr: [u8; FP_BYTES] = chunk[FP_BYTES..RANGE_BYTES].try_into().expect("chunk is exactly FP_BYTES");
+            let low = Fp::from_repr(low_arr).expect("non-canonical Fp in full tree file");
+            let width = Fp::from_repr(width_arr).expect("non-canonical Fp in full tree file");
             [low, width]
         })
         .collect();
@@ -354,36 +369,44 @@ pub fn load_full_tree(path: &Path) -> Result<(Vec<Range>, Vec<Vec<Fp>>, Fp, Opti
     // Levels
     let mut levels: Vec<Vec<Fp>> = Vec::with_capacity(TREE_DEPTH);
     for _ in 0..TREE_DEPTH {
-        let level_len = u64::from_le_bytes(read_bytes!(8).try_into().unwrap()) as usize;
-        let level_bytes = &buf[pos..pos + level_len * 32];
-        pos += level_len * 32;
+        let level_len = u64::from_le_bytes(
+            read_bytes!(8).try_into().expect("level header is exactly 8 bytes"),
+        ) as usize;
+        let level_bytes = &buf[pos..pos + level_len * FP_BYTES];
+        pos += level_len * FP_BYTES;
         let level: Vec<Fp> = level_bytes
-            .par_chunks_exact(32)
-            .map(|chunk| Fp::from_repr(chunk.try_into().unwrap()).unwrap())
+            .par_chunks_exact(FP_BYTES)
+            .map(|chunk| {
+                let arr: [u8; FP_BYTES] = chunk.try_into().expect("chunk is exactly FP_BYTES");
+                Fp::from_repr(arr).expect("non-canonical Fp in level data")
+            })
             .collect();
         levels.push(level);
     }
 
     // Root
-    let root_bytes: [u8; 32] = buf[pos..pos + 32].try_into()
+    let root_bytes: [u8; FP_BYTES] = buf[pos..pos + FP_BYTES].try_into()
         .map_err(|_| anyhow::anyhow!("unexpected EOF reading root"))?;
-    let root = Fp::from_repr(root_bytes).unwrap();
-    pos += 32;
+    let root = Fp::from_repr(root_bytes)
+        .expect("non-canonical Fp for root in full tree file");
+    pos += FP_BYTES;
 
     // Height trailer (optional, backwards-compatible with old files)
     let height = if pos + 8 <= buf.len() {
-        let h = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
+        let h = u64::from_le_bytes(
+            buf[pos..pos + 8].try_into().expect("height trailer is exactly 8 bytes"),
+        );
         if h > 0 { Some(h) } else { None }
     } else {
         None
     };
 
-    eprintln!(
-        "  Full tree parsed: {} ranges, {} levels, height={:?} in {:.1}s",
-        ranges.len(),
-        levels.len(),
-        height,
-        t1.elapsed().as_secs_f64()
+    info!(
+        range_count = ranges.len(),
+        level_count = levels.len(),
+        ?height,
+        elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
+        "full tree parsed"
     );
 
     Ok((ranges, levels, root, height))

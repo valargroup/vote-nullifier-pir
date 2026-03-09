@@ -1,3 +1,5 @@
+//! `nf-server serve` — load tier files and start the PIR HTTP server.
+
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -50,7 +52,7 @@ pub async fn run(args: Args) -> Result<()> {
     file_store::rebuild_index(&args.data_dir)?;
 
     eprintln!("Loading tier files from {:?}...", args.pir_data_dir);
-    let serving = rebuild::load_serving_state(&args.pir_data_dir)?;
+    let serving = pir_server::load_serving_state(&args.pir_data_dir)?;
 
     let state = Arc::new(AppState {
         phase: RwLock::new(ServerPhase::Serving),

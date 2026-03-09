@@ -29,27 +29,42 @@ use ypir::client::YPIRClient;
 
 // ── Timing breakdown ─────────────────────────────────────────────────────────
 
-/// Per-tier timing breakdown for a single YPIR query.
+/// Per-tier timing breakdown for a single YPIR query, measuring each stage
+/// of the client-server round trip.
 struct TierTiming {
-    gen_ms: f64, // client-side query generation
+    /// Client-side YPIR query generation time.
+    gen_ms: f64,
+    /// Size of the uploaded query payload.
     upload_bytes: usize,
+    /// Size of the downloaded encrypted response.
     download_bytes: usize,
-    rtt_ms: f64,    // upload + server compute + download (wall clock)
-    decode_ms: f64, // client-side response decoding
+    /// Wall-clock round-trip time (upload + server compute + download).
+    rtt_ms: f64,
+    /// Client-side YPIR response decryption time.
+    decode_ms: f64,
+    /// Server-assigned request ID (from response header).
     server_req_id: Option<u64>,
+    /// Server-reported total processing time.
     server_total_ms: Option<f64>,
+    /// Server-reported query validation time.
     server_validate_ms: Option<f64>,
+    /// Server-reported decode+copy time.
     server_decode_copy_ms: Option<f64>,
+    /// Server-reported YPIR online computation time.
     server_compute_ms: Option<f64>,
+    /// Estimated network + queue latency (RTT minus server time).
     net_queue_ms: Option<f64>,
+    /// Estimated upload-to-server latency.
     upload_to_server_ms: Option<f64>,
+    /// Estimated download-from-server latency.
     download_from_server_ms: f64,
 }
 
-/// Per-note timing breakdown covering both tiers.
+/// Per-note timing breakdown covering both tier 1 and tier 2 YPIR queries.
 struct NoteTiming {
     tier1: TierTiming,
     tier2: TierTiming,
+    /// Total wall-clock time for this note's proof retrieval.
     total_ms: f64,
 }
 
@@ -70,6 +85,9 @@ pub struct PirClient {
     root29: Fp,
 }
 
+/// Return the number of populated leaves in a Tier 2 row, clamped to
+/// [`TIER2_LEAVES`]. The final row may be only partially filled when
+/// `num_ranges` is not a multiple of the row size.
 #[inline]
 fn valid_leaves_for_row(num_ranges: usize, row_idx: usize) -> usize {
     let row_start = row_idx.saturating_mul(TIER2_LEAVES);
@@ -257,92 +275,7 @@ impl PirClient {
         let results_with_timing = futures::future::try_join_all(futures).await?;
         let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Print timing table
-        // gen = client-side YPIR query generation
-        // network = upload query + server compute + download response
-        // decode = client-side YPIR response decryption
-        fn fmt_time(ms: f64) -> String {
-            if ms >= 1000.0 {
-                format!("{:>5.1}s ", ms / 1000.0)
-            } else {
-                format!("{:>5.0}ms", ms)
-            }
-        }
-        fn fmt_opt_time(ms: Option<f64>) -> String {
-            match ms {
-                Some(v) => fmt_time(v),
-                None => "  n/a ".to_string(),
-            }
-        }
-        eprintln!("[PIR] ┌─────┬──────────┬─────────────┬──────────┬──────────┬─────────────┬──────────┬────────┐");
-        eprintln!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ T2 keygen│ T2 upload+  │ T2 decode│ Total  │");
-        eprintln!("[PIR] │     │ (client) │ server+down │ (client) │ (client) │ server+down │ (client) │        │");
-        eprintln!("[PIR] ├─────┼──────────┼─────────────┼──────────┼──────────┼─────────────┼──────────┼────────┤");
-        for &(i, _, ref t) in &results_with_timing {
-            eprintln!(
-                "[PIR] │  {i:>2} │  {:>6} │   {:>7}   │  {:>6} │  {:>6} │   {:>7}   │  {:>6} │{} │",
-                fmt_time(t.tier1.gen_ms),
-                fmt_time(t.tier1.rtt_ms),
-                fmt_time(t.tier1.decode_ms),
-                fmt_time(t.tier2.gen_ms),
-                fmt_time(t.tier2.rtt_ms),
-                fmt_time(t.tier2.decode_ms),
-                fmt_time(t.total_ms),
-            );
-        }
-        eprintln!("[PIR] └─────┴──────────┴─────────────┴──────────┴──────────┴─────────────┴──────────┴────────┘");
-        for &(i, _, ref t) in &results_with_timing {
-            eprintln!(
-                "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB | T2 up={:.1}MB down={:.0}KB",
-                t.tier1.upload_bytes as f64 / 1024.0,
-                t.tier1.download_bytes as f64 / 1024.0,
-                t.tier2.upload_bytes as f64 / (1024.0 * 1024.0),
-                t.tier2.download_bytes as f64 / 1024.0,
-            );
-            eprintln!(
-                "[PIR] Note {i:>2} server/net: T1 {} / {} | T2 {} / {}",
-                fmt_opt_time(t.tier1.server_total_ms),
-                fmt_opt_time(t.tier1.net_queue_ms),
-                fmt_opt_time(t.tier2.server_total_ms),
-                fmt_opt_time(t.tier2.net_queue_ms),
-            );
-            eprintln!(
-                "[PIR] Note {i:>2} up/srv/down: T1 {} / {} / {} | T2 {} / {} / {}",
-                fmt_opt_time(t.tier1.upload_to_server_ms),
-                fmt_opt_time(t.tier1.server_total_ms),
-                fmt_time(t.tier1.download_from_server_ms),
-                fmt_opt_time(t.tier2.upload_to_server_ms),
-                fmt_opt_time(t.tier2.server_total_ms),
-                fmt_time(t.tier2.download_from_server_ms),
-            );
-            eprintln!(
-                "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={}) T2(v={} copy={} compute={})",
-                fmt_opt_time(t.tier1.server_validate_ms),
-                fmt_opt_time(t.tier1.server_decode_copy_ms),
-                fmt_opt_time(t.tier1.server_compute_ms),
-                fmt_opt_time(t.tier2.server_validate_ms),
-                fmt_opt_time(t.tier2.server_decode_copy_ms),
-                fmt_opt_time(t.tier2.server_compute_ms),
-            );
-            eprintln!(
-                "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
-                t.tier1.server_req_id, t.tier2.server_req_id
-            );
-        }
-        eprintln!(
-            "[PIR] Upload per note: T1={:.0}KB T2={:.1}MB  |  Wall clock: {:.2}s",
-            results_with_timing
-                .first()
-                .map(|(_, _, t)| t.tier1.upload_bytes)
-                .unwrap_or(0) as f64
-                / 1024.0,
-            results_with_timing
-                .first()
-                .map(|(_, _, t)| t.tier2.upload_bytes)
-                .unwrap_or(0) as f64
-                / (1024.0 * 1024.0),
-            wall_ms / 1000.0,
-        );
+        print_timing_table(&results_with_timing, wall_ms);
 
         let proofs = results_with_timing
             .into_iter()
@@ -438,6 +371,95 @@ impl PirClient {
     }
 }
 
+fn fmt_time(ms: f64) -> String {
+    if ms >= 1000.0 {
+        format!("{:>5.1}s ", ms / 1000.0)
+    } else {
+        format!("{:>5.0}ms", ms)
+    }
+}
+
+fn fmt_opt_time(ms: Option<f64>) -> String {
+    match ms {
+        Some(v) => fmt_time(v),
+        None => "  n/a ".to_string(),
+    }
+}
+
+/// Print a detailed timing breakdown table for a batch of PIR proof fetches.
+fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f64) {
+    eprintln!("[PIR] ┌─────┬──────────┬─────────────┬──────────┬──────────┬─────────────┬──────────┬────────┐");
+    eprintln!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ T2 keygen│ T2 upload+  │ T2 decode│ Total  │");
+    eprintln!("[PIR] │     │ (client) │ server+down │ (client) │ (client) │ server+down │ (client) │        │");
+    eprintln!("[PIR] ├─────┼──────────┼─────────────┼──────────┼──────────┼─────────────┼──────────┼────────┤");
+    for &(i, _, ref t) in results {
+        eprintln!(
+            "[PIR] │  {i:>2} │  {:>6} │   {:>7}   │  {:>6} │  {:>6} │   {:>7}   │  {:>6} │{} │",
+            fmt_time(t.tier1.gen_ms),
+            fmt_time(t.tier1.rtt_ms),
+            fmt_time(t.tier1.decode_ms),
+            fmt_time(t.tier2.gen_ms),
+            fmt_time(t.tier2.rtt_ms),
+            fmt_time(t.tier2.decode_ms),
+            fmt_time(t.total_ms),
+        );
+    }
+    eprintln!("[PIR] └─────┴──────────┴─────────────┴──────────┴──────────┴─────────────┴──────────┴────────┘");
+    for &(i, _, ref t) in results {
+        eprintln!(
+            "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB | T2 up={:.1}MB down={:.0}KB",
+            t.tier1.upload_bytes as f64 / 1024.0,
+            t.tier1.download_bytes as f64 / 1024.0,
+            t.tier2.upload_bytes as f64 / (1024.0 * 1024.0),
+            t.tier2.download_bytes as f64 / 1024.0,
+        );
+        eprintln!(
+            "[PIR] Note {i:>2} server/net: T1 {} / {} | T2 {} / {}",
+            fmt_opt_time(t.tier1.server_total_ms),
+            fmt_opt_time(t.tier1.net_queue_ms),
+            fmt_opt_time(t.tier2.server_total_ms),
+            fmt_opt_time(t.tier2.net_queue_ms),
+        );
+        eprintln!(
+            "[PIR] Note {i:>2} up/srv/down: T1 {} / {} / {} | T2 {} / {} / {}",
+            fmt_opt_time(t.tier1.upload_to_server_ms),
+            fmt_opt_time(t.tier1.server_total_ms),
+            fmt_time(t.tier1.download_from_server_ms),
+            fmt_opt_time(t.tier2.upload_to_server_ms),
+            fmt_opt_time(t.tier2.server_total_ms),
+            fmt_time(t.tier2.download_from_server_ms),
+        );
+        eprintln!(
+            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={}) T2(v={} copy={} compute={})",
+            fmt_opt_time(t.tier1.server_validate_ms),
+            fmt_opt_time(t.tier1.server_decode_copy_ms),
+            fmt_opt_time(t.tier1.server_compute_ms),
+            fmt_opt_time(t.tier2.server_validate_ms),
+            fmt_opt_time(t.tier2.server_decode_copy_ms),
+            fmt_opt_time(t.tier2.server_compute_ms),
+        );
+        eprintln!(
+            "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
+            t.tier1.server_req_id, t.tier2.server_req_id
+        );
+    }
+    eprintln!(
+        "[PIR] Upload per note: T1={:.0}KB T2={:.1}MB  |  Wall clock: {:.2}s",
+        results
+            .first()
+            .map(|(_, _, t)| t.tier1.upload_bytes)
+            .unwrap_or(0) as f64
+            / 1024.0,
+        results
+            .first()
+            .map(|(_, _, t)| t.tier2.upload_bytes)
+            .unwrap_or(0) as f64
+            / (1024.0 * 1024.0),
+        wall_ms / 1000.0,
+    );
+}
+
+/// Parse an HTTP response header value as `f64`, returning `None` on missing or malformed values.
 fn parse_header_f64(headers: &reqwest::header::HeaderMap, name: &'static str) -> Option<f64> {
     headers
         .get(name)
@@ -445,6 +467,7 @@ fn parse_header_f64(headers: &reqwest::header::HeaderMap, name: &'static str) ->
         .and_then(|s| s.parse::<f64>().ok())
 }
 
+/// Parse an HTTP response header value as `u64`, returning `None` on missing or malformed values.
 fn parse_header_u64(headers: &reqwest::header::HeaderMap, name: &'static str) -> Option<u64> {
     headers
         .get(name)

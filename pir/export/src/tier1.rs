@@ -189,4 +189,44 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn from_bytes_rejects_wrong_size() {
+        let short = vec![0u8; TIER1_ROW_BYTES - 1];
+        assert!(Tier1Row::from_bytes(&short).is_err());
+    }
+
+    #[test]
+    fn find_sub_subtree_on_all_zeros() {
+        let row = vec![0u8; TIER1_ROW_BYTES];
+        let tier1 = Tier1Row::from_bytes(&row).unwrap();
+        let result = tier1.find_sub_subtree(Fp::from(42u64));
+        assert!(result.is_some());
+        assert!(result.unwrap() < TIER1_LEAVES);
+    }
+
+    #[test]
+    fn extract_siblings_returns_correct_count() {
+        let row = vec![0u8; TIER1_ROW_BYTES];
+        let tier1 = Tier1Row::from_bytes(&row).unwrap();
+        let siblings = tier1.extract_siblings(0);
+        assert_eq!(siblings.len(), TIER1_LAYERS);
+    }
+
+    #[test]
+    fn leaf_record_round_trip_on_zeros() {
+        let row = vec![0u8; TIER1_ROW_BYTES];
+        let tier1 = Tier1Row::from_bytes(&row).unwrap();
+        let (hash, min_key) = tier1.leaf_record(0);
+        assert_eq!(hash, Fp::zero());
+        assert_eq!(min_key, Fp::zero());
+    }
+
+    #[test]
+    fn internal_node_matches_at_depth_1() {
+        let row = vec![0u8; TIER1_ROW_BYTES];
+        let tier1 = Tier1Row::from_bytes(&row).unwrap();
+        let node = tier1.internal_node(1, 0);
+        assert_eq!(node, Fp::zero());
+    }
 }

@@ -1,3 +1,5 @@
+//! `nf-server ingest` — sync Orchard nullifiers from lightwalletd into flat files.
+
 use std::path::PathBuf;
 
 use anyhow::Result;

@@ -2,11 +2,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
 
-use axum::body::Bytes;
 use tokio::sync::RwLock;
 
-use pir_export::PirMetadata;
-use pir_server::{OwnedTierState, YpirScenario};
+pub(crate) use pir_server::ServingState;
 
 /// Current lifecycle phase of the server, serialised in health/503 responses.
 #[derive(Clone, serde::Serialize)]
@@ -22,23 +20,6 @@ pub(crate) enum ServerPhase {
     },
     #[serde(rename = "error")]
     Error { message: String },
-}
-
-/// All data needed to serve PIR queries. Replaced atomically on rebuild.
-///
-/// Raw tier data is NOT kept in memory — the YPIR server copies it into its own
-/// internal representation during construction, so we drop the source bytes.
-/// Hints and tier0 use `Bytes` (reference-counted) to avoid cloning on each
-/// HTTP response.
-pub(crate) struct ServingState {
-    pub tier0_data: Bytes,
-    pub tier1: OwnedTierState,
-    pub tier2: OwnedTierState,
-    pub tier1_scenario: YpirScenario,
-    pub tier2_scenario: YpirScenario,
-    pub tier1_hint: Bytes,
-    pub tier2_hint: Bytes,
-    pub metadata: PirMetadata,
 }
 
 /// Top-level shared state, wrapped in `Arc` and passed to all axum handlers.

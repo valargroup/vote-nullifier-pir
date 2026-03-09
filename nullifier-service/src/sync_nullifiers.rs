@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use tonic::transport::Channel;
 use tonic::Request;
+use tracing::info;
 
 use crate::download::connect_lwd;
 use crate::file_store;
@@ -14,6 +15,9 @@ pub const NU5_ACTIVATION_HEIGHT: u64 = 1_687_104;
 
 /// How many blocks to request per gRPC streaming call.
 const BATCH_SIZE: u64 = 10_000;
+
+/// Block-height granularity used when aligning sync targets.
+const BLOCK_ALIGNMENT: u64 = 10;
 
 /// Fetch the current chain tip height from a lightwalletd server.
 ///
@@ -75,6 +79,40 @@ async fn fetch_block_range(
     Ok(nf_buffer)
 }
 
+/// Compute the effective sync target height, accounting for rewinds and chain tip.
+fn resolve_target(start: u64, max_height: Option<u64>, chain_tip: u64) -> u64 {
+    match max_height {
+        Some(h) if h < start => {
+            let next_multiple = ((start / BLOCK_ALIGNMENT) + 1) * BLOCK_ALIGNMENT;
+            info!(
+                sync_height = h,
+                checkpoint = start,
+                next_multiple,
+                "SYNC_HEIGHT below checkpoint, advancing target"
+            );
+            std::cmp::min(next_multiple, chain_tip)
+        }
+        Some(h) => std::cmp::min(h, chain_tip),
+        None => chain_tip,
+    }
+}
+
+/// Partition `[current, target]` into up to `n` consecutive batch ranges of
+/// at most [`BATCH_SIZE`] blocks each.
+fn build_batch_ranges(current: u64, target: u64, n: usize) -> Vec<(u64, u64)> {
+    let mut ranges = Vec::with_capacity(n);
+    let mut batch_start = current;
+    for _ in 0..n {
+        if batch_start > target {
+            break;
+        }
+        let batch_end = std::cmp::min(batch_start + BATCH_SIZE - 1, target);
+        ranges.push((batch_start, batch_end));
+        batch_start = batch_end + 1;
+    }
+    ranges
+}
+
 /// Sync nullifiers from multiple lightwalletd servers into flat files.
 ///
 /// Connects to each URL in `lwd_urls`, streams blocks from the resume point to
@@ -103,39 +141,17 @@ pub async fn sync(
 
     let start = resume_height(dir)?;
     let existing = file_store::nullifier_count(dir)?;
-
-    // Determine the effective sync target.
-    //
-    // If max_height is set but already lies below the current checkpoint (i.e.
-    // we have synced past the requested height), we cannot rewind.  Instead we
-    // advance to the next multiple-of-10 block height above the checkpoint so
-    // there is always a clean forward stopping point.
-    let target = match max_height {
-        Some(h) if h < start => {
-            let next_multiple = ((start / 10) + 1) * 10;
-            eprintln!(
-                "SYNC_HEIGHT {} is below current checkpoint {}; \
-                 advancing target to next multiple of 10: {}",
-                h, start, next_multiple
-            );
-            std::cmp::min(next_multiple, chain_tip)
-        }
-        Some(h) => std::cmp::min(h, chain_tip),
-        None => chain_tip,
-    };
+    let target = resolve_target(start, max_height, chain_tip);
 
     if start > NU5_ACTIVATION_HEIGHT {
-        eprintln!(
-            "Resuming from checkpoint: height {} ({} nullifiers on disk)",
-            start, existing
-        );
+        info!(height = start, existing, "resuming from checkpoint");
     } else {
-        eprintln!("Starting fresh from NU5 activation height {}", NU5_ACTIVATION_HEIGHT);
+        info!(height = NU5_ACTIVATION_HEIGHT, "starting fresh from NU5 activation");
     }
     if let Some(h) = max_height {
-        eprintln!("Max height: {} (chain tip: {})", h, chain_tip);
+        info!(max_height = h, chain_tip, "max height set");
     }
-    eprintln!("Target: {} ({} blocks to sync)", target, target.saturating_sub(start));
+    info!(target, blocks_remaining = target.saturating_sub(start), "sync target");
 
     if start >= target {
         return Ok(SyncResult {
@@ -150,19 +166,8 @@ pub async fn sync(
     let mut blocks_synced: u64 = 0;
 
     while current <= target {
-        // Build up to N batch ranges, one per server
-        let mut batch_ranges: Vec<(u64, u64)> = Vec::with_capacity(n);
-        let mut batch_start = current;
-        for _ in 0..n {
-            if batch_start > target {
-                break;
-            }
-            let batch_end = std::cmp::min(batch_start + BATCH_SIZE - 1, target);
-            batch_ranges.push((batch_start, batch_end));
-            batch_start = batch_end + 1;
-        }
+        let batch_ranges = build_batch_ranges(current, target, n);
 
-        // Spawn parallel downloads
         let mut handles = Vec::with_capacity(batch_ranges.len());
         for (i, &(range_start, range_end)) in batch_ranges.iter().enumerate() {
             let mut client = clients[i].clone();
@@ -171,15 +176,13 @@ pub async fn sync(
             }));
         }
 
-        // Await all, collect results
         let mut all_nfs: Vec<(u64, Vec<u8>)> = Vec::new();
         for handle in handles {
             all_nfs.extend(handle.await??);
         }
-        let cycle_end = batch_ranges.last().unwrap().1;
+        let cycle_end = batch_ranges.last().expect("batch_ranges is non-empty").1;
         let cycle_nfs = all_nfs.len() as u64;
 
-        // Append nullifiers then atomically commit the checkpoint
         let offset = file_store::append_nullifiers(dir, &all_nfs)?;
         file_store::save_checkpoint(dir, cycle_end, offset)?;
 
@@ -201,25 +204,20 @@ pub async fn sync(
 
 /// Result of a sync operation.
 pub struct SyncResult {
+    /// Chain tip height as reported by the first lightwalletd server.
     pub chain_tip: u64,
+    /// Number of blocks downloaded in this sync cycle.
     pub blocks_synced: u64,
+    /// Number of Orchard nullifiers appended in this sync cycle.
     pub nullifiers_synced: u64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "nf_sync_test_{}_{}",
-            std::process::id(),
-            name
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        crate::test_helpers::temp_dir("sync", name)
     }
 
     #[test]

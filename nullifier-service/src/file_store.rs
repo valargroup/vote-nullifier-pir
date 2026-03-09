@@ -66,14 +66,17 @@ const NULLIFIER_SIZE: usize = 32;
 const CHECKPOINT_SIZE: usize = 16;
 const INDEX_ENTRY_SIZE: usize = 16; // [u64 LE height][u64 LE offset]
 
+/// Path to the raw nullifier data file within `dir`.
 pub fn nullifiers_path(dir: &Path) -> PathBuf {
     dir.join("nullifiers.bin")
 }
 
+/// Path to the checkpoint file within `dir`.
 pub fn checkpoint_path(dir: &Path) -> PathBuf {
     dir.join("nullifiers.checkpoint")
 }
 
+/// Path to the height-to-offset index file within `dir`.
 pub fn index_path(dir: &Path) -> PathBuf {
     dir.join("nullifiers.index")
 }
@@ -333,14 +336,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "nf_file_store_test_{}_{}",
-            std::process::id(),
-            name
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_helpers::temp_dir("file_store", name)
     }
 
     #[test]

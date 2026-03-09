@@ -163,3 +163,77 @@ impl Tier0Data {
 
 /// Number of siblings extracted from Tier 0 (depths 1-11 = 11 siblings).
 const TIER0_LAYERS_COUNT: usize = TIER0_LAYERS; // 11
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TIER0_LAYERS;
+
+    #[test]
+    fn from_bytes_rejects_wrong_size() {
+        let too_short = vec![0u8; TIER0_BYTES - 1];
+        let err = Tier0Data::from_bytes(too_short)
+            .err()
+            .expect("should reject wrong size");
+        assert!(
+            err.to_string().contains("size mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_bytes_rejects_non_canonical_field_element() {
+        let mut data = vec![0u8; TIER0_BYTES];
+        data[0..32].fill(0xFF);
+        let err = Tier0Data::from_bytes(data)
+            .err()
+            .expect("should reject non-canonical Fp");
+        assert!(
+            err.to_string().contains("invalid field element"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_bytes_accepts_all_zeros() {
+        let data = vec![0u8; TIER0_BYTES];
+        let tier0 = Tier0Data::from_bytes(data).expect("all-zeros is valid");
+        assert_eq!(tier0.root(), Fp::zero());
+        assert_eq!(tier0.num_subtrees(), TIER1_ROWS);
+    }
+
+    #[test]
+    fn node_at_returns_root_at_depth_zero() {
+        let data = vec![0u8; TIER0_BYTES];
+        let tier0 = Tier0Data::from_bytes(data).expect("valid");
+        assert_eq!(tier0.node_at(0, 0), tier0.root());
+    }
+
+    #[test]
+    fn find_subtree_on_all_zeros() {
+        let data = vec![0u8; TIER0_BYTES];
+        let tier0 = Tier0Data::from_bytes(data).expect("valid");
+        // All min_keys are zero, so binary search returns the last subtree
+        // whose min_key <= value.
+        let result = tier0.find_subtree(Fp::from(42u64));
+        assert!(result.is_some());
+        assert!(result.unwrap() < TIER1_ROWS);
+    }
+
+    #[test]
+    fn extract_siblings_returns_correct_count() {
+        let data = vec![0u8; TIER0_BYTES];
+        let tier0 = Tier0Data::from_bytes(data).expect("valid");
+        let siblings = tier0.extract_siblings(0);
+        assert_eq!(siblings.len(), TIER0_LAYERS);
+    }
+
+    #[test]
+    fn subtree_record_round_trip() {
+        let data = vec![0u8; TIER0_BYTES];
+        let tier0 = Tier0Data::from_bytes(data).expect("valid");
+        let (hash, min_key) = tier0.subtree_record(0);
+        assert_eq!(hash, Fp::zero());
+        assert_eq!(min_key, Fp::zero());
+    }
+}

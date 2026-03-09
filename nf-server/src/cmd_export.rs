@@ -1,11 +1,13 @@
+//! `nf-server export` — build PIR tree from nullifier data and write tier files.
+
 use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
 use clap::Args as ClapArgs;
 
+use nullifier_service::config;
 use nullifier_service::file_store;
-use nullifier_service::sync_nullifiers::NU5_ACTIVATION_HEIGHT;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -27,17 +29,7 @@ pub fn run(args: Args) -> Result<()> {
     let t_total = Instant::now();
 
     if let Some(th) = args.target_height {
-        anyhow::ensure!(
-            th >= NU5_ACTIVATION_HEIGHT,
-            "target-height {} is below NU5 activation ({})",
-            th,
-            NU5_ACTIVATION_HEIGHT
-        );
-        anyhow::ensure!(
-            th % 10 == 0,
-            "target-height {} must be a multiple of 10",
-            th
-        );
+        config::validate_export_height(th)?;
     }
 
     let t0 = Instant::now();

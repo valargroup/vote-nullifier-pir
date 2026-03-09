@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
@@ -19,25 +19,20 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 
-use pir_export::PirMetadata;
+const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+const DEFAULT_PORT: u16 = 3001;
+
 use pir_server::{
-    HealthInfo, InflightGuard, OwnedTierState, RootInfo, YpirScenario,
+    HealthInfo, InflightGuard, RootInfo, ServingState,
     TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS, TIER2_ROW_BYTES,
     read_tier_row, write_timing_headers,
 };
 use tracing::{info, warn};
 
-/// Shared application state holding tier data, YPIR servers, and request counters.
+/// Shared application state: loaded tier data plus per-process counters.
 struct AppState {
-    tier0_data: Bytes,
+    serving: ServingState,
     data_dir: PathBuf,
-    tier1: OwnedTierState,
-    tier2: OwnedTierState,
-    tier1_scenario: YpirScenario,
-    tier2_scenario: YpirScenario,
-    tier1_hint: Bytes,
-    tier2_hint: Bytes,
-    metadata: PirMetadata,
     next_req_id: AtomicU64,
     inflight_requests: AtomicUsize,
 }
@@ -51,65 +46,16 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./pir-data"));
     let port: u16 = match std::env::args().nth(2) {
-        Some(s) => s.parse().expect("invalid port number"),
-        None => 3001,
+        Some(s) => s.parse().context("invalid port number")?,
+        None => DEFAULT_PORT,
     };
 
-    let t_total = Instant::now();
-
     info!(dir = ?data_dir, "Loading tier files");
-
-    let tier0_data = Bytes::from(std::fs::read(data_dir.join("tier0.bin"))?);
-    info!(bytes = tier0_data.len(), "Tier 0 loaded");
-
-    let tier1_data = std::fs::read(data_dir.join("tier1.bin"))?;
-    info!(bytes = tier1_data.len(), rows = tier1_data.len() / TIER1_ROW_BYTES, "Tier 1 loaded");
-    anyhow::ensure!(
-        tier1_data.len() == TIER1_ROWS * TIER1_ROW_BYTES,
-        "tier1.bin size mismatch: got {} bytes, expected {}",
-        tier1_data.len(),
-        TIER1_ROWS * TIER1_ROW_BYTES
-    );
-
-    let tier2_data = std::fs::read(data_dir.join("tier2.bin"))?;
-    info!(bytes = tier2_data.len(), rows = tier2_data.len() / TIER2_ROW_BYTES, "Tier 2 loaded");
-    anyhow::ensure!(
-        tier2_data.len() == TIER2_ROWS * TIER2_ROW_BYTES,
-        "tier2.bin size mismatch: got {} bytes, expected {}",
-        tier2_data.len(),
-        TIER2_ROWS * TIER2_ROW_BYTES
-    );
-
-    let metadata: PirMetadata =
-        serde_json::from_str(&std::fs::read_to_string(data_dir.join("pir_root.json"))?)?;
-    info!(num_ranges = metadata.num_ranges, "Metadata loaded");
-
-    info!("Initializing YPIR servers");
-
-    let tier1_scenario = pir_server::tier1_scenario();
-    let mut tier1 = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
-    drop(tier1_data); // free ~48 MB
-    let tier1_hint = Bytes::from(tier1.take_hint_bytes());
-    info!(hint_bytes = tier1_hint.len(), "Tier 1 YPIR ready");
-
-    let tier2_scenario = pir_server::tier2_scenario();
-    let mut tier2 = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
-    drop(tier2_data); // free ~6 GB
-    let tier2_hint = Bytes::from(tier2.take_hint_bytes());
-    info!(hint_bytes = tier2_hint.len(), "Tier 2 YPIR ready");
-
-    info!(elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()), "Server ready");
+    let serving = pir_server::load_serving_state(&data_dir)?;
 
     let state = Arc::new(AppState {
-        tier0_data,
+        serving,
         data_dir: data_dir.clone(),
-        tier1,
-        tier2,
-        tier1_scenario,
-        tier2_scenario,
-        tier1_hint,
-        tier2_hint,
-        metadata,
         next_req_id: AtomicU64::new(0),
         inflight_requests: AtomicUsize::new(0),
     });
@@ -126,7 +72,7 @@ async fn main() -> Result<()> {
         .route("/tier2/row/:idx", get(get_tier2_row))
         .route("/root", get(get_root))
         .route("/health", get(get_health))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB for YPIR queries
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");
@@ -142,95 +88,54 @@ async fn main() -> Result<()> {
 async fn get_tier0(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.tier0_data.clone(),
+        state.serving.tier0_data.clone(),
     )
 }
 
 async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    axum::Json(state.tier1_scenario.clone())
+    axum::Json(state.serving.tier1_scenario.clone())
 }
 
 async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    axum::Json(state.tier2_scenario.clone())
+    axum::Json(state.serving.tier2_scenario.clone())
 }
 
 async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.tier1_hint.clone(),
+        state.serving.tier1_hint.clone(),
     )
 }
 
 async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     (
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.tier2_hint.clone(),
+        state.serving.tier2_hint.clone(),
     )
 }
 
 async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
-    let req_id = state.next_req_id.fetch_add(1, Ordering::Relaxed) + 1;
-    let inflight = state.inflight_requests.fetch_add(1, Ordering::Relaxed) + 1;
-    let _inflight_guard = InflightGuard::new(&state.inflight_requests);
-    let t0 = Instant::now();
-    info!(
-        req_id,
-        tier = "tier1",
-        body_bytes = body.len(),
-        inflight_requests = inflight,
-        "pir_request_started"
-    );
-    match state.tier1.server().answer_query(&body) {
-        Ok(answer) => {
-            let handler_ms = t0.elapsed().as_secs_f64() * 1000.0;
-            let mut response = (
-                StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-                answer.response,
-            )
-                .into_response();
-            write_timing_headers(response.headers_mut(), req_id, answer.timing);
-            info!(
-                req_id,
-                tier = "tier1",
-                status = 200,
-                handler_ms = format!("{handler_ms:.3}"),
-                validate_ms = format!("{:.3}", answer.timing.validate_ms),
-                decode_copy_ms = format!("{:.3}", answer.timing.decode_copy_ms),
-                compute_ms = format!("{:.3}", answer.timing.online_compute_ms),
-                server_total_ms = format!("{:.3}", answer.timing.total_ms),
-                response_bytes = answer.timing.response_bytes,
-                "pir_request_finished"
-            );
-            response
-        }
-        Err(e) => {
-            warn!(
-                req_id,
-                tier = "tier1",
-                status = 400,
-                handler_ms = format!("{:.3}", t0.elapsed().as_secs_f64() * 1000.0),
-                error = %e,
-                "pir_request_failed"
-            );
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
-        }
-    }
+    post_tier_query(&state, "tier1", body)
 }
 
 async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+    post_tier_query(&state, "tier2", body)
+}
+
+fn post_tier_query(state: &AppState, tier: &str, body: Bytes) -> axum::response::Response {
     let req_id = state.next_req_id.fetch_add(1, Ordering::Relaxed) + 1;
     let inflight = state.inflight_requests.fetch_add(1, Ordering::Relaxed) + 1;
     let _inflight_guard = InflightGuard::new(&state.inflight_requests);
     let t0 = Instant::now();
-    info!(
-        req_id,
-        tier = "tier2",
-        body_bytes = body.len(),
-        inflight_requests = inflight,
-        "pir_request_started"
-    );
-    match state.tier2.server().answer_query(&body) {
+    info!(req_id, tier, body_bytes = body.len(), inflight_requests = inflight, "pir_request_started");
+
+    let server = match tier {
+        "tier1" => state.serving.tier1.server(),
+        "tier2" => state.serving.tier2.server(),
+        _ => unreachable!(),
+    };
+
+    match server.answer_query(&body) {
         Ok(answer) => {
             let handler_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let mut response = (
@@ -242,7 +147,7 @@ async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> im
             write_timing_headers(response.headers_mut(), req_id, answer.timing);
             info!(
                 req_id,
-                tier = "tier2",
+                tier,
                 status = 200,
                 handler_ms = format!("{handler_ms:.3}"),
                 validate_ms = format!("{:.3}", answer.timing.validate_ms),
@@ -257,7 +162,7 @@ async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> im
         Err(e) => {
             warn!(
                 req_id,
-                tier = "tier2",
+                tier,
                 status = 400,
                 handler_ms = format!("{:.3}", t0.elapsed().as_secs_f64() * 1000.0),
                 error = %e,
@@ -267,37 +172,34 @@ async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> im
         }
     }
 }
-
 
 async fn get_tier1_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    if idx >= TIER1_ROWS {
-        return (StatusCode::NOT_FOUND, "row index out of range").into_response();
-    }
-    let path = state.data_dir.join("tier1.bin");
-    let offset = (idx * TIER1_ROW_BYTES) as u64;
-    match read_tier_row(&path, offset, TIER1_ROW_BYTES) {
-        Ok(row) => (
-            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            row,
-        )
-            .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")).into_response(),
-    }
+    get_tier_row_inner(&state, idx, "tier1.bin", TIER1_ROWS, TIER1_ROW_BYTES)
 }
 
 async fn get_tier2_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    if idx >= TIER2_ROWS {
+    get_tier_row_inner(&state, idx, "tier2.bin", TIER2_ROWS, TIER2_ROW_BYTES)
+}
+
+fn get_tier_row_inner(
+    state: &AppState,
+    idx: usize,
+    filename: &str,
+    num_rows: usize,
+    row_bytes: usize,
+) -> axum::response::Response {
+    if idx >= num_rows {
         return (StatusCode::NOT_FOUND, "row index out of range").into_response();
     }
-    let path = state.data_dir.join("tier2.bin");
-    let offset = (idx * TIER2_ROW_BYTES) as u64;
-    match read_tier_row(&path, offset, TIER2_ROW_BYTES) {
+    let path = state.data_dir.join(filename);
+    let offset = (idx * row_bytes) as u64;
+    match read_tier_row(&path, offset, row_bytes) {
         Ok(row) => (
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
             row,
@@ -307,14 +209,13 @@ async fn get_tier2_row(
     }
 }
 
-
 async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let info = RootInfo {
-        root29: state.metadata.root29.clone(),
-        root26: state.metadata.root26.clone(),
-        num_ranges: state.metadata.num_ranges,
-        pir_depth: state.metadata.pir_depth,
-        height: state.metadata.height,
+        root29: state.serving.metadata.root29.clone(),
+        root26: state.serving.metadata.root26.clone(),
+        num_ranges: state.serving.metadata.num_ranges,
+        pir_depth: state.serving.metadata.pir_depth,
+        height: state.serving.metadata.height,
     };
     axum::Json(info)
 }
@@ -322,8 +223,8 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let info = HealthInfo {
         status: "ok".to_string(),
-        tier1_rows: state.tier1_scenario.num_items,
-        tier2_rows: state.tier2_scenario.num_items,
+        tier1_rows: state.serving.tier1_scenario.num_items,
+        tier2_rows: state.serving.tier2_scenario.num_items,
         tier1_row_bytes: TIER1_ROW_BYTES,
         tier2_row_bytes: TIER2_ROW_BYTES,
     };
