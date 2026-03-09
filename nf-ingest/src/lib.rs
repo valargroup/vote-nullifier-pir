@@ -1,4 +1,4 @@
-//! Nullifier service library — shared infrastructure for syncing, storing,
+//! nf-ingest — shared infrastructure for syncing, storing,
 //! and loading Zcash Orchard nullifiers.
 //!
 //! This crate is consumed by `nf-server` (ingest/export/serve commands)

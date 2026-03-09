@@ -19,7 +19,7 @@ reqwest            = { version = "0.11", default-features = false, features = ["
 
 # Always needed
 pir-export        = { path = "../pir/export" }
-nullifier-service = { path = "../nullifier-service" }
+nf-ingest = { path = "../nf-ingest" }
 imt-tree          = { path = "../imt-tree" }
 tokio             = { version = "1", features = ["rt-multi-thread", "macros"] }
 clap              = { version = "4", features = ["derive", "env"] }

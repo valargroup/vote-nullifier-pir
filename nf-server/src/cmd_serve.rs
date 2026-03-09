@@ -11,8 +11,8 @@ use axum::Router;
 use clap::Args as ClapArgs;
 use tokio::sync::RwLock;
 
-use nullifier_service::config;
-use nullifier_service::file_store;
+use nf_ingest::config;
+use nf_ingest::file_store;
 
 use crate::serve::handlers;
 use crate::serve::rebuild;

@@ -699,5 +699,5 @@ fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>
 
 fn load_nullifiers(path: &std::path::Path) -> Result<Vec<Fp>> {
     let data = std::fs::read(path)?;
-    nullifier_service::file_store::parse_nullifier_bytes(&data)
+    nf_ingest::file_store::parse_nullifier_bytes(&data)
 }

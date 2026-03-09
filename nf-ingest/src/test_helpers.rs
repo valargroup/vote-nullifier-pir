@@ -1,4 +1,4 @@
-//! Shared test utilities for the nullifier-service crate.
+//! Shared test utilities for the nf-ingest crate.
 
 use std::path::PathBuf;
 

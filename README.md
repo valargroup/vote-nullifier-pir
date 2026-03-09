@@ -14,7 +14,7 @@ graph TD
     end
 
     subgraph core [Core Libraries]
-        service[service<br/>nullifier-service]
+        service[service<br/>nf-ingest]
         pirExport[pir/export]
         pirServer[pir/server]
         pirClient[pir/client]
@@ -53,7 +53,7 @@ graph TD
 | **pir-export** | `pir/export/` | Builds the depth-26 PIR tree and exports it as three binary tier files (tier0, tier1, tier2) consumed by the server and client. |
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides both async (`PirClient`) and blocking (`PirClientBlocking`) APIs. |
-| **nullifier-service** | `nullifier-service/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
+| **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
 | **nf-server** | `nf-server/` | Unified CLI binary with `ingest`, `export`, and `serve` subcommands. The `serve` subcommand starts the PIR HTTP server (feature-gated). |
 | **pir-test** | `pir/test/` | End-to-end test harness with `small`, `local`, `server`, `compare`, and `bench` modes. |
 
@@ -85,7 +85,7 @@ make export-nf      # Build PIR tree and export tier files
 make serve          # Start PIR HTTP server on port 3000
 
 # Run tests
-make test           # Unit tests for imt-tree and service
+make test           # Unit tests for imt-tree and nf-ingest
 cargo test -p pir-export  # PIR export round-trip tests
 ```
 

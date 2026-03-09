@@ -12,7 +12,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use nullifier_service::file_store;
+use nf_ingest::file_store;
 
 /// CLI arguments for the export command.
 #[derive(Parser)]

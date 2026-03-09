@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  DEPLOY_PATH: /opt/nullifier-ingest
+  DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
   build:
@@ -90,8 +90,8 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            sudo chmod +x /opt/nullifier-ingest/nf-server
-            sudo cp /opt/nullifier-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            sudo chmod +x /opt/nf-ingest/nf-server
+            sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
             sudo systemctl restart nullifier-query-server

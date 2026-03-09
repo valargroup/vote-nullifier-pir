@@ -8,7 +8,7 @@ members = [
     "pir/server",
     "pir/test",
     "pir/types",
-    "nullifier-service",
+    "nf-ingest",
 ]
 
 [profile.release]
