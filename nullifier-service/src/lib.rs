@@ -18,3 +18,6 @@ pub mod config;
 pub mod download;
 pub mod file_store;
 pub mod sync_nullifiers;
+
+#[cfg(test)]
+pub(crate) mod test_helpers;

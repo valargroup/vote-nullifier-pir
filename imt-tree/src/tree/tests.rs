@@ -1,19 +1,7 @@
 use super::*;
+use crate::test_helpers::{fp, four_nullifiers};
 use ff::Field;
 use halo2_gadgets::poseidon::primitives::{self as poseidon, ConstantLength, P128Pow5T3};
-
-/// Helper: make an Fp from a u64.
-fn fp(v: u64) -> Fp {
-    Fp::from(v)
-}
-
-// 4 nullifiers: 10, 20, 30, 40
-// Expected 5 gap ranges (low, width):
-//   [0, 9]    [11, 8]    [21, 8]    [31, 8]    [41, MAX-41]
-
-fn four_nullifiers() -> Vec<Fp> {
-    vec![fp(10), fp(20), fp(30), fp(40)]
-}
 
 #[test]
 fn test_build_ranges_from_4_nullifiers() {

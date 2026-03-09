@@ -57,15 +57,8 @@ impl ImtProofData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::{fp, four_nullifiers};
     use crate::tree::{NullifierTree, TREE_DEPTH};
-
-    fn fp(v: u64) -> Fp {
-        Fp::from(v)
-    }
-
-    fn four_nullifiers() -> Vec<Fp> {
-        vec![fp(10), fp(20), fp(30), fp(40)]
-    }
 
     #[test]
     fn test_proof_verify_rejects_wrong_value() {

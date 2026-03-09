@@ -209,17 +209,9 @@ pub struct SyncResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "nf_sync_test_{}_{}",
-            std::process::id(),
-            name
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        crate::test_helpers::temp_dir("sync", name)
     }
 
     #[test]

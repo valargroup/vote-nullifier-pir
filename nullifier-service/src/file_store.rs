@@ -333,14 +333,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "nf_file_store_test_{}_{}",
-            std::process::id(),
-            name
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_helpers::temp_dir("file_store", name)
     }
 
     #[test]
