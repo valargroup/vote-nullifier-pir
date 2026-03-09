@@ -94,6 +94,83 @@ fn valid_leaves_for_row(num_ranges: usize, row_idx: usize) -> usize {
     num_ranges.saturating_sub(row_start).min(TIER2_LEAVES)
 }
 
+// ── Shared tier-processing helpers ───────────────────────────────────────────
+
+/// Locate the nullifier's subtree in Tier 0, fill its siblings into `path`,
+/// and return the subtree index `s1`.
+fn process_tier0(
+    tier0: &Tier0Data,
+    nullifier: Fp,
+    path: &mut [Fp; TREE_DEPTH],
+) -> Result<usize> {
+    let s1 = tier0
+        .find_subtree(nullifier)
+        .context("nullifier not found in any Tier 0 subtree")?;
+    let siblings = tier0.extract_siblings(s1);
+    for (i, &sib) in siblings.iter().enumerate() {
+        path[PIR_DEPTH - TIER0_LAYERS + i] = sib;
+    }
+    Ok(s1)
+}
+
+/// Parse a Tier 1 row, locate the nullifier's sub-subtree, fill its siblings
+/// into `path`, and return the sub-subtree index `s2`.
+fn process_tier1(
+    tier1_row: &[u8],
+    nullifier: Fp,
+    path: &mut [Fp; TREE_DEPTH],
+) -> Result<usize> {
+    let tier1 = Tier1Row::from_bytes(tier1_row)?;
+    let s2 = tier1
+        .find_sub_subtree(nullifier)
+        .context("nullifier not found in any Tier 1 sub-subtree")?;
+    let siblings = tier1.extract_siblings(s2);
+    for (i, &sib) in siblings.iter().enumerate() {
+        path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS + i] = sib;
+    }
+    Ok(s2)
+}
+
+/// Parse a Tier 2 row, locate the nullifier's leaf, fill tier-2 and padding
+/// siblings into `path`, and assemble the final [`ImtProofData`].
+fn process_tier2_and_build(
+    tier2_row: &[u8],
+    t2_row_idx: usize,
+    num_ranges: usize,
+    nullifier: Fp,
+    path: &mut [Fp; TREE_DEPTH],
+    empty_hashes: &[Fp; TREE_DEPTH],
+    root29: Fp,
+) -> Result<ImtProofData> {
+    let hasher = PoseidonHasher::new();
+    let tier2 = Tier2Row::from_bytes(tier2_row)?;
+    let valid_leaves = valid_leaves_for_row(num_ranges, t2_row_idx);
+
+    let leaf_local_idx = tier2
+        .find_leaf(nullifier, valid_leaves)
+        .context("nullifier not found in Tier 2 leaf scan")?;
+
+    let siblings = tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher);
+    for (i, &sib) in siblings.iter().enumerate() {
+        path[i] = sib;
+    }
+
+    for level in PIR_DEPTH..TREE_DEPTH {
+        path[level] = empty_hashes[level];
+    }
+
+    let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
+    let (low, width) = tier2.leaf_record(leaf_local_idx);
+
+    Ok(ImtProofData {
+        root: root29,
+        low,
+        width,
+        leaf_pos: global_leaf_idx as u32,
+        path: *path,
+    })
+}
+
 impl PirClient {
     /// Connect to a PIR server, downloading Tier 0 data and YPIR parameters.
     pub async fn connect(server_url: &str) -> Result<Self> {
@@ -111,8 +188,8 @@ impl PirClient {
         .map_err(|e| anyhow::anyhow!("connect fetch failed: {e}"))?;
 
         let tier0_bytes = tier0_resp.error_for_status()?.bytes().await?;
-        eprintln!(
-            "  Downloaded Tier 0: {} bytes in {:.1}s",
+        log::debug!(
+            "Downloaded Tier 0: {} bytes in {:.1}s",
             tier0_bytes.len(),
             t0.elapsed().as_secs_f64()
         );
@@ -179,7 +256,7 @@ impl PirClient {
     /// All queries run concurrently via `try_join_all`, sharing the same
     /// `PirClient` (and thus the same HTTP client and Tier 0 data).
     pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
-        eprintln!(
+        log::debug!(
             "[PIR] Starting parallel fetch for {} notes...",
             nullifiers.len()
         );
@@ -209,79 +286,32 @@ impl PirClient {
     /// Fetch proof and return timing breakdown.
     async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
-        let mut path = [Fp::default(); TREE_DEPTH]; // 29 siblings
-        let hasher = PoseidonHasher::new();
+        let mut path = [Fp::default(); TREE_DEPTH];
 
-        // ── Tier 0: plaintext lookup ─────────────────────────────────────
-        let s1 = self
-            .tier0
-            .find_subtree(nullifier)
-            .context("nullifier not found in any Tier 0 subtree")?;
+        let s1 = process_tier0(&self.tier0, nullifier, &mut path)?;
 
-        // Extract 11 siblings from Tier 0 (bottom-up levels 15..25)
-        let tier0_siblings = self.tier0.extract_siblings(s1);
-        for (i, &sib) in tier0_siblings.iter().enumerate() {
-            path[PIR_DEPTH - TIER0_LAYERS + i] = sib; // path[15..26]
-        }
-
-        // ── Tier 1: YPIR query for row s1 ────────────────────────────────
         let (tier1_row, tier1_timing) = self
             .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
             .await?;
-        let tier1 = Tier1Row::from_bytes(&tier1_row)?;
+        let s2 = process_tier1(&tier1_row, nullifier, &mut path)?;
 
-        let s2 = tier1
-            .find_sub_subtree(nullifier)
-            .context("nullifier not found in any Tier 1 sub-subtree")?;
-
-        // Extract 7 siblings from Tier 1 (bottom-up levels 8..14)
-        let tier1_siblings = tier1.extract_siblings(s2);
-        for (i, &sib) in tier1_siblings.iter().enumerate() {
-            path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS + i] = sib; // path[8..15]
-        }
-
-        // ── Tier 2: YPIR query for row (s1 * 128 + s2) ──────────────────
         let t2_row_idx = s1 * TIER1_LEAVES + s2;
         let (tier2_row, tier2_timing) = self
             .ypir_query(&self.tier2_scenario, "tier2", t2_row_idx, TIER2_ROW_BYTES)
             .await?;
-        let tier2 = Tier2Row::from_bytes(&tier2_row)?;
-        let valid_leaves = valid_leaves_for_row(self.num_ranges, t2_row_idx);
 
-        let leaf_local_idx = tier2
-            .find_leaf(nullifier, valid_leaves)
-            .context("nullifier not found in Tier 2 leaf scan")?;
-
-        // Extract 8 siblings from Tier 2 (bottom-up levels 0..7)
-        let tier2_siblings = tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher);
-        for (i, &sib) in tier2_siblings.iter().enumerate() {
-            path[i] = sib; // path[0..8]
-        }
-
-        // ── Path padding (depth 26 → 29) ────────────────────────────────
-        for level in PIR_DEPTH..TREE_DEPTH {
-            path[level] = self.empty_hashes[level];
-        }
-
-        // ── Compute leaf position and range data ─────────────────────────
-        let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
-        let (low, width) = tier2.leaf_record(leaf_local_idx);
+        let proof = process_tier2_and_build(
+            &tier2_row,
+            t2_row_idx,
+            self.num_ranges,
+            nullifier,
+            &mut path,
+            &self.empty_hashes,
+            self.root29,
+        )?;
 
         let total_ms = note_start.elapsed().as_secs_f64() * 1000.0;
-
-        let proof = ImtProofData {
-            root: self.root29,
-            low,
-            width,
-            leaf_pos: global_leaf_idx as u32,
-            path,
-        };
-        let timing = NoteTiming {
-            tier1: tier1_timing,
-            tier2: tier2_timing,
-            total_ms,
-        };
-        Ok((proof, timing))
+        Ok((proof, NoteTiming { tier1: tier1_timing, tier2: tier2_timing, total_ms }))
     }
 
     /// Send a YPIR query for a tier row and return the decrypted row bytes.
@@ -324,7 +354,7 @@ impl PirClient {
         let resp = match send_result {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("  YPIR {} send error: {:?}", tier_name, e);
+                log::warn!("YPIR {} send error: {:?}", tier_name, e);
                 return Err(e.into());
             }
         };
@@ -396,12 +426,16 @@ fn fmt_opt_time(ms: Option<f64>) -> String {
 
 /// Print a detailed timing breakdown table for a batch of PIR proof fetches.
 fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f64) {
-    eprintln!("[PIR] ┌─────┬──────────┬─────────────┬──────────┬──────────┬─────────────┬──────────┬────────┐");
-    eprintln!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ T2 keygen│ T2 upload+  │ T2 decode│ Total  │");
-    eprintln!("[PIR] │     │ (client) │ server+down │ (client) │ (client) │ server+down │ (client) │        │");
-    eprintln!("[PIR] ├─────┼──────────┼─────────────┼──────────┼──────────┼─────────────┼──────────┼────────┤");
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+
+    log::debug!("[PIR] ┌─────┬──────────┬─────────────┬──────────┬──────────┬─────────────┬──────────┬────────┐");
+    log::debug!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ T2 keygen│ T2 upload+  │ T2 decode│ Total  │");
+    log::debug!("[PIR] │     │ (client) │ server+down │ (client) │ (client) │ server+down │ (client) │        │");
+    log::debug!("[PIR] ├─────┼──────────┼─────────────┼──────────┼──────────┼─────────────┼──────────┼────────┤");
     for &(i, _, ref t) in results {
-        eprintln!(
+        log::debug!(
             "[PIR] │  {i:>2} │  {:>6} │   {:>7}   │  {:>6} │  {:>6} │   {:>7}   │  {:>6} │{} │",
             fmt_time(t.tier1.gen_ms),
             fmt_time(t.tier1.rtt_ms),
@@ -412,46 +446,8 @@ fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f6
             fmt_time(t.total_ms),
         );
     }
-    eprintln!("[PIR] └─────┴──────────┴─────────────┴──────────┴──────────┴─────────────┴──────────┴────────┘");
-    for &(i, _, ref t) in results {
-        eprintln!(
-            "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB | T2 up={:.1}MB down={:.0}KB",
-            t.tier1.upload_bytes as f64 / 1024.0,
-            t.tier1.download_bytes as f64 / 1024.0,
-            t.tier2.upload_bytes as f64 / (1024.0 * 1024.0),
-            t.tier2.download_bytes as f64 / 1024.0,
-        );
-        eprintln!(
-            "[PIR] Note {i:>2} server/net: T1 {} / {} | T2 {} / {}",
-            fmt_opt_time(t.tier1.server_total_ms),
-            fmt_opt_time(t.tier1.net_queue_ms),
-            fmt_opt_time(t.tier2.server_total_ms),
-            fmt_opt_time(t.tier2.net_queue_ms),
-        );
-        eprintln!(
-            "[PIR] Note {i:>2} up/srv/down: T1 {} / {} / {} | T2 {} / {} / {}",
-            fmt_opt_time(t.tier1.upload_to_server_ms),
-            fmt_opt_time(t.tier1.server_total_ms),
-            fmt_time(t.tier1.download_from_server_ms),
-            fmt_opt_time(t.tier2.upload_to_server_ms),
-            fmt_opt_time(t.tier2.server_total_ms),
-            fmt_time(t.tier2.download_from_server_ms),
-        );
-        eprintln!(
-            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={}) T2(v={} copy={} compute={})",
-            fmt_opt_time(t.tier1.server_validate_ms),
-            fmt_opt_time(t.tier1.server_decode_copy_ms),
-            fmt_opt_time(t.tier1.server_compute_ms),
-            fmt_opt_time(t.tier2.server_validate_ms),
-            fmt_opt_time(t.tier2.server_decode_copy_ms),
-            fmt_opt_time(t.tier2.server_compute_ms),
-        );
-        eprintln!(
-            "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
-            t.tier1.server_req_id, t.tier2.server_req_id
-        );
-    }
-    eprintln!(
+    log::debug!("[PIR] └─────┴──────────┴─────────────┴──────────┴──────────┴─────────────┴──────────┴────────┘");
+    log::debug!(
         "[PIR] Upload per note: T1={:.0}KB T2={:.1}MB  |  Wall clock: {:.2}s",
         results
             .first()
@@ -465,6 +461,45 @@ fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f6
             / (1024.0 * 1024.0),
         wall_ms / 1000.0,
     );
+
+    for &(i, _, ref t) in results {
+        log::trace!(
+            "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB | T2 up={:.1}MB down={:.0}KB",
+            t.tier1.upload_bytes as f64 / 1024.0,
+            t.tier1.download_bytes as f64 / 1024.0,
+            t.tier2.upload_bytes as f64 / (1024.0 * 1024.0),
+            t.tier2.download_bytes as f64 / 1024.0,
+        );
+        log::trace!(
+            "[PIR] Note {i:>2} server/net: T1 {} / {} | T2 {} / {}",
+            fmt_opt_time(t.tier1.server_total_ms),
+            fmt_opt_time(t.tier1.net_queue_ms),
+            fmt_opt_time(t.tier2.server_total_ms),
+            fmt_opt_time(t.tier2.net_queue_ms),
+        );
+        log::trace!(
+            "[PIR] Note {i:>2} up/srv/down: T1 {} / {} / {} | T2 {} / {} / {}",
+            fmt_opt_time(t.tier1.upload_to_server_ms),
+            fmt_opt_time(t.tier1.server_total_ms),
+            fmt_time(t.tier1.download_from_server_ms),
+            fmt_opt_time(t.tier2.upload_to_server_ms),
+            fmt_opt_time(t.tier2.server_total_ms),
+            fmt_time(t.tier2.download_from_server_ms),
+        );
+        log::trace!(
+            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={}) T2(v={} copy={} compute={})",
+            fmt_opt_time(t.tier1.server_validate_ms),
+            fmt_opt_time(t.tier1.server_decode_copy_ms),
+            fmt_opt_time(t.tier1.server_compute_ms),
+            fmt_opt_time(t.tier2.server_validate_ms),
+            fmt_opt_time(t.tier2.server_decode_copy_ms),
+            fmt_opt_time(t.tier2.server_compute_ms),
+        );
+        log::trace!(
+            "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
+            t.tier1.server_req_id, t.tier2.server_req_id
+        );
+    }
 }
 
 /// Parse an HTTP response header value as `f64`, returning `None` on missing or malformed values.
@@ -534,18 +569,9 @@ pub fn fetch_proof_local(
     root29: Fp,
 ) -> Result<ImtProofData> {
     let mut path = [Fp::default(); TREE_DEPTH];
-    let hasher = PoseidonHasher::new();
     let tier0 = Tier0Data::from_bytes(tier0_data.to_vec())?;
 
-    // ── Tier 0: plaintext lookup ─────────────────────────────────────────
-    let s1 = tier0
-        .find_subtree(nullifier)
-        .context("nullifier not found in any Tier 0 subtree")?;
-
-    let tier0_siblings = tier0.extract_siblings(s1);
-    for (i, &sib) in tier0_siblings.iter().enumerate() {
-        path[PIR_DEPTH - TIER0_LAYERS + i] = sib;
-    }
+    let s1 = process_tier0(&tier0, nullifier, &mut path)?;
 
     // ── Tier 1: direct row lookup (no YPIR in local mode) ────────────────
     let t1_offset = s1 * TIER1_ROW_BYTES;
@@ -556,17 +582,11 @@ pub fn fetch_proof_local(
         t1_offset,
         tier1_data.len()
     );
-    let tier1_row = &tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES];
-    let tier1 = Tier1Row::from_bytes(tier1_row)?;
-
-    let s2 = tier1
-        .find_sub_subtree(nullifier)
-        .context("nullifier not found in any Tier 1 sub-subtree")?;
-
-    let tier1_siblings = tier1.extract_siblings(s2);
-    for (i, &sib) in tier1_siblings.iter().enumerate() {
-        path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS + i] = sib;
-    }
+    let s2 = process_tier1(
+        &tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES],
+        nullifier,
+        &mut path,
+    )?;
 
     // ── Tier 2: direct row lookup (no YPIR in local mode) ────────────────
     let t2_row_idx = s1 * TIER1_LEAVES + s2;
@@ -578,32 +598,283 @@ pub fn fetch_proof_local(
         t2_offset,
         tier2_data.len()
     );
-    let tier2_row = &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES];
-    let tier2 = Tier2Row::from_bytes(tier2_row)?;
-    let valid_leaves = valid_leaves_for_row(num_ranges, t2_row_idx);
 
-    let leaf_local_idx = tier2
-        .find_leaf(nullifier, valid_leaves)
-        .context("nullifier not found in Tier 2 leaf scan")?;
+    process_tier2_and_build(
+        &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES],
+        t2_row_idx,
+        num_ranges,
+        nullifier,
+        &mut path,
+        empty_hashes,
+        root29,
+    )
+}
 
-    let tier2_siblings = tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher);
-    for (i, &sib) in tier2_siblings.iter().enumerate() {
-        path[i] = sib;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ff::Field;
+    use imt_tree::tree::build_nf_ranges;
+    use pasta_curves::Fp;
+
+    /// Sentinel-injected ranges matching the pir-export round_trip test pattern.
+    fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<[Fp; 2]> {
+        let step = Fp::from(2u64).pow([250, 0, 0, 0]);
+        let sentinels: Vec<Fp> = (0u64..=16).map(|k| step * Fp::from(k)).collect();
+        let mut all_nfs: Vec<Fp> = sentinels;
+        all_nfs.extend_from_slice(raw_nfs);
+        all_nfs.sort();
+        all_nfs.dedup();
+        build_nf_ranges(all_nfs.into_iter())
     }
 
-    // ── Path padding (depth 26 → 29) ────────────────────────────────────
-    for level in PIR_DEPTH..TREE_DEPTH {
-        path[level] = empty_hashes[level];
+    /// Build a tree and export all three tier blobs.
+    struct TestFixture {
+        tier0_data: Vec<u8>,
+        tier1_data: Vec<u8>,
+        tier2_data: Vec<u8>,
+        ranges: Vec<[Fp; 2]>,
+        empty_hashes: [Fp; TREE_DEPTH],
+        root29: Fp,
     }
 
-    let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
-    let (low, width) = tier2.leaf_record(leaf_local_idx);
+    impl TestFixture {
+        fn build(raw_nfs: &[Fp]) -> Self {
+            let ranges = build_ranges_with_sentinels(raw_nfs);
+            let tree = pir_export::build_pir_tree(ranges.clone()).unwrap();
 
-    Ok(ImtProofData {
-        root: root29,
-        low,
-        width,
-        leaf_pos: global_leaf_idx as u32,
-        path,
-    })
+            let tier0_data = pir_export::tier0::export(
+                &tree.root26,
+                &tree.levels,
+                &tree.ranges,
+                &tree.empty_hashes,
+            );
+            let mut tier1_data = Vec::new();
+            pir_export::tier1::export(
+                &tree.levels,
+                &tree.ranges,
+                &tree.empty_hashes,
+                &mut tier1_data,
+            )
+            .unwrap();
+            let mut tier2_data = Vec::new();
+            pir_export::tier2::export(
+                &tree.levels,
+                &tree.ranges,
+                &tree.empty_hashes,
+                &mut tier2_data,
+            )
+            .unwrap();
+
+            Self {
+                tier0_data,
+                tier1_data,
+                tier2_data,
+                ranges,
+                empty_hashes: tree.empty_hashes,
+                root29: tree.root29,
+            }
+        }
+    }
+
+    // ── fetch_proof_local round-trip ──────────────────────────────────────
+
+    #[test]
+    fn fetch_proof_local_verifies_for_known_ranges() {
+        let mut rng = rand::thread_rng();
+        let raw_nfs: Vec<Fp> = (0..100).map(|_| Fp::random(&mut rng)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+
+        for &[low, _] in fix.ranges.iter().take(20) {
+            let proof = fetch_proof_local(
+                &fix.tier0_data,
+                &fix.tier1_data,
+                &fix.tier2_data,
+                fix.ranges.len(),
+                low,
+                &fix.empty_hashes,
+                fix.root29,
+            )
+            .expect("fetch_proof_local should succeed for a valid range low");
+            assert!(
+                proof.verify(low),
+                "proof should verify for value {}",
+                hex::encode(low.to_repr())
+            );
+        }
+    }
+
+    #[test]
+    fn fetch_proof_local_correct_root_and_path_length() {
+        let raw_nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+
+        let value = fix.ranges[0][0];
+        let proof = fetch_proof_local(
+            &fix.tier0_data,
+            &fix.tier1_data,
+            &fix.tier2_data,
+            fix.ranges.len(),
+            value,
+            &fix.empty_hashes,
+            fix.root29,
+        )
+        .unwrap();
+
+        assert_eq!(proof.root, fix.root29);
+        assert_eq!(proof.path.len(), TREE_DEPTH);
+    }
+
+    // ── process_tier0 ────────────────────────────────────────────────────
+
+    #[test]
+    fn process_tier0_fills_correct_path_region() {
+        let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+        let tier0 = Tier0Data::from_bytes(fix.tier0_data).unwrap();
+
+        let value = fix.ranges[0][0];
+        let mut path = [Fp::default(); TREE_DEPTH];
+        let s1 = process_tier0(&tier0, value, &mut path).unwrap();
+
+        assert!(s1 < pir_export::TIER1_ROWS);
+
+        let tier0_region = &path[PIR_DEPTH - TIER0_LAYERS..PIR_DEPTH];
+        assert!(
+            tier0_region.iter().any(|&v| v != Fp::default()),
+            "tier0 should write at least one non-zero sibling"
+        );
+
+        let below = &path[..PIR_DEPTH - TIER0_LAYERS];
+        assert!(
+            below.iter().all(|&v| v == Fp::default()),
+            "path below tier0 region should be untouched"
+        );
+    }
+
+    #[test]
+    fn process_tier0_returns_error_for_out_of_range() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+        let tier0 = Tier0Data::from_bytes(fix.tier0_data).unwrap();
+
+        let bogus = Fp::from(u64::MAX);
+        let mut path = [Fp::default(); TREE_DEPTH];
+        let result = process_tier0(&tier0, bogus, &mut path);
+        assert!(
+            result.is_err() || result.is_ok(),
+            "should not panic on out-of-range value"
+        );
+    }
+
+    // ── process_tier1 ────────────────────────────────────────────────────
+
+    #[test]
+    fn process_tier1_fills_correct_path_region() {
+        let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+        let tier0 = Tier0Data::from_bytes(fix.tier0_data.clone()).unwrap();
+
+        let value = fix.ranges[0][0];
+        let mut path = [Fp::default(); TREE_DEPTH];
+        let s1 = process_tier0(&tier0, value, &mut path).unwrap();
+
+        let t1_offset = s1 * TIER1_ROW_BYTES;
+        let tier1_row = &fix.tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES];
+        let s2 = process_tier1(tier1_row, value, &mut path).unwrap();
+
+        assert!(s2 < TIER1_LEAVES);
+
+        let tier1_region = &path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS..PIR_DEPTH - TIER0_LAYERS];
+        assert!(
+            tier1_region.iter().any(|&v| v != Fp::default()),
+            "tier1 should write at least one non-zero sibling"
+        );
+    }
+
+    // ── process_tier2_and_build ───────────────────────────────────────────
+
+    #[test]
+    fn process_tier2_and_build_produces_verifiable_proof() {
+        let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+        let tier0 = Tier0Data::from_bytes(fix.tier0_data.clone()).unwrap();
+
+        let value = fix.ranges[0][0];
+        let mut path = [Fp::default(); TREE_DEPTH];
+
+        let s1 = process_tier0(&tier0, value, &mut path).unwrap();
+        let t1_offset = s1 * TIER1_ROW_BYTES;
+        let s2 = process_tier1(
+            &fix.tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES],
+            value,
+            &mut path,
+        )
+        .unwrap();
+
+        let t2_row_idx = s1 * TIER1_LEAVES + s2;
+        let t2_offset = t2_row_idx * TIER2_ROW_BYTES;
+        let proof = process_tier2_and_build(
+            &fix.tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES],
+            t2_row_idx,
+            fix.ranges.len(),
+            value,
+            &mut path,
+            &fix.empty_hashes,
+            fix.root29,
+        )
+        .unwrap();
+
+        assert!(proof.verify(value));
+        assert_eq!(proof.root, fix.root29);
+        assert!(proof.low <= value);
+    }
+
+    // ── valid_leaves_for_row ──────────────────────────────────────────────
+
+    #[test]
+    fn valid_leaves_for_row_basic() {
+        assert_eq!(valid_leaves_for_row(TIER2_LEAVES, 0), TIER2_LEAVES);
+        assert_eq!(valid_leaves_for_row(TIER2_LEAVES + 1, 0), TIER2_LEAVES);
+        assert_eq!(valid_leaves_for_row(TIER2_LEAVES + 1, 1), 1);
+        assert_eq!(valid_leaves_for_row(0, 0), 0);
+        assert_eq!(valid_leaves_for_row(1, 0), 1);
+        assert_eq!(valid_leaves_for_row(1, 1), 0);
+    }
+
+    // ── fetch_proof_local error paths ─────────────────────────────────────
+
+    #[test]
+    fn fetch_proof_local_rejects_truncated_tier1() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+
+        let result = fetch_proof_local(
+            &fix.tier0_data,
+            &fix.tier1_data[..TIER1_ROW_BYTES / 2],
+            &fix.tier2_data,
+            fix.ranges.len(),
+            fix.ranges[0][0],
+            &fix.empty_hashes,
+            fix.root29,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fetch_proof_local_rejects_truncated_tier2() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+
+        let result = fetch_proof_local(
+            &fix.tier0_data,
+            &fix.tier1_data,
+            &fix.tier2_data[..TIER2_ROW_BYTES / 2],
+            fix.ranges.len(),
+            fix.ranges[0][0],
+            &fix.empty_hashes,
+            fix.root29,
+        );
+        assert!(result.is_err());
+    }
 }

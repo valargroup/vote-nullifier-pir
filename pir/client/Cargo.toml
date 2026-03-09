@@ -3,6 +3,9 @@ name = "pir-client"
 version = "0.1.0"
 edition = "2021"
 
+[dev-dependencies]
+rand = "0.8"
+
 [dependencies]
 pir-types  = { path = "../types" }
 pir-export = { path = "../export" }
@@ -16,3 +19,4 @@ reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 futures = "0.3"
+log = "0.4"
