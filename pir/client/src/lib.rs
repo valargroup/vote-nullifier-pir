@@ -170,12 +170,44 @@ impl PirClient {
     /// Returns circuit-ready `ImtProofData` with a 29-element path
     /// (26 PIR siblings + 3 empty-hash padding).
     pub async fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
-        let (proof, _timing) = self.fetch_proof_timed(nullifier).await?;
+        let (proof, _timing) = self.fetch_proof_inner(nullifier).await?;
         Ok(proof)
     }
 
-    /// Internal: fetch proof and return timing breakdown.
-    async fn fetch_proof_timed(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
+    /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
+    ///
+    /// All queries run concurrently via `try_join_all`, sharing the same
+    /// `PirClient` (and thus the same HTTP client and Tier 0 data).
+    pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
+        eprintln!(
+            "[PIR] Starting parallel fetch for {} notes...",
+            nullifiers.len()
+        );
+        let wall_start = Instant::now();
+
+        let futures: Vec<_> = nullifiers
+            .iter()
+            .enumerate()
+            .map(|(i, &nf)| async move {
+                let (proof, timing) = self.fetch_proof_inner(nf).await?;
+                Ok::<_, anyhow::Error>((i, proof, timing))
+            })
+            .collect();
+
+        let results_with_timing = futures::future::try_join_all(futures).await?;
+        let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+
+        print_timing_table(&results_with_timing, wall_ms);
+
+        let proofs = results_with_timing
+            .into_iter()
+            .map(|(_, proof, _)| proof)
+            .collect();
+        Ok(proofs)
+    }
+
+    /// Fetch proof and return timing breakdown.
+    async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH]; // 29 siblings
         let hasher = PoseidonHasher::new();
@@ -250,38 +282,6 @@ impl PirClient {
             total_ms,
         };
         Ok((proof, timing))
-    }
-
-    /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
-    ///
-    /// All queries run concurrently via `try_join_all`, sharing the same
-    /// `PirClient` (and thus the same HTTP client and Tier 0 data).
-    pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
-        eprintln!(
-            "[PIR] Starting parallel fetch for {} notes...",
-            nullifiers.len()
-        );
-        let wall_start = Instant::now();
-
-        let futures: Vec<_> = nullifiers
-            .iter()
-            .enumerate()
-            .map(|(i, &nf)| async move {
-                let (proof, timing) = self.fetch_proof_timed(nf).await?;
-                Ok::<_, anyhow::Error>((i, proof, timing))
-            })
-            .collect();
-
-        let results_with_timing = futures::future::try_join_all(futures).await?;
-        let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
-
-        print_timing_table(&results_with_timing, wall_ms);
-
-        let proofs = results_with_timing
-            .into_iter()
-            .map(|(_, proof, _)| proof)
-            .collect();
-        Ok(proofs)
     }
 
     /// Send a YPIR query for a tier row and return the decrypted row bytes.
