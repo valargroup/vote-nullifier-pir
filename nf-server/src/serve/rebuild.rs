@@ -49,25 +49,10 @@ pub(crate) async fn post_snapshot_prepare(
 ) -> impl IntoResponse {
     let height = req.height;
 
-    if height < sync_nullifiers::NU5_ACTIVATION_HEIGHT {
+    if let Err(e) = nullifier_service::config::validate_export_height(height) {
         return (
             StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": format!(
-                    "height {} is below NU5 activation ({})",
-                    height,
-                    sync_nullifiers::NU5_ACTIVATION_HEIGHT
-                )
-            })),
-        )
-            .into_response();
-    }
-    if height % 10 != 0 {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "error": format!("height {} must be a multiple of 10", height)
-            })),
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response();
     }

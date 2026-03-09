@@ -22,6 +22,24 @@ pub const STALE_FILES: &[&str] = &[
     "pir-data/pir_root.json",
 ];
 
+/// Validate that `height` is a legal export target: at or above NU5 activation
+/// and a multiple of 10 (the ingestion block-alignment granularity).
+pub fn validate_export_height(height: u64) -> anyhow::Result<()> {
+    use crate::sync_nullifiers::NU5_ACTIVATION_HEIGHT;
+    anyhow::ensure!(
+        height >= NU5_ACTIVATION_HEIGHT,
+        "height {} is below NU5 activation ({})",
+        height,
+        NU5_ACTIVATION_HEIGHT
+    );
+    anyhow::ensure!(
+        height % 10 == 0,
+        "height {} must be a multiple of 10",
+        height
+    );
+    Ok(())
+}
+
 /// Resolve lightwalletd URLs from the `LWD_URLS` env var, a CLI-provided URL,
 /// or the hardcoded defaults.
 ///
