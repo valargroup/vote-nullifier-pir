@@ -19,11 +19,10 @@ pub use imt_tree::ImtProofData;
 use pir_export::tier0::Tier0Data;
 use pir_export::tier1::Tier1Row;
 use pir_export::tier2::Tier2Row;
-use pir_export::{
-    PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES,
-    TIER2_ROW_BYTES,
+use pir_types::{
+    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
+    TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES,
 };
-use pir_types::{serialize_ypir_query, RootInfo, YpirScenario};
 
 use ypir::client::YPIRClient;
 
@@ -150,7 +149,14 @@ fn process_tier2_and_build(
         .find_leaf(nullifier, valid_leaves)
         .context("nullifier not found in Tier 2 leaf scan")?;
 
+    // Fill the bottom 8 levels of the Merkle path with the tier-2 siblings
     fill_path(path, 0, &tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher));
+    // Fill the last 3 levels with empty hashes.
+    // At the current nullifier numbers, ~51, within 2^26 -> height 26 is sufficient.
+    // Changing height would require regenerating . To bullet-proof the system, we create
+    // circuits that assume height of 29 which fits 536M.
+    // To bridge the gap between what we have today in PIR and the circuit's assumptions,
+    // we add empty hash pads.
     fill_path(path, PIR_DEPTH, &empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
     let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
@@ -282,13 +288,16 @@ impl PirClient {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
 
+        // Process tier 0 (plaintext)
         let s1 = process_tier0(&self.tier0, nullifier, &mut path)?;
 
+        // Process tier 1 (PIR)
         let (tier1_row, tier1_timing) = self
             .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
             .await?;
         let s2 = process_tier1(&tier1_row, nullifier, &mut path)?;
 
+        // Process tier 2 (PIR)
         let t2_row_idx = s1 * TIER1_LEAVES + s2;
         let (tier2_row, tier2_timing) = self
             .ypir_query(&self.tier2_scenario, "tier2", t2_row_idx, TIER2_ROW_BYTES)

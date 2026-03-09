@@ -16,12 +16,10 @@ use ypir::params::{params_for_scenario_simplepir, DbRowsCols, PtModulusBits};
 use ypir::serialize::{FilePtIter, OfflinePrecomputedValues};
 use ypir::server::YServer;
 
-// Re-export shared types so existing consumers can still import from pir_server.
-pub use pir_types::{HealthInfo, RootInfo, YpirScenario};
-
-// Re-export constants from pir-export for convenience.
-pub use pir_export::{
-    TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
+// Re-export shared types and constants so existing consumers can import from pir_server.
+pub use pir_types::{
+    HealthInfo, PirMetadata, RootInfo, YpirScenario, TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES,
+    TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
 const U64_BYTES: usize = std::mem::size_of::<u64>();
@@ -118,6 +116,8 @@ impl<'a> TierServer<'a> {
     /// This performs the expensive offline precomputation.
     pub fn new(data: &'a [u8], scenario: YpirScenario) -> Self {
         let t0 = Instant::now();
+
+        // Note: this is where server params are set.
         let params_box = Box::new(params_for_scenario_simplepir(
             scenario.num_items as u64,
             scenario.item_size_bits as u64,
@@ -406,7 +406,7 @@ pub struct ServingState {
     pub tier2_scenario: YpirScenario,
     pub tier1_hint: Bytes,
     pub tier2_hint: Bytes,
-    pub metadata: pir_export::PirMetadata,
+    pub metadata: PirMetadata,
 }
 
 /// Load tier files from disk, initialize YPIR servers, and return a
@@ -439,7 +439,7 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
         TIER2_ROWS * TIER2_ROW_BYTES
     );
 
-    let metadata: pir_export::PirMetadata =
+    let metadata: PirMetadata =
         serde_json::from_str(&std::fs::read_to_string(pir_data_dir.join("pir_root.json"))?)?;
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
 

@@ -1,10 +1,87 @@
-//! Shared types for the PIR subsystem.
+//! Shared types and constants for the PIR subsystem.
 //!
-//! These types are serialized over HTTP between `pir-server` and `pir-client`,
-//! so they live in a separate lightweight crate to avoid coupling the client
-//! to the server's heavy YPIR dependencies (which require nightly).
+//! Wire types are serialized over HTTP between `pir-server` and `pir-client`.
+//! Tier-layout constants define the data-format contract shared by all crates
+//! (export, server, client, test).
+//!
+//! This crate is intentionally lightweight (only depends on `serde`) so that
+//! any PIR crate can depend on it without pulling in heavy crypto libraries.
 
 use serde::{Deserialize, Serialize};
+
+// ── Tier-layout constants ────────────────────────────────────────────────────
+
+/// Depth of the PIR Merkle tree (26 levels of edges from root to leaf).
+/// Supports 2^26 = 67,108,864 leaf slots, enough for ~51M nullifier ranges.
+pub const PIR_DEPTH: usize = 26;
+
+/// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 11).
+pub const TIER0_LAYERS: usize = 11;
+
+/// Number of layers in each Tier 1 subtree (depth 11 to depth 18).
+pub const TIER1_LAYERS: usize = 7;
+
+/// Number of layers in each Tier 2 subtree (depth 18 to depth 26).
+pub const TIER2_LAYERS: usize = 8;
+
+/// Number of Tier 1 rows (one per depth-11 subtree).
+pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 2048
+
+/// Number of Tier 2 rows (one per depth-18 subtree).
+pub const TIER2_ROWS: usize = 1 << (TIER0_LAYERS + TIER1_LAYERS); // 262,144
+
+/// Number of leaves per Tier 1 subtree (at relative depth 7 = global depth 18).
+pub const TIER1_LEAVES: usize = 1 << TIER1_LAYERS; // 128
+
+/// Number of leaves per Tier 2 subtree (at relative depth 8 = global depth 26).
+pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 256
+
+/// Internal nodes per Tier 1 row (relative depths 1-6: 2+4+...+64 = 126).
+pub const TIER1_INTERNAL_NODES: usize = (1 << TIER1_LAYERS) - 2; // 126
+
+/// Internal nodes per Tier 2 row (relative depths 1-7: 2+4+...+128 = 254).
+pub const TIER2_INTERNAL_NODES: usize = (1 << TIER2_LAYERS) - 2; // 254
+
+/// Byte size of one Tier 1 row: 126 × 32 (internal) + 128 × 64 (leaf records).
+pub const TIER1_ROW_BYTES: usize = TIER1_INTERNAL_NODES * 32 + TIER1_LEAVES * 64; // 12,224
+
+/// Byte size of one Tier 2 row: 254 × 32 (internal) + 256 × 64 (leaf records).
+pub const TIER2_ROW_BYTES: usize = TIER2_INTERNAL_NODES * 32 + TIER2_LEAVES * 64; // 24,512
+
+/// Tier 1 item size in bits (for YPIR parameter setup).
+pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8; // 97,792
+
+/// Tier 2 item size in bits (for YPIR parameter setup).
+pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 196,096
+
+// ── Metadata ─────────────────────────────────────────────────────────────────
+
+/// Metadata written to `pir_root.json` alongside the tier files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PirMetadata {
+    /// Hex-encoded depth-26 Merkle root.
+    pub root26: String,
+    /// Hex-encoded depth-29 Merkle root (circuit-compatible).
+    pub root29: String,
+    /// Number of populated leaf ranges in the tree.
+    pub num_ranges: usize,
+    /// PIR tree depth.
+    pub pir_depth: usize,
+    /// Tier 0 size in bytes.
+    pub tier0_bytes: usize,
+    /// Number of Tier 1 rows.
+    pub tier1_rows: usize,
+    /// Tier 1 row size in bytes.
+    pub tier1_row_bytes: usize,
+    /// Number of Tier 2 rows.
+    pub tier2_rows: usize,
+    /// Tier 2 row size in bytes.
+    pub tier2_row_bytes: usize,
+    /// Block height the tree was built from (if known).
+    pub height: Option<u64>,
+}
+
+// ── Wire types ───────────────────────────────────────────────────────────────
 
 /// Parameters describing a YPIR database scenario.
 ///

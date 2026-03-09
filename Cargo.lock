@@ -1736,9 +1736,9 @@ dependencies = [
  "imt-tree",
  "nf-ingest",
  "pasta_curves",
+ "pir-types",
  "rand",
  "rayon",
- "serde",
  "serde_json",
  "tracing",
 ]
@@ -1751,7 +1751,6 @@ dependencies = [
  "axum 0.7.9",
  "ff",
  "pasta_curves",
- "pir-export",
  "pir-types",
  "serde",
  "serde_json",

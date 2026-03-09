@@ -18,7 +18,7 @@ use rand::Rng;
 use imt_tree::tree::build_sentinel_tree;
 
 use pir_export::build_pir_tree;
-use pir_export::{
+use pir_types::{
     TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
@@ -478,8 +478,8 @@ fn run_bench(num_queries: usize) -> Result<()> {
     eprintln!("=== PIR Benchmark: in-process YPIR ({} queries per tier) ===\n", num_queries);
     eprintln!(
         "  Config: TIER1_LAYERS={}, TIER2_LAYERS={}",
-        pir_export::TIER1_LAYERS,
-        pir_export::TIER2_LAYERS
+        pir_types::TIER1_LAYERS,
+        pir_types::TIER2_LAYERS
     );
     eprintln!(
         "  Tier 1: {} rows × {} bytes/row ({} bits/item), instances={}",

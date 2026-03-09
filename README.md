@@ -27,9 +27,9 @@ graph TD
 
     service --> imtTree
     pirExport --> imtTree
+    pirExport --> pirTypes
     pirExport -.->|optional cli| service
     pirServer --> pirTypes
-    pirServer --> pirExport
     pirClient --> pirTypes
     pirClient --> pirExport
     pirClient --> imtTree
@@ -37,6 +37,7 @@ graph TD
     nfServer --> service
     nfServer --> imtTree
     nfServer -.->|optional serve| pirServer
+    pirTest --> pirTypes
     pirTest --> pirExport
     pirTest --> pirClient
     pirTest --> pirServer

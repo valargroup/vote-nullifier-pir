@@ -9,7 +9,6 @@ avx512 = ["ypir/explicit_avx512"]
 
 [dependencies]
 pir-types  = { path = "../types" }
-pir-export = { path = "../export" }
 ypir = { git = "https://github.com/menonsamir/ypir.git", branch = "artifact", default-features = false, features = ["server"] }
 spiral-rs = { git = "https://github.com/menonsamir/spiral-rs.git", rev = "f2c23c7" }
 axum = "0.7"
