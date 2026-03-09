@@ -91,7 +91,9 @@ jobs:
       - name: Prepare release assets
         run: |
           for PLATFORM in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
-            mv "nf-server-${PLATFORM}/nf-server" "nf-server-${PLATFORM}"
+            cp "nf-server-${PLATFORM}/nf-server" "nf-server-${PLATFORM}.tmp"
+            rm -rf "nf-server-${PLATFORM}"
+            mv "nf-server-${PLATFORM}.tmp" "nf-server-${PLATFORM}"
             chmod +x "nf-server-${PLATFORM}"
           done
           cp docs/nullifier-query-server.service .
