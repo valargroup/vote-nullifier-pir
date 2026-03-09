@@ -10,7 +10,7 @@ avx512 = ["serve", "pir-server/avx512"]
 
 [dependencies]
 # Serve-only (YPIR PIR server)
-pir-server         = { path = "../pir-server", optional = true }
+pir-server         = { path = "../pir/server", optional = true }
 axum               = { version = "0.7", optional = true }
 tracing            = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
@@ -18,8 +18,8 @@ tower-http         = { version = "0.5", features = ["cors"], optional = true }
 reqwest            = { version = "0.11", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 # Always needed
-pir-export        = { path = "../pir-export" }
-nullifier-service = { path = "../service" }
+pir-export        = { path = "../pir/export" }
+nullifier-service = { path = "../nullifier-service" }
 imt-tree          = { path = "../imt-tree" }
 tokio             = { version = "1", features = ["rt-multi-thread", "macros"] }
 clap              = { version = "4", features = ["derive", "env"] }

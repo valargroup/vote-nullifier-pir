@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 use pir_export::PirMetadata;
 use pir_server::{OwnedTierState, YpirScenario};
 
+/// Current lifecycle phase of the server, serialised in health/503 responses.
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "phase")]
 pub(crate) enum ServerPhase {
@@ -40,6 +41,7 @@ pub(crate) struct ServingState {
     pub metadata: PirMetadata,
 }
 
+/// Top-level shared state, wrapped in `Arc` and passed to all axum handlers.
 pub(crate) struct AppState {
     pub phase: RwLock<ServerPhase>,
     pub serving: RwLock<Option<ServingState>>,

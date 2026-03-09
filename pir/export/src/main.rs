@@ -1,3 +1,11 @@
+//! Standalone CLI for building PIR tier files from a nullifier data file.
+//!
+//! This binary is an alternative to `nf-server export` for cases where you
+//! want to run the export step independently. Requires the `cli` feature
+//! (enabled by default when building this binary target).
+//!
+//! Usage: `pir-export --nullifiers nullifiers.bin [--output-dir ./pir-data]`
+
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -6,6 +14,7 @@ use clap::Parser;
 
 use nullifier_service::file_store;
 
+/// CLI arguments for the export command.
 #[derive(Parser)]
 #[command(name = "pir-export", about = "Build PIR tier databases from nullifier data")]
 struct Args {

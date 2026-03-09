@@ -4,16 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pir-export = { path = "../pir-export" }
-pir-client = { path = "../pir-client" }
-pir-server = { path = "../pir-server" }
-imt-tree = { path = "../imt-tree" }
+pir-export = { path = "../export" }
+pir-client = { path = "../client" }
+pir-server = { path = "../server" }
+pir-types  = { path = "../types" }
+imt-tree = { path = "../../imt-tree" }
+nullifier-service = { path = "../../nullifier-service" }
 ypir = { git = "https://github.com/menonsamir/ypir.git", branch = "artifact", default-features = false, features = ["server"] }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 ff = "0.13"
 pasta_curves = "0.5"
-rayon = "1"
 rand = "0.8"
 hex = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

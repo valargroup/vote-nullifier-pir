@@ -17,7 +17,7 @@
 # (--invalidate) so the next export rebuilds from the updated data.
 
 IMT_DIR     := imt-tree
-SERVICE_DIR := service
+SERVICE_DIR := nullifier-service
 NF_DIR      := nf-server
 
 # ── Configuration (override with env vars) ───────────────────────────

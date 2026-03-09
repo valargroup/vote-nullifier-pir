@@ -163,49 +163,42 @@ The 120 in-circuit Poseidon permutations for condition 13 are the dominant const
 ## Data Flow: Off-Chain to In-Circuit
 
 ```
-                      OFF-CHAIN (nullifier-tree + imt-tree crates)
-                      ────────────────────────────────────────────
-Zcash chain --> ingest-nfs --> SQLite (51M nullifiers)
-                                   |
-                          NullifierTree::from_db()
-                                   |
-                   +---------------+---------------+
-                   |  51M gap ranges, 29 levels,   |
-                   |  all siblings pre-stored       |
-                   +---------------+---------------+
-                                   |
-                         tree.prove(real_nf)
-                                   |
-                          ExclusionProof {
-                            range: [low, high],
-                            position, leaf, auth_path[29]
-                          }
-                                   |
-                         .to_imt_proof_data(root)
-                                   |
-                          ImtProofData {         <-- same struct in
-                            root, low, high,         orchard::delegation::imt
-                            leaf_pos, path[29]
-                          }
-                                   |
-                      =============|=======================
-                      IN-CIRCUIT   | (orchard delegation circuit)
-                      -------------|---------------------
-                                   v
-                   NoteSlotWitness.imt_{low,high,leaf_pos,path}
-                                   |
-                   +---------------+-------------------+
-                   |  Poseidon(low, high) --> leaf      |  leaf hash
-                   |  29x swap + Poseidon --> root      |  Merkle path
-                   |  q_interval + 2x range check      |  interval proof
-                   |  q_per_note: root = nf_imt_root   |  root pin
-                   +-----------------------------------+
-                                   |
-                             proof verified
+                      OFF-CHAIN (imt-tree + service + pir crates)
+                      ──────────────────────────────────────────
+Zcash chain --> nf-server ingest --> nullifiers.bin (51M nullifiers)
+                                          |
+                                   build_sentinel_tree()
+                                          |
+                          +---------------+---------------+
+                          |  51M gap ranges, 29 levels,   |
+                          |  all siblings pre-stored       |
+                          +---------------+---------------+
+                                          |
+                                tree.prove(real_nf)
+                                          |
+                                 ImtProofData {
+                                   root, low, width,
+                                   leaf_pos, path[29]
+                                 }
+                                          |
+                         =================|=======================
+                         IN-CIRCUIT       | (orchard delegation circuit)
+                         -----------------|---------------------
+                                          v
+                      NoteSlotWitness.imt_{low,width,leaf_pos,path}
+                                          |
+                      +-------------------+-------------------+
+                      |  Poseidon(low, high) --> leaf          |  leaf hash
+                      |  29x swap + Poseidon --> root          |  Merkle path
+                      |  q_interval + 2x range check          |  interval proof
+                      |  q_per_note: root = nf_imt_root       |  root pin
+                      +---------------------------------------+
+                                          |
+                                    proof verified
 ```
 
 The `ImtProofData` struct is the seam between the off-chain and in-circuit worlds -- identical fields on both sides:
-- Off-circuit: `nullifier_tree::ImtProofData` (in the `nullifier-tree` crate)
+- Off-circuit: `imt_tree::ImtProofData` (in this crate)
 - In-circuit: `orchard::delegation::imt::ImtProofData` (in the `orchard` crate)
 
 The `ImtProvider` trait abstracts over the proof source (real tree vs. test provider) so the delegation builder works uniformly for production and testing.
@@ -214,9 +207,12 @@ The `ImtProvider` trait abstracts over the proof source (real tree vs. test prov
 
 | File | Role |
 |------|------|
-| `nullifier-tree/src/tree.rs` | Off-chain tree build, `NullifierTree`, `ExclusionProof`, `PoseidonHasher`, sentinels |
-| `nullifier-tree/src/sync_nullifiers.rs` | Chain sync engine (parallel gRPC downloads into SQLite) |
-| `nullifier-tree/src/bin/server.rs` | HTTP API serving exclusion proofs (`GET /exclusion-proof/:nf`) |
+| `imt-tree/src/tree/nullifier_tree.rs` | Off-chain tree build, `NullifierTree`, sentinels |
+| `imt-tree/src/tree/mod.rs` | Core tree logic: `build_levels`, `find_range_for_value`, save/load |
+| `imt-tree/src/hasher.rs` | Optimised `PoseidonHasher` (precomputed round constants) |
+| `imt-tree/src/proof.rs` | `ImtProofData` with out-of-circuit `verify()` |
+| `service/src/sync_nullifiers.rs` | Chain sync engine (gRPC downloads into flat files) |
+| `nf-server/src/main.rs` | Unified CLI: `ingest`, `export`, `serve` subcommands |
 | `orchard/src/delegation/imt.rs` | `ImtProofData`, `ImtProvider` trait, `SpacedLeafImtProvider` (test) |
 | `orchard/src/delegation/circuit.rs` | In-circuit condition 13: `q_imt_swap`, `q_interval`, `q_per_note` gates |
 | `orchard/src/delegation/builder.rs` | Delegation bundle builder -- wires `ImtProofData` into `NoteSlotWitness` |

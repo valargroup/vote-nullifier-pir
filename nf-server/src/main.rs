@@ -1,3 +1,10 @@
+//! Unified CLI binary for the nullifier PIR pipeline.
+//!
+//! Provides three subcommands:
+//!   - `ingest` — Sync nullifiers from a lightwalletd instance into flat files.
+//!   - `export` — Build the PIR tree and write tier files for the server.
+//!   - `serve`  — Start the PIR HTTP server (feature-gated behind `serve`).
+
 mod cmd_export;
 mod cmd_ingest;
 #[cfg(feature = "serve")]
@@ -7,6 +14,7 @@ mod serve;
 
 use clap::{Parser, Subcommand};
 
+/// Top-level CLI parser.
 #[derive(Parser)]
 #[command(name = "nf-server", about = "Unified nullifier pipeline: ingest, export, and serve PIR data")]
 struct Cli {
@@ -14,6 +22,7 @@ struct Cli {
     command: Command,
 }
 
+/// Available subcommands.
 #[derive(Subcommand)]
 enum Command {
     /// Sync nullifiers from lightwalletd into nullifiers.bin

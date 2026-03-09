@@ -1,19 +1,26 @@
-# Auto-deploy setup for nullifier-ingest
+# Deploy setup for nf-server
 
-The workflow `.github/workflows/nullifier-ingest-deploy.yml` builds nullifier-ingest on every push to `main` (when `nullifier-ingest/**` changes) and deploys the binaries to a remote host via SSH.
+The workflows in `.github/workflows/` handle building and deploying `nf-server`:
+
+- **`deploy.yml`** — Builds on every push to `main` and deploys to a remote host via SSH.
+- **`release.yml`** — Builds multi-platform binaries and publishes a GitHub Release on version tags.
+- **`resync.yml`** — Manually triggers a nullifier resync (ingest + export + restart) on the remote host.
 
 ## 0. Moving cached data to the deploy directory
 
-The service uses two cached files: the SQLite DB and a sidecar tree file. To move them into the deploy directory (default `/opt/nullifier-ingest`):
+The service uses flat binary files for nullifier storage. To move them into the deploy directory (default `/opt/nullifier-ingest`):
 
 ```bash
 # Create target directory (default matches workflow DEPLOY_PATH)
 sudo mkdir -p /opt/nullifier-ingest
 
-# Move the database and tree sidecar (stop the service first if it’s running)
+# Stop the service first if it is running
 sudo systemctl stop nullifier-query-server || true
-sudo mv /path/to/nullifiers.db      /opt/nullifier-ingest/
-sudo mv /path/to/nullifiers.db.tree /opt/nullifier-ingest/
+
+# Move data files
+sudo mv /path/to/nullifiers.bin        /opt/nullifier-ingest/
+sudo mv /path/to/nullifiers.checkpoint /opt/nullifier-ingest/
+sudo mv /path/to/nullifiers.tree       /opt/nullifier-ingest/
 
 # Ensure the deploy user can write (if deploy runs as a different user)
 # sudo chown -R DEPLOY_USER:DEPLOY_USER /opt/nullifier-ingest
@@ -21,11 +28,11 @@ sudo mv /path/to/nullifiers.db.tree /opt/nullifier-ingest/
 # Restart the service (see systemd unit below)
 ```
 
-Configure the service to use that path: set `DB_PATH=/opt/nullifier-ingest/nullifiers.db`. The server will then use the sidecar at `nullifiers.db.tree` in the same directory. The unit file in `docs/nullifier-query-server.service` uses this path by default.
+The unit file in `docs/nullifier-query-server.service` uses `/opt/nullifier-ingest` as the data directory by default.
 
 ## 1. GitHub repository secrets
 
-In the repo: **Settings → Secrets and variables → Actions**, add:
+In the repo: **Settings -> Secrets and variables -> Actions**, add:
 
 | Secret              | Description |
 |---------------------|-------------|
@@ -33,102 +40,68 @@ In the repo: **Settings → Secrets and variables → Actions**, add:
 | `DEPLOY_USER`       | SSH user on that host (e.g. `deploy` or `ubuntu`). |
 | `SSH_PASSWORD`      | SSH password for that user. |
 
-The deploy job will copy `query-server` and `ingest-nfs` to the remote and run a restart command (see below).
-
 ## 2. One-time setup on the remote host
 
 ### Directory and binaries
 
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nullifier-ingest`.
-- Ensure the SSH user can write to that directory (e.g. `sudo mkdir -p /opt/nullifier-ingest && sudo chown $DEPLOY_USER /opt/nullifier-ingest`).
-- Put `nullifiers.db` and `nullifiers.db.tree` in that directory (or in a separate data dir and set `DB_PATH` accordingly; see section 0).
+- Ensure the SSH user can write to that directory.
+- Either bootstrap the nullifier data (`make bootstrap`) or run an initial ingest.
 
-### Query server (HTTP API)
+### Query server (PIR HTTP API)
 
-The `query-server` binary serves the exclusion-proof API. It needs:
+The `nf-server serve` subcommand starts the PIR HTTP server. It needs:
 
-- **Database**: A SQLite DB of ingested nullifiers. Either copy an existing `nullifiers.db` to the host or run `ingest-nfs` first (see below).
-- **Port**: Set `PORT` (default 3000) when running.
+- **Nullifier data**: `nullifiers.bin` and `nullifiers.checkpoint` in the data directory.
+- **PIR data**: Exported tier files in `pir-data/` (produced by `nf-server export`).
+- **Port**: Configurable via `--port` (default 3000).
 
-Example **systemd unit** (using default deploy path `/opt/nullifier-ingest`, matching the workflow `DEPLOY_PATH`). A copyable unit file is in `docs/nullifier-query-server.service`; copy to `/etc/systemd/system/` and adjust paths if you use a different `DEPLOY_PATH`:
-
-```bash
-sudo cp nullifier-ingest/docs/nullifier-query-server.service /etc/systemd/system/
-```
-
-Or create `/etc/systemd/system/nullifier-query-server.service` with:
-
-```ini
-[Unit]
-Description=Nullifier ingest query server
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/nullifier-ingest
-Environment="DB_PATH=/opt/nullifier-ingest/nullifiers.db"
-Environment="PORT=3000"
-Environment="LWD_URL=https://zec.rocks:443"
-ExecStart=/opt/nullifier-ingest/query-server
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then:
+A systemd unit file is provided at `docs/nullifier-query-server.service`. Copy to `/etc/systemd/system/`:
 
 ```bash
+sudo cp docs/nullifier-query-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable nullifier-query-server
 sudo systemctl start nullifier-query-server
 ```
 
-After that, each deploy will run `sudo systemctl restart nullifier-query-server` (the workflow uses `|| true` so it won’t fail if you haven’t created the unit yet).
+### Ingest (periodic sync)
 
-### Ingest (optional)
+Run `nf-server ingest` periodically (cron or systemd timer) to sync new nullifiers:
 
-`ingest-nfs` fills the SQLite DB from the chain. Run it periodically (cron or systemd timer) on the same host, e.g.:
+```bash
+/opt/nullifier-ingest/nf-server ingest \
+    --data-dir /opt/nullifier-ingest \
+    --lwd-url https://zec.rocks:443
+```
 
-- `DB_PATH=/opt/nullifier-ingest/nullifiers.db LWD_URL=https://zec.rocks:443 /opt/nullifier-ingest/ingest-nfs`
-
-No restart is run for ingest; only the binary is updated on deploy.
+After ingest, re-export with `nf-server export` and restart the serve process, or use the `resync.yml` workflow to do all three steps remotely.
 
 ## 3. Changing deploy path or restart command
 
-- **Deploy path**: Edit the `env.DEPLOY_PATH` in `.github/workflows/nullifier-ingest-deploy.yml` (default `/opt/nullifier-ingest`).
-- **Restart command**: Edit the “Restart service” step in that workflow if you use a different service name or script (e.g. a custom `restart.sh`).
+- **Deploy path**: Edit the `env.DEPLOY_PATH` in `.github/workflows/deploy.yml` (default `/opt/nullifier-ingest`).
+- **Restart command**: Edit the "Install config and restart services" step in that workflow if you use a different service name.
 
 ## 4. Manual runs
 
-The workflow has `workflow_dispatch`, so you can run it from **Actions → Deploy nullifier-ingest → Run workflow** without pushing to `main`.
+Both `deploy.yml` and `resync.yml` support `workflow_dispatch`, so you can trigger them from **Actions -> Run workflow** without pushing to `main`.
 
-## 5. Test locally before CI
+## 5. Test locally
 
-**Option A – Make target (recommended)**  
-From `nullifier-ingest/`:
-
-```bash
-# Copy your cached files into the default data dir (or set DATA_DIR)
-mkdir -p nullifier-service
-cp /path/to/nullifiers.db nullifier-service/
-cp /path/to/nullifiers.db.tree nullifier-service/
-
-make serve-deploy
-```
-
-This builds the release binaries (same as CI) and runs `query-server` with `DB_PATH=nullifier-service/nullifiers.db`. Then open `http://localhost:3000/health` and `http://localhost:3000/root`. Override the data dir with `make serve-deploy DATA_DIR=/opt/nullifier-ingest` (or any path that contains `nullifiers.db` and `nullifiers.db.tree`).
-
-**Option B – Run the deploy workflow locally with act**  
-If you have [act](https://github.com/nektos/act) and Docker:
+From the workspace root:
 
 ```bash
-# List events (push to main, or workflow_dispatch)
-act -n -W .github/workflows/nullifier-ingest-deploy.yml
+# Bootstrap nullifier data (first run only)
+make bootstrap
 
-# Run the workflow (will prompt for secrets or use .secrets file)
-act push -W .github/workflows/nullifier-ingest-deploy.yml
+# Or ingest from scratch
+make ingest
+
+# Export PIR tier files
+make export-nf
+
+# Start the server
+make serve
 ```
 
-Use a `.secrets` file (gitignored) with `DEPLOY_HOST`, `DEPLOY_USER`, `SSH_PASSWORD` so you don’t type them. The deploy job will run against your real host.
+Then check `http://localhost:3000/health` and `http://localhost:3000/root`.

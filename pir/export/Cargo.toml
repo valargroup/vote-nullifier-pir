@@ -11,8 +11,8 @@ default = []
 cli = ["dep:nullifier-service"]
 
 [dependencies]
-imt-tree = { path = "../imt-tree" }
-nullifier-service = { path = "../service", optional = true }
+imt-tree = { path = "../../imt-tree" }
+nullifier-service = { path = "../../nullifier-service", optional = true }
 anyhow = "1.0"
 hex = "0.4"
 ff = "0.13"

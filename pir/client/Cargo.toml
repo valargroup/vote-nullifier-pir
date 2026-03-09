@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pir-types  = { path = "../pir-types" }
-pir-export = { path = "../pir-export" }
-imt-tree = { path = "../imt-tree" }
+pir-types  = { path = "../types" }
+pir-export = { path = "../export" }
+imt-tree = { path = "../../imt-tree" }
 ypir = { git = "https://github.com/menonsamir/ypir.git", branch = "artifact", default-features = false }
 hex = "0.4"
 anyhow = "1.0"

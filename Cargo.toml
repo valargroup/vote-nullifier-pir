@@ -3,12 +3,12 @@ resolver = "2"
 members = [
     "imt-tree",
     "nf-server",
-    "pir-client",
-    "pir-export",
-    "pir-server",
-    "pir-test",
-    "pir-types",
-    "service",
+    "pir/client",
+    "pir/export",
+    "pir/server",
+    "pir/test",
+    "pir/types",
+    "nullifier-service",
 ]
 
 [profile.release]

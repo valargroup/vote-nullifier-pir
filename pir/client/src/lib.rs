@@ -23,7 +23,7 @@ use pir_export::{
     PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES,
     TIER2_ROW_BYTES,
 };
-use pir_types::{RootInfo, YpirScenario};
+use pir_types::{serialize_ypir_query, RootInfo, YpirScenario};
 
 use ypir::client::YPIRClient;
 
@@ -374,18 +374,7 @@ impl PirClient {
         let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
         let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        // Serialize with length prefix: [8: pqr_byte_len][pqr][pub_params]
-        let pqr = query.0.as_slice();
-        let pp = query.1.as_slice();
-        let pqr_byte_len = pqr.len() * 8;
-        let mut payload = Vec::with_capacity(8 + (pqr.len() + pp.len()) * 8);
-        payload.extend_from_slice(&(pqr_byte_len as u64).to_le_bytes());
-        for &v in pqr {
-            payload.extend_from_slice(&v.to_le_bytes());
-        }
-        for &v in pp {
-            payload.extend_from_slice(&v.to_le_bytes());
-        }
+        let payload = serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
         let upload_bytes = payload.len();
 
         let t1 = Instant::now();

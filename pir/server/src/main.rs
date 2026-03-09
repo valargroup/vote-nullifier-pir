@@ -1,3 +1,11 @@
+//! Standalone PIR HTTP server binary.
+//!
+//! This is the simpler, single-purpose alternative to `nf-server serve`.
+//! It loads tier files from a directory, initialises YPIR server state,
+//! and exposes the same HTTP API endpoints as `nf-server` in serve mode.
+//!
+//! Usage: `pir-server [PIR_DATA_DIR] [PORT]`
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -19,6 +27,7 @@ use pir_server::{
 };
 use tracing::{info, warn};
 
+/// Shared application state holding tier data, YPIR servers, and request counters.
 struct AppState {
     tier0_data: Bytes,
     data_dir: PathBuf,

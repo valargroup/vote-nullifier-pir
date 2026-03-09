@@ -1,3 +1,9 @@
+//! HTTP handlers for the PIR server.
+//!
+//! Each handler acquires the shared [`AppState`] and returns 503 if the
+//! server is currently rebuilding its snapshot. The YPIR query endpoints
+//! track inflight request counts for backpressure monitoring.
+
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,6 +24,7 @@ use super::state::{AppState, ServerPhase};
 
 // ── PIR data endpoints ───────────────────────────────────────────────────────
 
+/// `GET /tier0` — Return the full Tier 0 binary blob (plaintext, small).
 pub(crate) async fn get_tier0(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().unwrap();
@@ -28,18 +35,21 @@ pub(crate) async fn get_tier0(State(state): State<Arc<AppState>>) -> impl IntoRe
         .into_response()
 }
 
+/// `GET /params/tier1` — Return the Tier 1 YPIR scenario parameters as JSON.
 pub(crate) async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().unwrap();
     axum::Json(s.tier1_scenario.clone()).into_response()
 }
 
+/// `GET /params/tier2` — Return the Tier 2 YPIR scenario parameters as JSON.
 pub(crate) async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().unwrap();
     axum::Json(s.tier2_scenario.clone()).into_response()
 }
 
+/// `GET /hint/tier1` — Return precomputed YPIR hint for Tier 1.
 pub(crate) async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().unwrap();
@@ -50,6 +60,7 @@ pub(crate) async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl I
         .into_response()
 }
 
+/// `GET /hint/tier2` — Return precomputed YPIR hint for Tier 2.
 pub(crate) async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().unwrap();
@@ -62,14 +73,18 @@ pub(crate) async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl I
 
 // ── YPIR query endpoints ─────────────────────────────────────────────────────
 
+/// `POST /tier1/query` — Process an encrypted YPIR query against Tier 1.
 pub(crate) async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
     post_tier_query(&state, "tier1", body).await
 }
 
+/// `POST /tier2/query` — Process an encrypted YPIR query against Tier 2.
 pub(crate) async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
     post_tier_query(&state, "tier2", body).await
 }
 
+/// Shared handler for YPIR queries. Dispatches to the appropriate tier server,
+/// tracks inflight request count, and writes timing headers on the response.
 async fn post_tier_query(state: &AppState, tier: &str, body: Bytes) -> axum::response::Response {
     let req_id = state.next_req_id.fetch_add(1, Ordering::Relaxed) + 1;
     let inflight = state.inflight_requests.fetch_add(1, Ordering::Relaxed) + 1;
@@ -137,37 +152,48 @@ async fn post_tier_query(state: &AppState, tier: &str, body: Bytes) -> axum::res
 
 // ── Tier row endpoints (raw row reads for debugging) ─────────────────────────
 
+/// `GET /tier1/row/:idx` — Read a raw Tier 1 row from disk (for debugging).
 pub(crate) async fn get_tier1_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    let _guard = require_serving!(state);
-    if idx >= TIER1_ROWS {
-        return (StatusCode::NOT_FOUND, "row index out of range").into_response();
-    }
-    let path = state.pir_data_dir.join("tier1.bin");
-    let offset = (idx * TIER1_ROW_BYTES) as u64;
-    match read_tier_row(&path, offset, TIER1_ROW_BYTES) {
-        Ok(row) => (
-            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            row,
-        )
-            .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")).into_response(),
-    }
+    get_tier_row(&state, idx, "tier1.bin", TIER1_ROWS, TIER1_ROW_BYTES).await
 }
 
+/// `GET /tier2/row/:idx` — Read a raw Tier 2 row from disk (for debugging).
 pub(crate) async fn get_tier2_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    let _guard = require_serving!(state);
-    if idx >= TIER2_ROWS {
+    get_tier_row(&state, idx, "tier2.bin", TIER2_ROWS, TIER2_ROW_BYTES).await
+}
+
+/// Shared handler for raw tier row reads. Validates index bounds and reads
+/// the row directly from the tier binary file on disk.
+async fn get_tier_row(
+    state: &AppState,
+    idx: usize,
+    filename: &str,
+    num_rows: usize,
+    row_bytes: usize,
+) -> axum::response::Response {
+    let guard = state.serving.read().await;
+    if guard.is_none() {
+        let phase = state.phase.read().await;
+        let body = serde_json::to_string(&*phase).unwrap_or_default();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response();
+    }
+    if idx >= num_rows {
         return (StatusCode::NOT_FOUND, "row index out of range").into_response();
     }
-    let path = state.pir_data_dir.join("tier2.bin");
-    let offset = (idx * TIER2_ROW_BYTES) as u64;
-    match read_tier_row(&path, offset, TIER2_ROW_BYTES) {
+    let path = state.pir_data_dir.join(filename);
+    let offset = (idx * row_bytes) as u64;
+    match read_tier_row(&path, offset, row_bytes) {
         Ok(row) => (
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
             row,
@@ -179,6 +205,7 @@ pub(crate) async fn get_tier2_row(
 
 // ── Root and health ──────────────────────────────────────────────────────────
 
+/// `GET /root` — Return the current tree root hash and metadata as JSON.
 pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().unwrap();
@@ -192,6 +219,7 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
     axum::Json(info).into_response()
 }
 
+/// `GET /health` — Return server health including phase and tier metadata.
 pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let phase = state.phase.read().await;
     let serving = state.serving.read().await;

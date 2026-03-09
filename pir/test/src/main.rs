@@ -170,33 +170,9 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
         &hex::encode(tree.root29.to_repr())[..16],
     );
 
-    // Export tier data in memory
     let t2 = Instant::now();
-    let tier0_data =
-        pir_export::tier0::export(&tree.root26, &tree.levels, &tree.ranges, &tree.empty_hashes);
-    eprintln!("  Tier 0: {} bytes", tier0_data.len());
-
-    let mut tier1_data = Vec::new();
-    pir_export::tier1::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier1_data,
-    )?;
-    eprintln!("  Tier 1: {} bytes", tier1_data.len());
-
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier2_data,
-    )?;
-    eprintln!(
-        "  Tier 2: {} bytes, exported in {:.1}s",
-        tier2_data.len(),
-        t2.elapsed().as_secs_f64()
-    );
+    let (tier0_data, tier1_data, tier2_data) = export_tiers(&tree)?;
+    eprintln!("  Exported in {:.1}s", t2.elapsed().as_secs_f64());
 
     // Pick random values from populated ranges to query
     let mut rng = rand::thread_rng();
@@ -401,27 +377,7 @@ fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
         eprintln!("  Roots match! ✓");
     }
 
-    // Export tier data
-    let tier0_data = pir_export::tier0::export(
-        &pir_tree.root26,
-        &pir_tree.levels,
-        &pir_tree.ranges,
-        &pir_tree.empty_hashes,
-    );
-    let mut tier1_data = Vec::new();
-    pir_export::tier1::export(
-        &pir_tree.levels,
-        &pir_tree.ranges,
-        &pir_tree.empty_hashes,
-        &mut tier1_data,
-    )?;
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(
-        &pir_tree.levels,
-        &pir_tree.ranges,
-        &pir_tree.empty_hashes,
-        &mut tier2_data,
-    )?;
+    let (tier0_data, tier1_data, tier2_data) = export_tiers(&pir_tree)?;
 
     // Pick random values and compare proofs
     let mut rng = rand::thread_rng();
@@ -514,7 +470,10 @@ fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
 // ── Bench mode ───────────────────────────────────────────────────────────────
 
 fn run_bench(num_queries: usize) -> Result<()> {
-    use pir_server::{OwnedTierState, YpirScenario};
+    use pir_server::OwnedTierState;
+
+    let tier1_scenario = pir_server::tier1_scenario();
+    let tier2_scenario = pir_server::tier2_scenario();
 
     eprintln!("=== PIR Benchmark: in-process YPIR ({} queries per tier) ===\n", num_queries);
     eprintln!(
@@ -544,30 +503,15 @@ fn run_bench(num_queries: usize) -> Result<()> {
     let ranges = pir_export::prepare_nullifiers(raw_nfs);
     let tree = build_pir_tree(ranges)?;
 
-    // Export tier data
-    eprintln!("Exporting tier data...");
-    let mut tier1_data = Vec::new();
-    pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_data)?;
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier2_data)?;
-    eprintln!("  Tier 1: {} bytes", tier1_data.len());
-    eprintln!("  Tier 2: {} bytes", tier2_data.len());
+    let (_, tier1_data, tier2_data) = export_tiers(&tree)?;
 
     // Initialize YPIR servers
     eprintln!("\nInitializing YPIR servers...");
-    let tier1_scenario = YpirScenario {
-        num_items: TIER1_ROWS,
-        item_size_bits: TIER1_ITEM_BITS,
-    };
     let t0 = Instant::now();
     let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
     eprintln!("  Tier 1 YPIR server ready in {:.1}s", t0.elapsed().as_secs_f64());
     drop(tier1_data);
 
-    let tier2_scenario = YpirScenario {
-        num_items: TIER2_ROWS,
-        item_size_bits: TIER2_ITEM_BITS,
-    };
     let t0 = Instant::now();
     let tier2_server = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
     eprintln!("  Tier 2 YPIR server ready in {:.1}s", t0.elapsed().as_secs_f64());
@@ -663,18 +607,7 @@ fn bench_tier(
         let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
         let gen_ms = t_gen.elapsed().as_secs_f64() * 1000.0;
 
-        // Serialize query (same format as pir-client)
-        let pqr = query.0.as_slice();
-        let pp = query.1.as_slice();
-        let pqr_byte_len = pqr.len() * 8;
-        let mut payload = Vec::with_capacity(8 + (pqr.len() + pp.len()) * 8);
-        payload.extend_from_slice(&(pqr_byte_len as u64).to_le_bytes());
-        for &v in pqr {
-            payload.extend_from_slice(&v.to_le_bytes());
-        }
-        for &v in pp {
-            payload.extend_from_slice(&v.to_le_bytes());
-        }
+        let payload = pir_types::serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
         let query_bytes = payload.len();
 
         // Server: answer query
@@ -737,22 +670,34 @@ fn format_ms(ms: f64) -> String {
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
-fn load_nullifiers(path: &std::path::Path) -> Result<Vec<Fp>> {
-    use rayon::prelude::*;
+/// Export all three tier data blobs from a built PIR tree.
+fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let tier0_data =
+        pir_export::tier0::export(&tree.root26, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    eprintln!("  Tier 0: {} bytes", tier0_data.len());
 
+    let mut tier1_data = Vec::new();
+    pir_export::tier1::export(
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        &mut tier1_data,
+    )?;
+    eprintln!("  Tier 1: {} bytes", tier1_data.len());
+
+    let mut tier2_data = Vec::new();
+    pir_export::tier2::export(
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        &mut tier2_data,
+    )?;
+    eprintln!("  Tier 2: {} bytes", tier2_data.len());
+
+    Ok((tier0_data, tier1_data, tier2_data))
+}
+
+fn load_nullifiers(path: &std::path::Path) -> Result<Vec<Fp>> {
     let data = std::fs::read(path)?;
-    anyhow::ensure!(
-        data.len() % 32 == 0,
-        "corrupt nullifiers file: size {} is not a multiple of 32",
-        data.len()
-    );
-    let nfs: Vec<Fp> = data
-        .par_chunks_exact(32)
-        .map(|chunk| {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(chunk);
-            Fp::from_repr(arr).expect("non-canonical Fp in nullifiers.bin")
-        })
-        .collect();
-    Ok(nfs)
+    nullifier_service::file_store::parse_nullifier_bytes(&data)
 }
