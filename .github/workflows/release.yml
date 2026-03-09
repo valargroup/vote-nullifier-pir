@@ -111,7 +111,6 @@ jobs:
     name: Distribute to DigitalOcean Spaces
     runs-on: ubuntu-latest
     needs: release
-    if: ${{ secrets.DO_ACCESS_KEY != '' }}
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -119,6 +118,7 @@ jobs:
           pattern: nf-server-*
 
       - name: Upload to DigitalOcean Spaces
+        if: ${{ env.DO_ACCESS_KEY != '' }}
         continue-on-error: true
         env:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
