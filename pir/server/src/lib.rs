@@ -127,9 +127,8 @@ impl<'a> TierServer<'a> {
         // 1. params_box is a heap allocation with a stable address
         // 2. server and offline are ManuallyDrop, dropped before _params in our Drop impl
         // 3. The reference remains valid for the entire lifetime of this struct
-        let params: &'a Params = unsafe {
-            std::mem::transmute::<&Params, &'a Params>(params_box.as_ref())
-        };
+        let params: &'a Params =
+            unsafe { std::mem::transmute::<&Params, &'a Params>(params_box.as_ref()) };
 
         info!(
             num_items = scenario.num_items,
@@ -148,10 +147,16 @@ impl<'a> TierServer<'a> {
         let server = YServer::<u16>::new(params, pt_iter, true, false, true);
 
         let t1 = Instant::now();
-        info!(elapsed_s = format!("{:.1}", (t1 - t0).as_secs_f64()), "YPIR server constructed");
+        info!(
+            elapsed_s = format!("{:.1}", (t1 - t0).as_secs_f64()),
+            "YPIR server constructed"
+        );
 
         let offline = server.perform_offline_precomputation_simplepir(None, None, None);
-        info!(elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()), "YPIR offline precomputation done");
+        info!(
+            elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
+            "YPIR offline precomputation done"
+        );
 
         Self {
             server: std::mem::ManuallyDrop::new(server),
@@ -177,7 +182,8 @@ impl<'a> TierServer<'a> {
             "query too short: {} bytes",
             query_bytes.len()
         );
-        let pqr_byte_len = u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
+        let pqr_byte_len =
+            u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
         let payload_len = query_bytes.len() - U64_BYTES;
         anyhow::ensure!(
             pqr_byte_len.is_multiple_of(U64_BYTES),
@@ -196,7 +202,8 @@ impl<'a> TierServer<'a> {
         anyhow::ensure!(
             remaining.is_multiple_of(U64_BYTES),
             "pub_params section {} bytes not a multiple of {}",
-            remaining, U64_BYTES
+            remaining,
+            U64_BYTES
         );
         let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -206,12 +213,18 @@ impl<'a> TierServer<'a> {
         // Copy into 64-byte aligned memory for AVX-512 operations.
         let decode_start = Instant::now();
         let mut pqr = Aligned64::new(pqr_u64_len);
-        for (i, chunk) in query_bytes[U64_BYTES..U64_BYTES + pqr_byte_len].chunks_exact(U64_BYTES).enumerate() {
+        for (i, chunk) in query_bytes[U64_BYTES..U64_BYTES + pqr_byte_len]
+            .chunks_exact(U64_BYTES)
+            .enumerate()
+        {
             pqr.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
         }
 
         let mut pub_params = Aligned64::new(pp_u64_len);
-        for (i, chunk) in query_bytes[U64_BYTES + pqr_byte_len..].chunks_exact(U64_BYTES).enumerate() {
+        for (i, chunk) in query_bytes[U64_BYTES + pqr_byte_len..]
+            .chunks_exact(U64_BYTES)
+            .enumerate()
+        {
             pub_params.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
         }
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
@@ -243,7 +256,6 @@ impl<'a> TierServer<'a> {
     pub fn scenario(&self) -> &YpirScenario {
         &self.scenario
     }
-
 }
 
 impl Drop for TierServer<'_> {
@@ -282,9 +294,7 @@ impl OwnedTierState {
     /// lifetime on `TierServer` constrains only `params: &'a Params` (pointing
     /// to the owned `Box<Params>`), not the input data.
     pub fn new(data: &[u8], scenario: YpirScenario) -> Self {
-        let data_ref: &'static [u8] = unsafe {
-            std::mem::transmute::<&[u8], &'static [u8]>(data)
-        };
+        let data_ref: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data) };
         let server = TierServer::new(data_ref, scenario);
         Self { server }
     }
@@ -292,7 +302,6 @@ impl OwnedTierState {
     pub fn server(&self) -> &TierServer<'static> {
         &self.server
     }
-
 }
 
 // Allow sending OwnedTierState between threads (needed for tokio spawn_blocking).
@@ -333,10 +342,22 @@ pub fn write_timing_headers(headers: &mut axum::http::HeaderMap, req_id: u64, ti
     let entries: [(&str, String); 6] = [
         ("x-pir-req-id", req_id.to_string()),
         ("x-pir-server-total-ms", format!("{:.3}", timing.total_ms)),
-        ("x-pir-server-validate-ms", format!("{:.3}", timing.validate_ms)),
-        ("x-pir-server-decode-copy-ms", format!("{:.3}", timing.decode_copy_ms)),
-        ("x-pir-server-compute-ms", format!("{:.3}", timing.online_compute_ms)),
-        ("x-pir-server-response-bytes", timing.response_bytes.to_string()),
+        (
+            "x-pir-server-validate-ms",
+            format!("{:.3}", timing.validate_ms),
+        ),
+        (
+            "x-pir-server-decode-copy-ms",
+            format!("{:.3}", timing.decode_copy_ms),
+        ),
+        (
+            "x-pir-server-compute-ms",
+            format!("{:.3}", timing.online_compute_ms),
+        ),
+        (
+            "x-pir-server-response-bytes",
+            timing.response_bytes.to_string(),
+        ),
     ];
     for (name, value) in entries {
         // HeaderValue::from_str only fails on non-visible-ASCII; numeric
@@ -373,7 +394,13 @@ pub fn dispatch_query(
     let inflight = inflight_requests.fetch_add(1, Ordering::Relaxed) + 1;
     let _inflight_guard = InflightGuard::new(inflight_requests);
     let t0 = Instant::now();
-    info!(req_id, tier, body_bytes = body.len(), inflight_requests = inflight, "pir_request_started");
+    info!(
+        req_id,
+        tier,
+        body_bytes = body.len(),
+        inflight_requests = inflight,
+        "pir_request_started"
+    );
 
     match tier_state.server().answer_query(body) {
         Ok(answer) => {
@@ -448,7 +475,11 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
     info!(bytes = tier0_data.len(), "Tier 0 loaded");
 
     let tier1_data = std::fs::read(pir_data_dir.join("tier1.bin"))?;
-    info!(bytes = tier1_data.len(), rows = tier1_data.len() / TIER1_ROW_BYTES, "Tier 1 loaded");
+    info!(
+        bytes = tier1_data.len(),
+        rows = tier1_data.len() / TIER1_ROW_BYTES,
+        "Tier 1 loaded"
+    );
     anyhow::ensure!(
         tier1_data.len() == TIER1_ROWS * TIER1_ROW_BYTES,
         "tier1.bin size mismatch: got {} bytes, expected {}",
@@ -457,7 +488,11 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
     );
 
     let tier2_data = std::fs::read(pir_data_dir.join("tier2.bin"))?;
-    info!(bytes = tier2_data.len(), rows = tier2_data.len() / TIER2_ROW_BYTES, "Tier 2 loaded");
+    info!(
+        bytes = tier2_data.len(),
+        rows = tier2_data.len() / TIER2_ROW_BYTES,
+        "Tier 2 loaded"
+    );
     anyhow::ensure!(
         tier2_data.len() == TIER2_ROWS * TIER2_ROW_BYTES,
         "tier2.bin size mismatch: got {} bytes, expected {}",
@@ -465,8 +500,9 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
         TIER2_ROWS * TIER2_ROW_BYTES
     );
 
-    let metadata: PirMetadata =
-        serde_json::from_str(&std::fs::read_to_string(pir_data_dir.join("pir_root.json"))?)?;
+    let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
+        pir_data_dir.join("pir_root.json"),
+    )?)?;
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
 
     info!("Initializing YPIR servers");
@@ -480,7 +516,10 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
     drop(tier2_data);
     info!("Tier 2 YPIR ready");
 
-    info!(elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()), "Server ready");
+    info!(
+        elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()),
+        "Server ready"
+    );
 
     Ok(ServingState {
         tier0_data,

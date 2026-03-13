@@ -12,9 +12,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use pir_server::{
-    HealthInfo, RootInfo,
-    TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS, TIER2_ROW_BYTES,
-    read_tier_row, dispatch_query,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS,
+    TIER2_ROW_BYTES,
 };
 
 use super::state::{AppState, ServerPhase};
@@ -49,17 +48,35 @@ pub(crate) async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl
 // ── YPIR query endpoints ─────────────────────────────────────────────────────
 
 /// `POST /tier1/query` — Process an encrypted YPIR query against Tier 1.
-pub(crate) async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+pub(crate) async fn post_tier1_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().expect("guaranteed Some by require_serving");
-    dispatch_query(&s.tier1, "tier1", &body, &state.next_req_id, &state.inflight_requests)
+    dispatch_query(
+        &s.tier1,
+        "tier1",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
 }
 
 /// `POST /tier2/query` — Process an encrypted YPIR query against Tier 2.
-pub(crate) async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+pub(crate) async fn post_tier2_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().expect("guaranteed Some by require_serving");
-    dispatch_query(&s.tier2, "tier2", &body, &state.next_req_id, &state.inflight_requests)
+    dispatch_query(
+        &s.tier2,
+        "tier2",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
 }
 
 // ── Tier row endpoints (raw row reads for debugging) ─────────────────────────
@@ -111,7 +128,11 @@ async fn get_tier_row(
             row,
         )
             .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read error: {e}"),
+        )
+            .into_response(),
     }
 }
 

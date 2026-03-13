@@ -1,8 +1,8 @@
 //! `nf-server serve` — load tier files and start the PIR HTTP server.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
-use std::path::PathBuf;
 
 use anyhow::Result;
 use axum::extract::DefaultBodyLimit;
