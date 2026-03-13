@@ -244,32 +244,6 @@ impl<'a> TierServer<'a> {
         &self.scenario
     }
 
-    /// Return the SimplePIR hint (hint_0) that the client needs.
-    ///
-    /// Serialized as LE u64 bytes.
-    pub fn hint_bytes(&self) -> Vec<u8> {
-        self.offline
-            .hint_0
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect()
-    }
-
-    /// Extract the hint bytes and release the `hint_0` backing memory.
-    ///
-    /// `hint_0` is only needed for offline precomputation (already done) and for
-    /// serving to clients. After extracting the bytes, the `Vec<u64>` is freed,
-    /// saving ~64–112 MB per tier.
-    pub fn take_hint_bytes(&mut self) -> Vec<u8> {
-        let bytes = self
-            .offline
-            .hint_0
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        self.offline.hint_0 = vec![];
-        bytes
-    }
 }
 
 impl Drop for TierServer<'_> {
@@ -319,10 +293,6 @@ impl OwnedTierState {
         &self.server
     }
 
-    /// Extract the YPIR hint bytes and release the internal `hint_0` memory.
-    pub fn take_hint_bytes(&mut self) -> Vec<u8> {
-        self.server.take_hint_bytes()
-    }
 }
 
 // Allow sending OwnedTierState between threads (needed for tokio spawn_blocking).
@@ -449,21 +419,19 @@ use axum::body::Bytes;
 
 /// All data needed to serve PIR queries for all tiers.
 ///
-/// Holds loaded tier data, initialized YPIR servers, precomputed hints,
-/// and tree metadata. Used by both the standalone `pir-server` binary
-/// and `nf-server` in serve mode.
+/// Holds loaded tier data, initialized YPIR servers, and tree metadata.
+/// Used by both the standalone `pir-server` binary and `nf-server`
+/// in serve mode.
 ///
 /// Raw tier data is NOT kept in memory — YPIR copies it into its own
-/// internal representation during construction. Hints and tier0 use
-/// `Bytes` (reference-counted) to avoid cloning on each HTTP response.
+/// internal representation during construction. Tier0 uses `Bytes`
+/// (reference-counted) to avoid cloning on each HTTP response.
 pub struct ServingState {
     pub tier0_data: Bytes,
     pub tier1: OwnedTierState,
     pub tier2: OwnedTierState,
     pub tier1_scenario: YpirScenario,
     pub tier2_scenario: YpirScenario,
-    pub tier1_hint: Bytes,
-    pub tier2_hint: Bytes,
     pub metadata: PirMetadata,
 }
 
@@ -503,16 +471,14 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
 
     info!("Initializing YPIR servers");
     let tier1_scenario = tier1_scenario();
-    let mut tier1 = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
+    let tier1 = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
     drop(tier1_data);
-    let tier1_hint = Bytes::from(tier1.take_hint_bytes());
-    info!(hint_bytes = tier1_hint.len(), "Tier 1 YPIR ready");
+    info!("Tier 1 YPIR ready");
 
     let tier2_scenario = tier2_scenario();
-    let mut tier2 = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
+    let tier2 = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
     drop(tier2_data);
-    let tier2_hint = Bytes::from(tier2.take_hint_bytes());
-    info!(hint_bytes = tier2_hint.len(), "Tier 2 YPIR ready");
+    info!("Tier 2 YPIR ready");
 
     info!(elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()), "Server ready");
 
@@ -522,8 +488,6 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
         tier2,
         tier1_scenario,
         tier2_scenario,
-        tier1_hint,
-        tier2_hint,
         metadata,
     })
 }

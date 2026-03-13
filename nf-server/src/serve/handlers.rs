@@ -46,28 +46,6 @@ pub(crate) async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl
     axum::Json(s.tier2_scenario.clone()).into_response()
 }
 
-/// `GET /hint/tier1` — Return precomputed YPIR hint for Tier 1.
-pub(crate) async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let guard = require_serving!(state);
-    let s = guard.as_ref().expect("guaranteed Some by require_serving");
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        s.tier1_hint.clone(),
-    )
-        .into_response()
-}
-
-/// `GET /hint/tier2` — Return precomputed YPIR hint for Tier 2.
-pub(crate) async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let guard = require_serving!(state);
-    let s = guard.as_ref().expect("guaranteed Some by require_serving");
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        s.tier2_hint.clone(),
-    )
-        .into_response()
-}
-
 // ── YPIR query endpoints ─────────────────────────────────────────────────────
 
 /// `POST /tier1/query` — Process an encrypted YPIR query against Tier 1.

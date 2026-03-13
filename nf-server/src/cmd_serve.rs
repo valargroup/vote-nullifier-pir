@@ -72,8 +72,6 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/tier0", get(handlers::get_tier0))
         .route("/params/tier1", get(handlers::get_params_tier1))
         .route("/params/tier2", get(handlers::get_params_tier2))
-        .route("/hint/tier1", get(handlers::get_hint_tier1))
-        .route("/hint/tier2", get(handlers::get_hint_tier2))
         .route("/tier1/query", post(handlers::post_tier1_query))
         .route("/tier2/query", post(handlers::post_tier2_query))
         .route("/tier1/row/:idx", get(handlers::get_tier1_row))

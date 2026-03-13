@@ -63,8 +63,6 @@ async fn main() -> Result<()> {
         .route("/tier0", get(get_tier0))
         .route("/params/tier1", get(get_params_tier1))
         .route("/params/tier2", get(get_params_tier2))
-        .route("/hint/tier1", get(get_hint_tier1))
-        .route("/hint/tier2", get(get_hint_tier2))
         .route("/tier1/query", post(post_tier1_query))
         .route("/tier2/query", post(post_tier2_query))
         .route("/tier1/row/:idx", get(get_tier1_row))
@@ -97,20 +95,6 @@ async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl IntoRespon
 
 async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     axum::Json(state.serving.tier2_scenario.clone())
-}
-
-async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.serving.tier1_hint.clone(),
-    )
-}
-
-async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.serving.tier2_hint.clone(),
-    )
 }
 
 async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
