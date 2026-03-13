@@ -22,9 +22,8 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
 use pir_server::{
-    HealthInfo, RootInfo, ServingState,
-    TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS, TIER2_ROW_BYTES,
-    read_tier_row, dispatch_query,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, TIER1_ROWS, TIER1_ROW_BYTES,
+    TIER2_ROWS, TIER2_ROW_BYTES,
 };
 use tracing::info;
 
@@ -63,8 +62,6 @@ async fn main() -> Result<()> {
         .route("/tier0", get(get_tier0))
         .route("/params/tier1", get(get_params_tier1))
         .route("/params/tier2", get(get_params_tier2))
-        .route("/hint/tier1", get(get_hint_tier1))
-        .route("/hint/tier2", get(get_hint_tier2))
         .route("/tier1/query", post(post_tier1_query))
         .route("/tier2/query", post(post_tier2_query))
         .route("/tier1/row/:idx", get(get_tier1_row))
@@ -99,26 +96,24 @@ async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl IntoRespon
     axum::Json(state.serving.tier2_scenario.clone())
 }
 
-async fn get_hint_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.serving.tier1_hint.clone(),
-    )
-}
-
-async fn get_hint_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        state.serving.tier2_hint.clone(),
-    )
-}
-
 async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
-    dispatch_query(&state.serving.tier1, "tier1", &body, &state.next_req_id, &state.inflight_requests)
+    dispatch_query(
+        &state.serving.tier1,
+        "tier1",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
 }
 
 async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
-    dispatch_query(&state.serving.tier2, "tier2", &body, &state.next_req_id, &state.inflight_requests)
+    dispatch_query(
+        &state.serving.tier2,
+        "tier2",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
 }
 
 async fn get_tier1_row(
@@ -153,7 +148,11 @@ fn get_tier_row_inner(
             row,
         )
             .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("read error: {e}")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read error: {e}"),
+        )
+            .into_response(),
     }
 }
 
