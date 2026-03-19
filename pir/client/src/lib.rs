@@ -327,13 +327,34 @@ impl PirClient {
             .map(|(idx, _)| *idx)
             .unwrap_or(0);
 
+        // Validate the tier 2 index before passing it to ypir_query.
+        // ypir_query has an ensure!(row_idx < num_items) that returns Err
+        // *before* sending the HTTP request — if that fires, no tier 2
+        // request reaches the server and we leak an oracle bit. A malicious
+        // server can trigger this by setting tier2 num_items too small or
+        // crafting tier 1 data that produces out-of-bounds indices. Clamp to
+        // dummy index 0 so the query always goes out; propagate the error
+        // only after both queries have been sent.
+        let t2_bounds_err = if t2_row_idx >= self.tier2_scenario.num_items {
+            Some(anyhow::anyhow!(
+                "tier2 row_idx {} >= num_items {}",
+                t2_row_idx, self.tier2_scenario.num_items
+            ))
+        } else {
+            None
+        };
+        let t2_query_idx = if t2_bounds_err.is_some() { 0 } else { t2_row_idx };
+
         // Always send tier 2 to void error-based oracles.
         let tier2_result = self
-            .ypir_query(&self.tier2_scenario, "tier2", t2_row_idx, TIER2_ROW_BYTES)
+            .ypir_query(&self.tier2_scenario, "tier2", t2_query_idx, TIER2_ROW_BYTES)
             .await;
 
         // Propagate errors only after both queries have been sent.
         let (t2_row_idx, tier1_timing) = tier1_outcome?;
+        if let Some(e) = t2_bounds_err {
+            return Err(e);
+        }
         let (tier2_row, tier2_timing) = tier2_result?;
 
         let proof = process_tier2_and_build(
