@@ -9,7 +9,6 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
-
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
 // Re-exported so downstream crates (e.g. librustvoting) can reference the type
@@ -302,11 +301,28 @@ impl PirClient {
 
         // Process tier 1 (PIR) — capture the outcome without `?` so that a
         // tier 2 query is always sent regardless of tier 1 success.
+        //
+        // process_tier1 is wrapped in catch_unwind so that a panic (e.g. from
+        // a debug_assert or an unexpected slice bounds violation) cannot
+        // prevent the tier 2 query from being sent. Without this, a panic
+        // here would unwind past the tier 2 dispatch and give the server an
+        // observable one-query-vs-two oracle.
         let tier1_outcome = self
             .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
             .await
             .and_then(|(row, timing)| {
-                let s2 = process_tier1(&row, nullifier, &mut path)?;
+                let mut_path = &mut path;
+                let s2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    process_tier1(&row, nullifier, mut_path)
+                }))
+                .unwrap_or_else(|payload| {
+                    let msg = payload
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic");
+                    Err(anyhow::anyhow!("process_tier1 panicked: {}", msg))
+                })?;
                 Ok((s1 * TIER1_LEAVES + s2, timing))
             });
 
