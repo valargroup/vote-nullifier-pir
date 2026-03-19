@@ -4,11 +4,12 @@
 //! retrieves circuit-ready `ImtProofData` without revealing the queried
 //! nullifier to the server.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
+use rand::Rng;
 
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
@@ -293,6 +294,15 @@ impl PirClient {
     /// and use the binary "crash / no-crash" signal as an oracle. By
     /// unconditionally sending a (possibly dummy) tier 2 query we ensure the
     /// server always sees both requests and gains no information from errors.
+    ///
+    /// **Timing-oracle mitigation**: a malicious server could also populate
+    /// selected rows with malformed field elements. Decryption succeeds but
+    /// `process_tier1` returns `Err` much faster (~<1μs) than a successful
+    /// parse + binary search (~10-50μs). If the server can measure the gap
+    /// between its tier 1 response and the arriving tier 2 request, the
+    /// processing-time delta could leak which row was queried. We insert a
+    /// random delay (uniform 2-10ms) before dispatching the tier 2 query so
+    /// the signal is buried under ~100-500× more noise than the delta.
     async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
@@ -302,11 +312,28 @@ impl PirClient {
 
         // Process tier 1 (PIR) — capture the outcome without `?` so that a
         // tier 2 query is always sent regardless of tier 1 success.
+        //
+        // process_tier1 is wrapped in catch_unwind so that a panic (e.g. from
+        // a debug_assert or an unexpected slice bounds violation) cannot
+        // prevent the tier 2 query from being sent. Without this, a panic
+        // here would unwind past the tier 2 dispatch and give the server an
+        // observable one-query-vs-two oracle.
         let tier1_outcome = self
             .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
             .await
             .and_then(|(row, timing)| {
-                let s2 = process_tier1(&row, nullifier, &mut path)?;
+                let mut_path = &mut path;
+                let s2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    process_tier1(&row, nullifier, mut_path)
+                }))
+                .unwrap_or_else(|payload| {
+                    let msg = payload
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| payload.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic");
+                    Err(anyhow::anyhow!("process_tier1 panicked: {}", msg))
+                })?;
                 Ok((s1 * TIER1_LEAVES + s2, timing))
             });
 
@@ -316,6 +343,11 @@ impl PirClient {
             .as_ref()
             .map(|(idx, _)| *idx)
             .unwrap_or(0);
+
+        // Random jitter before tier 2 query to prevent the server from
+        // inferring tier 1 success/failure via inter-query timing.
+        let jitter = Duration::from_millis(rand::thread_rng().gen_range(2..=10));
+        tokio::time::sleep(jitter).await;
 
         // Always send tier 2 to void error-based oracles.
         let tier2_result = self
