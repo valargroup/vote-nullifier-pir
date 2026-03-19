@@ -4,12 +4,11 @@
 //! retrieves circuit-ready `ImtProofData` without revealing the queried
 //! nullifier to the server.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
-use rand::Rng;
 
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
@@ -294,15 +293,6 @@ impl PirClient {
     /// and use the binary "crash / no-crash" signal as an oracle. By
     /// unconditionally sending a (possibly dummy) tier 2 query we ensure the
     /// server always sees both requests and gains no information from errors.
-    ///
-    /// **Timing-oracle mitigation**: a malicious server could also populate
-    /// selected rows with malformed field elements. Decryption succeeds but
-    /// `process_tier1` returns `Err` much faster (~<1μs) than a successful
-    /// parse + binary search (~10-50μs). If the server can measure the gap
-    /// between its tier 1 response and the arriving tier 2 request, the
-    /// processing-time delta could leak which row was queried. We insert a
-    /// random delay (uniform 2-10ms) before dispatching the tier 2 query so
-    /// the signal is buried under ~100-500× more noise than the delta.
     async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
@@ -361,11 +351,6 @@ impl PirClient {
             None
         };
         let t2_query_idx = if t2_bounds_err.is_some() { 0 } else { t2_row_idx };
-
-        // Random jitter before tier 2 query to prevent the server from
-        // inferring tier 1 success/failure via inter-query timing.
-        let jitter = Duration::from_millis(rand::thread_rng().gen_range(2..=10));
-        tokio::time::sleep(jitter).await;
 
         // Always send tier 2 to void error-based oracles.
         let tier2_result = self
