@@ -159,7 +159,7 @@ fn get_tier_row_inner(
 async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let info = RootInfo {
         root29: state.serving.metadata.root29.clone(),
-        root26: state.serving.metadata.root26.clone(),
+        root25: state.serving.metadata.root25.clone(),
         num_ranges: state.serving.metadata.num_ranges,
         pir_depth: state.serving.metadata.pir_depth,
         height: state.serving.metadata.height,

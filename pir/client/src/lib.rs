@@ -11,10 +11,10 @@ use ff::PrimeField as _;
 use pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
-use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
+use imt_tree::tree::{precompute_empty_hashes_k2, TREE_DEPTH};
 // Re-exported so downstream crates (e.g. librustvoting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
-pub use imt_tree::ImtProofData;
+pub use imt_tree::{ImtProofData, PuncturedImtProofData};
 
 use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
@@ -131,7 +131,7 @@ fn process_tier1(
 }
 
 /// Parse a Tier 2 row, locate the nullifier's leaf, fill tier-2 and padding
-/// siblings into `path`, and assemble the final [`ImtProofData`].
+/// siblings into `path`, and assemble the final [`PuncturedImtProofData`].
 fn process_tier2_and_build(
     tier2_row: &[u8],
     t2_row_idx: usize,
@@ -140,7 +140,7 @@ fn process_tier2_and_build(
     path: &mut [Fp; TREE_DEPTH],
     empty_hashes: &[Fp; TREE_DEPTH],
     root29: Fp,
-) -> Result<ImtProofData> {
+) -> Result<PuncturedImtProofData> {
     let hasher = PoseidonHasher::new();
     let tier2 = Tier2Row::from_bytes(tier2_row)?;
     let valid_leaves = valid_leaves_for_row(num_ranges, t2_row_idx);
@@ -149,23 +149,16 @@ fn process_tier2_and_build(
         .find_leaf(nullifier, valid_leaves)
         .context("nullifier not found in Tier 2 leaf scan")?;
 
-    // Fill the bottom 8 levels of the Merkle path with the tier-2 siblings
     fill_path(path, 0, &tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher));
-    // Fill the last 3 levels with empty hashes.
-    // At the current nullifier numbers, ~51, within 2^26 -> height 26 is sufficient.
-    // Changing height would require regenerating . To bullet-proof the system, we create
-    // circuits that assume height of 29 which fits 536M.
-    // To bridge the gap between what we have today in PIR and the circuit's assumptions,
-    // we add empty hash pads.
+    // Pad from PIR depth (25) to circuit depth (29) with empty hashes.
     fill_path(path, PIR_DEPTH, &empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
     let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
-    let (low, width) = tier2.leaf_record(leaf_local_idx);
+    let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(leaf_local_idx);
 
-    Ok(ImtProofData {
+    Ok(PuncturedImtProofData {
         root: root29,
-        low,
-        width,
+        nf_bounds: [nf_lo, nf_mid, nf_hi],
         leaf_pos: global_leaf_idx as u32,
         path: *path,
     })
@@ -228,7 +221,7 @@ impl PirClient {
         let root29 = Option::from(Fp::from_repr(root29_arr))
             .ok_or_else(|| anyhow::anyhow!("invalid root29 field element"))?;
 
-        let empty_hashes = precompute_empty_hashes();
+        let empty_hashes = precompute_empty_hashes_k2();
 
         Ok(Self {
             server_url: base.to_string(),
@@ -244,9 +237,9 @@ impl PirClient {
 
     /// Perform private Merkle path retrieval for a nullifier.
     ///
-    /// Returns circuit-ready `ImtProofData` with a 29-element path
-    /// (26 PIR siblings + 3 empty-hash padding).
-    pub async fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
+    /// Returns circuit-ready `PuncturedImtProofData` with a 29-element path
+    /// (25 PIR siblings + 4 empty-hash padding).
+    pub async fn fetch_proof(&self, nullifier: Fp) -> Result<PuncturedImtProofData> {
         let (proof, _timing) = self.fetch_proof_inner(nullifier).await?;
         Ok(proof)
     }
@@ -255,7 +248,7 @@ impl PirClient {
     ///
     /// All queries run concurrently via `try_join_all`, sharing the same
     /// `PirClient` (and thus the same HTTP client and Tier 0 data).
-    pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
+    pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<PuncturedImtProofData>> {
         log::debug!(
             "[PIR] Starting parallel fetch for {} notes...",
             nullifiers.len()
@@ -293,7 +286,7 @@ impl PirClient {
     /// and use the binary "crash / no-crash" signal as an oracle. By
     /// unconditionally sending a (possibly dummy) tier 2 query we ensure the
     /// server always sees both requests and gains no information from errors.
-    async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
+    async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(PuncturedImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
 
@@ -465,7 +458,7 @@ fn fmt_opt_time(ms: Option<f64>) -> String {
 }
 
 /// Print a detailed timing breakdown table for a batch of PIR proof fetches.
-fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f64) {
+fn print_timing_table(results: &[(usize, PuncturedImtProofData, NoteTiming)], wall_ms: f64) {
     if !log::log_enabled!(log::Level::Debug) {
         return;
     }
@@ -578,16 +571,16 @@ impl PirClientBlocking {
     }
 
     /// Perform a private Merkle path retrieval for a nullifier (blocking).
-    pub fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
+    pub fn fetch_proof(&self, nullifier: Fp) -> Result<PuncturedImtProofData> {
         self.rt.block_on(self.inner.fetch_proof(nullifier))
     }
 
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel (blocking).
-    pub fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
+    pub fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<PuncturedImtProofData>> {
         self.rt.block_on(self.inner.fetch_proofs(nullifiers))
     }
 
-    /// The depth-29 root (PIR depth 26 padded to tree depth 29).
+    /// The depth-29 root (PIR depth 25 padded to tree depth 29).
     pub fn root29(&self) -> Fp {
         self.inner.root29
     }
@@ -607,7 +600,7 @@ pub fn fetch_proof_local(
     nullifier: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
     root29: Fp,
-) -> Result<ImtProofData> {
+) -> Result<PuncturedImtProofData> {
     let mut path = [Fp::default(); TREE_DEPTH];
     let tier0 = Tier0Data::from_bytes(tier0_data.to_vec())?;
 
@@ -662,7 +655,7 @@ mod tests {
         tier0_data: Vec<u8>,
         tier1_data: Vec<u8>,
         tier2_data: Vec<u8>,
-        ranges: Vec<[Fp; 2]>,
+        ranges: Vec<[Fp; 3]>,
         empty_hashes: [Fp; TREE_DEPTH],
         root29: Fp,
     }
@@ -673,7 +666,7 @@ mod tests {
             let tree = pir_export::build_pir_tree(ranges.clone()).unwrap();
 
             let tier0_data = pir_export::tier0::export(
-                &tree.root26,
+                &tree.root25,
                 &tree.levels,
                 &tree.ranges,
                 &tree.empty_hashes,
@@ -714,21 +707,22 @@ mod tests {
         let raw_nfs: Vec<Fp> = (0..100).map(|_| Fp::random(&mut rng)).collect();
         let fix = TestFixture::build(&raw_nfs);
 
-        for &[low, _] in fix.ranges.iter().take(20) {
+        for &[nf_lo, _, _] in fix.ranges.iter().take(20) {
+            let value = nf_lo + Fp::one();
             let proof = fetch_proof_local(
                 &fix.tier0_data,
                 &fix.tier1_data,
                 &fix.tier2_data,
                 fix.ranges.len(),
-                low,
+                value,
                 &fix.empty_hashes,
                 fix.root29,
             )
-            .expect("fetch_proof_local should succeed for a valid range low");
+            .expect("fetch_proof_local should succeed for a value in range");
             assert!(
-                proof.verify(low),
-                "proof should verify for value {}",
-                hex::encode(low.to_repr())
+                proof.verify(value),
+                "proof should verify for value {:?}",
+                value,
             );
         }
     }
@@ -738,7 +732,7 @@ mod tests {
         let raw_nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
         let fix = TestFixture::build(&raw_nfs);
 
-        let value = fix.ranges[0][0];
+        let value = fix.ranges[0][0] + Fp::one(); // nf_lo + 1 is inside the range
         let proof = fetch_proof_local(
             &fix.tier0_data,
             &fix.tier1_data,
@@ -829,7 +823,7 @@ mod tests {
         let fix = TestFixture::build(&raw_nfs);
         let tier0 = Tier0Data::from_bytes(fix.tier0_data.clone()).unwrap();
 
-        let value = fix.ranges[0][0];
+        let value = fix.ranges[0][0] + Fp::one();
         let mut path = [Fp::default(); TREE_DEPTH];
 
         let s1 = process_tier0(&tier0, value, &mut path).unwrap();
@@ -856,7 +850,6 @@ mod tests {
 
         assert!(proof.verify(value));
         assert_eq!(proof.root, fix.root29);
-        assert!(proof.low <= value);
     }
 
     // ── valid_leaves_for_row ──────────────────────────────────────────────
@@ -932,7 +925,7 @@ mod tests {
         let ranges = build_ranges_with_sentinels(&raw_nfs);
         let tree = pir_export::build_pir_tree(ranges).unwrap();
         let tier0_data = pir_export::tier0::export(
-            &tree.root26,
+            &tree.root25,
             &tree.levels,
             &tree.ranges,
             &tree.empty_hashes,
@@ -940,7 +933,7 @@ mod tests {
 
         let root_info = pir_types::RootInfo {
             root29: hex::encode(tree.root29.to_repr()),
-            root26: hex::encode(tree.root26.to_repr()),
+            root25: hex::encode(tree.root25.to_repr()),
             num_ranges: tree.ranges.len(),
             pir_depth: PIR_DEPTH,
             height: None,

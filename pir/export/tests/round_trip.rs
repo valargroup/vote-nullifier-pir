@@ -1,14 +1,14 @@
 //! Integration test: full PIR round-trip without YPIR.
 //!
-//! Builds a depth-26 tree from synthetic nullifiers, exports tier data,
-//! parses it back, constructs proofs, and verifies them.
+//! Builds a depth-25 punctured-range tree (K=2) from synthetic nullifiers,
+//! exports tier data, parses it back, constructs proofs, and verifies them.
 
 use ff::{Field, PrimeField as _};
 use pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
-use imt_tree::tree::{build_sentinel_tree, TREE_DEPTH};
-use imt_tree::ImtProofData;
+use imt_tree::tree::TREE_DEPTH;
+use imt_tree::PuncturedImtProofData;
 
 use pir_export::tier0::Tier0Data;
 use pir_export::tier1::Tier1Row;
@@ -27,7 +27,7 @@ fn construct_proof(
     value: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
     root29: Fp,
-) -> Option<ImtProofData> {
+) -> Option<PuncturedImtProofData> {
     let hasher = PoseidonHasher::new();
     let tier0 = Tier0Data::from_bytes(tier0_data.to_vec()).ok()?;
 
@@ -35,13 +35,11 @@ fn construct_proof(
 
     let mut path = [Fp::default(); TREE_DEPTH];
 
-    // Tier 0 siblings (bottom-up levels 15..25)
     let tier0_siblings = tier0.extract_siblings(s1);
     for (i, &sib) in tier0_siblings.iter().enumerate() {
         path[PIR_DEPTH - TIER0_LAYERS + i] = sib;
     }
 
-    // Tier 1: direct row lookup
     let t1_offset = s1 * TIER1_ROW_BYTES;
     let tier1_row = &tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES];
     let tier1 = Tier1Row::from_bytes(tier1_row).ok()?;
@@ -53,7 +51,6 @@ fn construct_proof(
         path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS + i] = sib;
     }
 
-    // Tier 2: direct row lookup
     let t2_row_idx = s1 * TIER1_LEAVES + s2;
     let t2_offset = t2_row_idx * TIER2_ROW_BYTES;
     let tier2_row = &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES];
@@ -67,16 +64,14 @@ fn construct_proof(
         path[i] = sib;
     }
 
-    // Path padding (depth 26 → 29)
     path[PIR_DEPTH..TREE_DEPTH].copy_from_slice(&empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
     let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_idx;
-    let (low, width) = tier2.leaf_record(leaf_idx);
+    let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(leaf_idx);
 
-    Some(ImtProofData {
+    Some(PuncturedImtProofData {
         root: root29,
-        low,
-        width,
+        nf_bounds: [nf_lo, nf_mid, nf_hi],
         leaf_pos: global_leaf_idx as u32,
         path,
     })
@@ -92,12 +87,12 @@ fn test_small_tree_round_trip() {
     eprintln!("  Ranges: {}", ranges.len());
 
     let tree = build_pir_tree(ranges.clone()).unwrap();
-    eprintln!("  Root26: {}", hex::encode(tree.root26.to_repr()));
+    eprintln!("  Root25: {}", hex::encode(tree.root25.to_repr()));
     eprintln!("  Root29: {}", hex::encode(tree.root29.to_repr()));
 
     // Export tier data
     let tier0_data =
-        pir_export::tier0::export(&tree.root26, &tree.levels, &tree.ranges, &tree.empty_hashes);
+        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
 
     let mut tier1_data = Vec::new();
     pir_export::tier1::export(
@@ -121,9 +116,9 @@ fn test_small_tree_round_trip() {
 
     // Test multiple values
     let mut passed = 0;
-    for &[low, _width] in ranges.iter().take(20) {
-        // Query with the low value of each range (guaranteed to be in-range)
-        let value = low;
+    for &[nf_lo, _, _] in ranges.iter().take(20) {
+        // nf_lo + 1 is always strictly inside the punctured range
+        let value = nf_lo + Fp::one();
         let proof = construct_proof(
             &tier0_data,
             &tier1_data,
@@ -156,48 +151,30 @@ fn test_small_tree_round_trip() {
 }
 
 #[test]
-fn test_root_extension_matches_depth29() {
-    // Build trees with the same nullifiers and verify roots match
+fn test_root_extension_is_deterministic() {
     let mut rng = rand::thread_rng();
     let raw_nfs: Vec<Fp> = (0..50).map(|_| Fp::random(&mut rng)).collect();
 
-    // Depth-29 tree via existing system
-    let tree29 = build_sentinel_tree(&raw_nfs).unwrap();
-    let root29_existing = tree29.root();
+    let ranges1 = build_ranges_with_sentinels(&raw_nfs);
+    let tree1 = build_pir_tree(ranges1).unwrap();
 
-    // Depth-26 PIR tree with root extension
-    let ranges = build_ranges_with_sentinels(&raw_nfs);
-    let tree26 = build_pir_tree(ranges).unwrap();
-    let root29_extended = tree26.root29;
+    let ranges2 = build_ranges_with_sentinels(&raw_nfs);
+    let tree2 = build_pir_tree(ranges2).unwrap();
 
-    eprintln!(
-        "  Existing root29:  {}",
-        hex::encode(root29_existing.to_repr())
-    );
-    eprintln!(
-        "  Extended root29:  {}",
-        hex::encode(root29_extended.to_repr())
-    );
-
-    assert_eq!(
-        root29_existing, root29_extended,
-        "Depth-29 root from existing tree must match PIR extended root"
-    );
+    assert_eq!(tree1.root25, tree2.root25);
+    assert_eq!(tree1.root29, tree2.root29);
 }
 
 #[test]
-fn test_pir_proof_matches_existing_prove() {
-    // Verify PIR proofs produce the same (low, width) as NullifierTree::prove()
+fn test_pir_proof_verifies_independently() {
     let mut rng = rand::thread_rng();
     let raw_nfs: Vec<Fp> = (0..200).map(|_| Fp::random(&mut rng)).collect();
-
-    let tree29 = build_sentinel_tree(&raw_nfs).unwrap();
 
     let ranges = build_ranges_with_sentinels(&raw_nfs);
     let tree = build_pir_tree(ranges.clone()).unwrap();
 
     let tier0_data =
-        pir_export::tier0::export(&tree.root26, &tree.levels, &tree.ranges, &tree.empty_hashes);
+        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
     let mut tier1_data = Vec::new();
     pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_data)
         .unwrap();
@@ -205,10 +182,9 @@ fn test_pir_proof_matches_existing_prove() {
     pir_export::tier2::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier2_data)
         .unwrap();
 
-    for &[low, _] in ranges.iter().take(50) {
-        let value = low;
+    for &[nf_lo, _, _] in ranges.iter().take(50) {
+        let value = nf_lo + Fp::one();
 
-        let proof_existing = tree29.prove(value).expect("existing prove failed");
         let proof_pir = construct_proof(
             &tier0_data,
             &tier1_data,
@@ -220,8 +196,6 @@ fn test_pir_proof_matches_existing_prove() {
         )
         .expect("PIR proof construction failed");
 
-        assert_eq!(proof_existing.low, proof_pir.low, "low mismatch");
-        assert_eq!(proof_existing.width, proof_pir.width, "width mismatch");
         assert!(proof_pir.verify(value), "PIR proof verification failed");
     }
 }
@@ -255,7 +229,7 @@ fn test_build_and_export_writes_files() {
     assert_eq!(meta.height, Some(2_800_000));
     assert_eq!(meta.pir_depth, pir_export::PIR_DEPTH);
     assert_eq!(meta.root29, hex::encode(tree.root29.to_repr()));
-    assert!(meta.num_ranges > 50); // sentinels add extra ranges
+    assert!(meta.num_ranges > 25); // K=2 punctured ranges from 50 nfs + sentinels
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -287,7 +261,7 @@ fn test_subset_export_produces_different_root() {
 
     // Export the subset tree and verify it round-trips correctly
     let tier0_data = pir_export::tier0::export(
-        &subset_tree.root26,
+        &subset_tree.root25,
         &subset_tree.levels,
         &subset_tree.ranges,
         &subset_tree.empty_hashes,
@@ -310,18 +284,18 @@ fn test_subset_export_produces_different_root() {
     .unwrap();
 
     // Verify proofs for the subset tree work
-    for &[low, _] in subset_ranges.iter().take(20) {
+    for &[nf_lo, _, _] in subset_ranges.iter().take(20) {
         let proof = construct_proof(
             &tier0_data,
             &tier1_data,
             &tier2_data,
             subset_ranges.len(),
-            low,
+            nf_lo + Fp::one(),
             &subset_tree.empty_hashes,
             subset_tree.root29,
         )
         .expect("subset proof construction failed");
-        assert!(proof.verify(low), "subset proof verification failed");
+        assert!(proof.verify(nf_lo + Fp::one()), "subset proof verification failed");
     }
 }
 
@@ -383,18 +357,112 @@ fn test_export_deterministic() {
 }
 
 #[test]
+#[test]
+/// Regression test: a leaf whose tier-2 sibling is an empty padding slot must
+/// still produce a valid proof. Before the K=2 empty-hash fix, `extract_siblings`
+/// used `hash3(0,0,0)` while `build_levels` padded with `hash(0,0)`, causing a
+/// Merkle-path mismatch.
+fn test_proof_with_empty_tier2_sibling() {
+    // 3 nullifiers + sentinels → very few ranges. Most tier-2 leaf slots are
+    // empty padding, so the LAST populated leaf in its row has an empty sibling.
+    let raw_nfs: Vec<Fp> = vec![Fp::from(100u64), Fp::from(200u64), Fp::from(300u64)];
+    let ranges = build_ranges_with_sentinels(&raw_nfs);
+    let tree = build_pir_tree(ranges.clone()).unwrap();
+
+    let tier0_data =
+        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let mut tier1_data = Vec::new();
+    pir_export::tier1::export(
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        &mut tier1_data,
+    )
+    .unwrap();
+    let mut tier2_data = Vec::new();
+    pir_export::tier2::export(
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        &mut tier2_data,
+    )
+    .unwrap();
+
+    // Find the last populated range — its sibling leaf slot is empty padding.
+    let last_idx = ranges.len() - 1;
+    let is_even_idx = last_idx % 2 == 0;
+    // An even-indexed leaf has sibling at idx+1 (odd), which is empty if it's
+    // the last populated leaf. Pick the value to query accordingly.
+    let target_idx = if is_even_idx { last_idx } else { last_idx - 1 };
+    let [nf_lo, _, _] = ranges[target_idx];
+    let value = nf_lo + Fp::one();
+
+    let proof = construct_proof(
+        &tier0_data,
+        &tier1_data,
+        &tier2_data,
+        ranges.len(),
+        value,
+        &tree.empty_hashes,
+        tree.root29,
+    )
+    .expect("proof construction should succeed for leaf with empty sibling");
+
+    assert!(
+        proof.verify(value),
+        "proof with empty tier-2 sibling should verify \
+         (regression for K=2 empty-hash mismatch)"
+    );
+}
+
+#[test]
+fn test_tail_coverage_near_field_max() {
+    use imt_tree::tree::find_punctured_range_for_value;
+
+    let raw_nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
+    let ranges = build_ranges_with_sentinels(&raw_nfs);
+
+    // p - 2 is the largest non-sentinel value (p - 1 is a sentinel).
+    let near_max = Fp::from(2u64).neg(); // p - 2
+    let result = find_punctured_range_for_value(&ranges, near_max);
+    assert!(
+        result.is_some(),
+        "value p-2 should be covered by a punctured range (tail sentinel at p-1)"
+    );
+
+    // p - 1 itself is a sentinel (nullifier), so it must NOT be found.
+    let p_minus_1 = Fp::one().neg();
+    assert!(
+        find_punctured_range_for_value(&ranges, p_minus_1).is_none(),
+        "p-1 is a sentinel and should not be in any range"
+    );
+
+    // Value 0 is also a sentinel.
+    assert!(
+        find_punctured_range_for_value(&ranges, Fp::zero()).is_none(),
+        "0 is a sentinel and should not be in any range"
+    );
+
+    // Value 1 should be covered (just above sentinel 0).
+    assert!(
+        find_punctured_range_for_value(&ranges, Fp::one()).is_some(),
+        "value 1 should be covered (above sentinel 0)"
+    );
+}
+
+#[test]
 fn test_tier0_binary_search() {
     let raw_nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 1000)).collect();
     let ranges = build_ranges_with_sentinels(&raw_nfs);
     let tree = build_pir_tree(ranges.clone()).unwrap();
 
     let tier0_data =
-        pir_export::tier0::export(&tree.root26, &tree.levels, &tree.ranges, &tree.empty_hashes);
+        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
     let tier0 = Tier0Data::from_bytes(tier0_data).unwrap();
 
     // Test that values within ranges are found
-    for &[low, _width] in ranges.iter().take(10) {
-        let result = tier0.find_subtree(low);
-        assert!(result.is_some(), "find_subtree failed for low={:?}", low);
+    for &[nf_lo, _, _] in ranges.iter().take(10) {
+        let result = tier0.find_subtree(nf_lo + Fp::one());
+        assert!(result.is_some(), "find_subtree failed for nf_lo={:?}", nf_lo);
     }
 }

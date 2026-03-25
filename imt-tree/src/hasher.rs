@@ -16,6 +16,8 @@ pub struct PoseidonHasher {
     mds: [[Fp; 3]; 3],
     /// `ConstantLength<2>` capacity element: `L * 2^64` where `L = 2`.
     initial_capacity: Fp,
+    /// `ConstantLength<3>` capacity element: `L * 2^64` where `L = 3`.
+    initial_capacity_3: Fp,
 }
 
 impl Default for PoseidonHasher {
@@ -30,10 +32,12 @@ impl PoseidonHasher {
         let (round_constants, mds, _) = P128Pow5T3::constants();
         // ConstantLength<L> encodes capacity as L * 2^64 (with output length 1).
         let initial_capacity = Fp::from_u128(2u128 << 64);
+        let initial_capacity_3 = Fp::from_u128(3u128 << 64);
         PoseidonHasher {
             round_constants,
             mds,
             initial_capacity,
+            initial_capacity_3,
         }
     }
 
@@ -53,6 +57,28 @@ impl PoseidonHasher {
     #[inline]
     pub fn hash(&self, left: Fp, right: Fp) -> Fp {
         let mut state = [left, right, self.initial_capacity];
+        self.permute(&mut state);
+        state[0]
+    }
+
+    /// Hash three field elements using Poseidon with `ConstantLength<3>`.
+    ///
+    /// With width = 3, rate = 2 the sponge needs two absorption blocks:
+    ///
+    /// ```text
+    /// state = [a, b, capacity_3]     (capacity_3 = 3 * 2^64)
+    /// permute(&mut state)
+    /// state[0] += c; state[1] += 0   (second block: one message + one padding zero)
+    /// permute(&mut state)
+    /// return state[0]
+    /// ```
+    ///
+    /// Correctness is verified by `test_hash3_equivalence`.
+    #[inline]
+    pub fn hash3(&self, a: Fp, b: Fp, c: Fp) -> Fp {
+        let mut state = [a, b, self.initial_capacity_3];
+        self.permute(&mut state);
+        state[0] += c;
         self.permute(&mut state);
         state[0]
     }
