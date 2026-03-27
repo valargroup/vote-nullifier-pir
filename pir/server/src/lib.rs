@@ -90,6 +90,8 @@ pub struct TierServer<'a> {
     offline: std::mem::ManuallyDrop<OfflinePrecomputedValues<'a>>,
     _params: Box<Params>,
     scenario: YpirScenario,
+    expected_pqr_bytes: usize,
+    expected_pp_bytes: usize,
 }
 
 /// Per-request timing breakdown for a single PIR query.
@@ -158,11 +160,19 @@ impl<'a> TierServer<'a> {
             "YPIR offline precomputation done"
         );
 
+        let db_rows = 1usize << (params.db_dim_1 + params.poly_len_log2);
+        let expected_pqr_bytes = db_rows * U64_BYTES;
+        let expected_pp_bytes =
+            params.poly_len_log2 * params.t_exp_left * params.poly_len * U64_BYTES;
+        info!(expected_pqr_bytes, expected_pp_bytes, "expected query sizes");
+
         Self {
             server: std::mem::ManuallyDrop::new(server),
             offline: std::mem::ManuallyDrop::new(offline),
             _params: params_box,
             scenario,
+            expected_pqr_bytes,
+            expected_pp_bytes,
         }
     }
 
@@ -204,6 +214,23 @@ impl<'a> TierServer<'a> {
             "pub_params section {} bytes not a multiple of {}",
             remaining,
             U64_BYTES
+        );
+        // Reject queries whose pqr/pub_params sizes don't match the YPIR
+        // parameters for this tier. Without this, a client could force the
+        // server to allocate arbitrarily large Aligned64 buffers (up to the
+        // body limit), and the YPIR library would panic on the size mismatch
+        // inside perform_online_computation_simplepir.
+        anyhow::ensure!(
+            pqr_byte_len == self.expected_pqr_bytes,
+            "pqr size mismatch: got {} bytes, expected {}",
+            pqr_byte_len,
+            self.expected_pqr_bytes
+        );
+        anyhow::ensure!(
+            remaining == self.expected_pp_bytes,
+            "pub_params size mismatch: got {} bytes, expected {}",
+            remaining,
+            self.expected_pp_bytes
         );
         let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -255,6 +282,11 @@ impl<'a> TierServer<'a> {
     /// Return the YPIR scenario parameters for this tier.
     pub fn scenario(&self) -> &YpirScenario {
         &self.scenario
+    }
+
+    /// Expected total query payload size in bytes (including 8-byte header).
+    pub fn expected_query_bytes(&self) -> usize {
+        U64_BYTES + self.expected_pqr_bytes + self.expected_pp_bytes
     }
 }
 

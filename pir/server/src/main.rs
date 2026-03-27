@@ -18,7 +18,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 
-const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
 use pir_server::{

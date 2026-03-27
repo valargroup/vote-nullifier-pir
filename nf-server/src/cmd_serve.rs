@@ -80,7 +80,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/snapshot/prepare", post(rebuild::post_snapshot_prepare))
         .route("/snapshot/status", get(rebuild::get_snapshot_status))
         .route("/health", get(handlers::get_health))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .layer(cors)
         .with_state(state);
 
