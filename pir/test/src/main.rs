@@ -4,7 +4,6 @@
 //!   small   — Synthetic 1000-nullifier tree, full round-trip (~5s)
 //!   local   — Full in-process test with real nullifiers (no HTTP, no YPIR crypto)
 //!   server  — Test against a running pir-server instance (HTTP + YPIR crypto)
-//!   compare — Verify PIR proofs match existing NullifierTree::prove()
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -14,8 +13,6 @@ use clap::{Parser, Subcommand};
 use ff::{Field, PrimeField as _};
 use pasta_curves::Fp;
 use rand::Rng;
-
-use imt_tree::tree::build_sentinel_tree;
 
 use pir_export::build_pir_tree;
 use pir_types::{
@@ -65,17 +62,6 @@ enum Command {
         parallel: bool,
     },
 
-    /// Verify PIR proofs match existing NullifierTree::prove().
-    Compare {
-        /// Path to nullifiers.bin.
-        #[arg(long)]
-        nullifiers: PathBuf,
-
-        /// Number of proofs to compare.
-        #[arg(long, default_value = "100")]
-        num_proofs: usize,
-    },
-
     /// Benchmark YPIR query/response sizes and timing in-process (no HTTP).
     Bench {
         /// Number of YPIR queries per tier.
@@ -102,10 +88,6 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run_server(url, nullifiers, num_proofs, parallel))
         }
-        Command::Compare {
-            nullifiers,
-            num_proofs,
-        } => run_compare(nullifiers, num_proofs),
         Command::Bench { num_queries } => run_bench(num_queries),
     }
 }
@@ -328,119 +310,6 @@ async fn run_server(
     eprintln!("\n  Summary: {} passed, {} failed", passed, failed);
     if failed > 0 {
         anyhow::bail!("{} proofs failed", failed);
-    }
-
-    eprintln!("\n=== PASSED ===");
-    Ok(())
-}
-
-// ── Compare mode ─────────────────────────────────────────────────────────────
-
-fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
-    eprintln!("=== PIR Test: compare (PIR vs NullifierTree) ===\n");
-
-    let raw_nfs = load_nullifiers(&nullifiers_path)?;
-    eprintln!("  Loaded {} nullifiers", raw_nfs.len());
-
-    // Build the existing depth-29 NullifierTree
-    let t0 = Instant::now();
-    let tree29 = build_sentinel_tree(&raw_nfs)?;
-    eprintln!(
-        "  Depth-29 tree built in {:.1}s (root={})",
-        t0.elapsed().as_secs_f64(),
-        &hex::encode(tree29.root().to_repr())[..16],
-    );
-
-    // Build the depth-26 PIR tree
-    let ranges = pir_export::prepare_nullifiers(raw_nfs);
-
-    let t1 = Instant::now();
-    let pir_tree = build_pir_tree(ranges.clone())?;
-    eprintln!(
-        "  PIR tree built in {:.1}s (root25={}, root29={})",
-        t1.elapsed().as_secs_f64(),
-        &hex::encode(pir_tree.root25.to_repr())[..16],
-        &hex::encode(pir_tree.root29.to_repr())[..16],
-    );
-
-    // Note: roots won't match because the K=2 punctured tree has different
-    // leaf commitments than the K=1 tree. We verify each independently.
-
-    let (tier0_data, tier1_data, tier2_data) = export_tiers(&pir_tree)?;
-
-    // Pick random values — use nf_lo + 1 which is always in the punctured range
-    let mut rng = rand::thread_rng();
-    let test_values: Vec<Fp> = (0..num_proofs)
-        .map(|_| {
-            let idx = rng.gen_range(0..ranges.len());
-            let [nf_lo, _, _] = ranges[idx];
-            nf_lo + Fp::one()
-        })
-        .collect();
-
-    let mut matched = 0;
-    let mut mismatched = 0;
-
-    for (i, &value) in test_values.iter().enumerate() {
-        // Get proof from existing K=1 system
-        let proof29 = tree29.prove(value);
-
-        // Get proof from K=2 PIR system
-        let proof_pir = pir_client::fetch_proof_local(
-            &tier0_data,
-            &tier1_data,
-            &tier2_data,
-            ranges.len(),
-            value,
-            &pir_tree.empty_hashes,
-            pir_tree.root29,
-        );
-
-        match (proof29, proof_pir) {
-            (Some(p29), Ok(ppir)) => {
-                let k1_verify = p29.verify(value);
-                let k2_verify = ppir.verify(value);
-
-                if k1_verify && k2_verify {
-                    matched += 1;
-                    if i < 5 || i % 20 == 0 {
-                        eprintln!(
-                            "  Compare {}/{}: BOTH VERIFY leaf_pos_29={} leaf_pos_pir={}",
-                            i + 1,
-                            num_proofs,
-                            p29.leaf_pos,
-                            ppir.leaf_pos,
-                        );
-                    }
-                } else {
-                    mismatched += 1;
-                    eprintln!(
-                        "  Compare {}/{}: MISMATCH k1_verify={} k2_verify={}",
-                        i + 1, num_proofs, k1_verify, k2_verify,
-                    );
-                }
-            }
-            (None, _) => {
-                eprintln!(
-                    "  Compare {}/{}: depth-29 prove returned None",
-                    i + 1,
-                    num_proofs
-                );
-                mismatched += 1;
-            }
-            (_, Err(e)) => {
-                eprintln!("  Compare {}/{}: PIR error: {}", i + 1, num_proofs, e);
-                mismatched += 1;
-            }
-        }
-    }
-
-    eprintln!(
-        "\n  Summary: {} matched, {} mismatched",
-        matched, mismatched
-    );
-    if mismatched > 0 {
-        anyhow::bail!("{} comparisons failed", mismatched);
     }
 
     eprintln!("\n=== PASSED ===");

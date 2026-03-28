@@ -1,8 +1,8 @@
 //! PIR client library for private Merkle path retrieval.
 //!
 //! Provides [`PirClient`] which connects to a `pir-server` instance and
-//! retrieves circuit-ready `ImtProofData` without revealing the queried
-//! nullifier to the server.
+//! retrieves circuit-ready `ImtProofData` without revealing the
+//! queried nullifier to the server.
 
 use std::time::Instant;
 
@@ -11,10 +11,10 @@ use ff::PrimeField as _;
 use pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
-use imt_tree::tree::{precompute_empty_hashes_k2, TREE_DEPTH};
+use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
 // Re-exported so downstream crates (e.g. librustvoting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
-pub use imt_tree::{ImtProofData, PuncturedImtProofData};
+pub use imt_tree::ImtProofData;
 
 use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
@@ -131,7 +131,7 @@ fn process_tier1(
 }
 
 /// Parse a Tier 2 row, locate the nullifier's leaf, fill tier-2 and padding
-/// siblings into `path`, and assemble the final [`PuncturedImtProofData`].
+/// siblings into `path`, and assemble the final [`ImtProofData`].
 fn process_tier2_and_build(
     tier2_row: &[u8],
     t2_row_idx: usize,
@@ -140,7 +140,7 @@ fn process_tier2_and_build(
     path: &mut [Fp; TREE_DEPTH],
     empty_hashes: &[Fp; TREE_DEPTH],
     root29: Fp,
-) -> Result<PuncturedImtProofData> {
+) -> Result<ImtProofData> {
     let hasher = PoseidonHasher::new();
     let tier2 = Tier2Row::from_bytes(tier2_row)?;
     let valid_leaves = valid_leaves_for_row(num_ranges, t2_row_idx);
@@ -156,7 +156,7 @@ fn process_tier2_and_build(
     let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
     let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(leaf_local_idx);
 
-    Ok(PuncturedImtProofData {
+    Ok(ImtProofData {
         root: root29,
         nf_bounds: [nf_lo, nf_mid, nf_hi],
         leaf_pos: global_leaf_idx as u32,
@@ -221,7 +221,7 @@ impl PirClient {
         let root29 = Option::from(Fp::from_repr(root29_arr))
             .ok_or_else(|| anyhow::anyhow!("invalid root29 field element"))?;
 
-        let empty_hashes = precompute_empty_hashes_k2();
+        let empty_hashes = precompute_empty_hashes();
 
         Ok(Self {
             server_url: base.to_string(),
@@ -237,9 +237,9 @@ impl PirClient {
 
     /// Perform private Merkle path retrieval for a nullifier.
     ///
-    /// Returns circuit-ready `PuncturedImtProofData` with a 29-element path
+    /// Returns circuit-ready `ImtProofData` with a 29-element path
     /// (25 PIR siblings + 4 empty-hash padding).
-    pub async fn fetch_proof(&self, nullifier: Fp) -> Result<PuncturedImtProofData> {
+    pub async fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
         let (proof, _timing) = self.fetch_proof_inner(nullifier).await?;
         Ok(proof)
     }
@@ -248,7 +248,7 @@ impl PirClient {
     ///
     /// All queries run concurrently via `try_join_all`, sharing the same
     /// `PirClient` (and thus the same HTTP client and Tier 0 data).
-    pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<PuncturedImtProofData>> {
+    pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
         log::debug!(
             "[PIR] Starting parallel fetch for {} notes...",
             nullifiers.len()
@@ -286,7 +286,7 @@ impl PirClient {
     /// and use the binary "crash / no-crash" signal as an oracle. By
     /// unconditionally sending a (possibly dummy) tier 2 query we ensure the
     /// server always sees both requests and gains no information from errors.
-    async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(PuncturedImtProofData, NoteTiming)> {
+    async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
 
@@ -458,7 +458,7 @@ fn fmt_opt_time(ms: Option<f64>) -> String {
 }
 
 /// Print a detailed timing breakdown table for a batch of PIR proof fetches.
-fn print_timing_table(results: &[(usize, PuncturedImtProofData, NoteTiming)], wall_ms: f64) {
+fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f64) {
     if !log::log_enabled!(log::Level::Debug) {
         return;
     }
@@ -571,12 +571,12 @@ impl PirClientBlocking {
     }
 
     /// Perform a private Merkle path retrieval for a nullifier (blocking).
-    pub fn fetch_proof(&self, nullifier: Fp) -> Result<PuncturedImtProofData> {
+    pub fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
         self.rt.block_on(self.inner.fetch_proof(nullifier))
     }
 
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel (blocking).
-    pub fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<PuncturedImtProofData>> {
+    pub fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
         self.rt.block_on(self.inner.fetch_proofs(nullifiers))
     }
 
@@ -600,7 +600,7 @@ pub fn fetch_proof_local(
     nullifier: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
     root29: Fp,
-) -> Result<PuncturedImtProofData> {
+) -> Result<ImtProofData> {
     let mut path = [Fp::default(); TREE_DEPTH];
     let tier0 = Tier0Data::from_bytes(tier0_data.to_vec())?;
 

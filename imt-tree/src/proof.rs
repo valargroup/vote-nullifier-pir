@@ -30,59 +30,48 @@ fn verify_merkle_path(
     current == root
 }
 
-/// Circuit-compatible IMT non-membership proof data.
-///
-/// Each field maps directly to a circuit witness:
-///
-/// - `root`: public input, checked against the IMT root in the instance column
-/// - `low`, `width`: witnessed interval `(low, width)` pair, hashed to the leaf commitment
-/// - `leaf_pos`: position bits determine swap ordering at each Merkle level
-/// - `path`: sibling hashes for the 29-level Merkle authentication path
-#[derive(Clone, Debug)]
-pub struct ImtProofData {
-    /// The Merkle root of the IMT.
-    pub root: Fp,
-    /// Interval start (low bound of the bracketing leaf).
-    pub low: Fp,
-    /// Interval width (`high - low`, pre-computed during tree construction).
-    pub width: Fp,
-    /// Position of the leaf in the tree.
-    pub leaf_pos: u32,
-    /// Sibling hashes along the 29-level Merkle path (pure siblings).
-    pub path: [Fp; TREE_DEPTH],
-}
-
-impl ImtProofData {
-    /// Verify this proof out-of-circuit.
-    ///
-    /// Checks that `value` falls within `[low, low + width]` and that the
-    /// Merkle path recomputes to `root`.
-    pub fn verify(&self, value: Fp) -> bool {
-        // value - low <= width: if value < low, field subtraction wraps to a
-        // huge value that exceeds any valid width, so the check fails correctly.
-        let offset = value - self.low;
-        if offset > self.width {
-            return false;
-        }
-        let hasher = PoseidonHasher::new();
-        let leaf = hasher.hash(self.low, self.width);
-        verify_merkle_path(&hasher, leaf, self.leaf_pos, &self.path, self.root)
-    }
-}
-
 /// Circuit-compatible IMT non-membership proof for punctured-range leaves (K=2).
 ///
 /// Instead of storing a single `(low, width)` gap, each leaf commits to three
 /// sorted nullifier boundaries `[nf_lo, nf_mid, nf_hi]` via `Poseidon3(...)`.
 /// The leaf covers the punctured interval `(nf_lo, nf_hi) \ {nf_mid}`.
 ///
-/// Circuit witnesses:
-/// - `root`: public input
-/// - `nf_bounds`: three field elements hashed to the leaf commitment
-/// - `leaf_pos`: position bits for Merkle path swap ordering
-/// - `path`: 29-level authentication path (same depth as [`ImtProofData`])
+/// ## Circuit witnesses
+///
+/// Each field maps directly to a witness in the delegation circuit's
+/// condition 13 (IMT non-membership):
+///
+/// - `root`: public input, constrained equal to `nf_imt_root` in the
+///   `q_per_note` gate.
+/// - `nf_bounds`: three field elements `[nf_lo, nf_mid, nf_hi]`, witnessed
+///   and hashed in-circuit via `Poseidon3` (two permutations) to produce
+///   the leaf commitment.
+/// - `leaf_pos`: position bits that determine swap ordering at each Merkle
+///   level via 29 `q_imt_swap` gates.
+/// - `path`: 29-level authentication path (25 PIR siblings + 4 empty-hash
+///   padding for circuit depth).
+///
+/// ## Circuit constraints (condition 13)
+///
+/// 1. **Leaf hash**: `leaf = Poseidon3(nf_lo, nf_mid, nf_hi)` — two
+///    Poseidon permutations (width-3 sponge, `ConstantLength<3>`).
+/// 2. **Merkle path**: 29 × swap + Poseidon → `computed_root`.
+/// 3. **Strict interval**: `nf_lo < value < nf_hi` via two 251-bit range
+///    checks on `value - nf_lo - 1` and `nf_hi - value - 1`.
+/// 4. **Non-equality**: `value ≠ nf_mid` by witnessing `inverse(value - nf_mid)`.
+/// 5. **Root pin**: `computed_root = nf_imt_root` (not gated on `is_note_real`).
+///
+/// ## Soundness invariants
+///
+/// The interval check relies on `nf_hi - nf_lo ≤ 2^251`, which is
+/// guaranteed by sentinel nullifiers at `k × 2^250` spacing. Without this
+/// bound, a field-wrapping span would defeat the range check.
+///
+/// The ordering `nf_lo < nf_mid < nf_hi` is enforced by tree construction
+/// (sorted nullifier input) and locked by the Merkle commitment — a
+/// forger cannot alter `nf_bounds` without breaking the Merkle path.
 #[derive(Clone, Debug)]
-pub struct PuncturedImtProofData {
+pub struct ImtProofData {
     /// The Merkle root of the IMT.
     pub root: Fp,
     /// Three sorted nullifier boundaries: `[nf_lo, nf_mid, nf_hi]`.
@@ -93,7 +82,7 @@ pub struct PuncturedImtProofData {
     pub path: [Fp; TREE_DEPTH],
 }
 
-impl PuncturedImtProofData {
+impl ImtProofData {
     /// Verify this proof out-of-circuit.
     ///
     /// Checks that `value` lies strictly inside the punctured interval
@@ -125,107 +114,12 @@ impl PuncturedImtProofData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{fp, four_nullifiers};
-    use crate::tree::{precompute_empty_hashes, precompute_empty_hashes_k2, NullifierTree, TREE_DEPTH};
+    use crate::test_helpers::fp;
+    use crate::tree::{precompute_empty_hashes, TREE_DEPTH};
 
-    #[test]
-    fn test_proof_verify_rejects_wrong_value() {
-        let tree = NullifierTree::build(four_nullifiers());
-
-        let proof = tree.prove(fp(15)).unwrap();
-        assert!(!proof.verify(fp(5)));
-        assert!(!proof.verify(fp(10)));
-    }
-
-    #[test]
-    fn test_proof_verify_rejects_wrong_root() {
-        let tree = NullifierTree::build(four_nullifiers());
-
-        let mut proof = tree.prove(fp(15)).unwrap();
-        proof.root = Fp::zero();
-        assert!(!proof.verify(fp(15)));
-    }
-
-    #[test]
-    fn test_verify_rejects_tampered_auth_path_level_0() {
-        let tree = NullifierTree::build(four_nullifiers());
-        let value = fp(15);
-        let mut proof = tree.prove(value).unwrap();
-
-        proof.path[0] += Fp::one();
-        assert!(
-            !proof.verify(value),
-            "tampered auth_path[0] should fail verification"
-        );
-    }
-
-    #[test]
-    fn test_verify_rejects_tampered_auth_path_mid_level() {
-        let tree = NullifierTree::build(four_nullifiers());
-        let value = fp(15);
-        let mut proof = tree.prove(value).unwrap();
-
-        let mid = TREE_DEPTH / 2;
-        proof.path[mid] = Fp::zero();
-        assert!(
-            !proof.verify(value),
-            "tampered auth_path[{}] should fail verification",
-            mid
-        );
-    }
-
-    #[test]
-    fn test_verify_rejects_tampered_low() {
-        let tree = NullifierTree::build(four_nullifiers());
-        let value = fp(15);
-        let mut proof = tree.prove(value).unwrap();
-
-        proof.low = Fp::from(999u64);
-        assert!(
-            !proof.verify(value),
-            "tampered low bound should fail verification"
-        );
-    }
-
-    #[test]
-    fn test_verify_rejects_tampered_position() {
-        let tree = NullifierTree::build(four_nullifiers());
-        let value = fp(15);
-        let mut proof = tree.prove(value).unwrap();
-        assert_eq!(proof.leaf_pos, 1);
-
-        proof.leaf_pos = 0;
-        assert!(!proof.verify(value), "position 0 (wrong) should fail");
-
-        proof.leaf_pos = 2;
-        assert!(!proof.verify(value), "position 2 (wrong) should fail");
-
-        proof.leaf_pos = u32::MAX;
-        assert!(!proof.verify(value), "position MAX (wrong) should fail");
-    }
-
-    #[test]
-    fn test_verify_rejects_swapped_range_fields() {
-        let tree = NullifierTree::build(four_nullifiers());
-        let value = fp(15);
-        let mut proof = tree.prove(value).unwrap();
-
-        let (low, width) = (proof.low, proof.width);
-        proof.low = width;
-        proof.width = low;
-        assert!(
-            !proof.verify(value),
-            "swapped range fields should fail verification"
-        );
-    }
-
-    // ── PuncturedImtProofData tests ──────────────────────────────────────
-
-    /// Build a minimal punctured proof by hand: a single leaf with a
-    /// dummy 29-level path (all-zero siblings, always-left position).
-    fn make_punctured_proof(nf_bounds: [Fp; 3]) -> PuncturedImtProofData {
+    fn make_punctured_proof(nf_bounds: [Fp; 3]) -> ImtProofData {
         let hasher = PoseidonHasher::new();
-        let empty = precompute_empty_hashes_k2();
+        let empty = precompute_empty_hashes();
         let leaf = hasher.hash3(nf_bounds[0], nf_bounds[1], nf_bounds[2]);
         let mut current = leaf;
         let mut path = [Fp::zero(); TREE_DEPTH];
@@ -233,7 +127,7 @@ mod tests {
             path[i] = empty[i];
             current = hasher.hash(current, empty[i]);
         }
-        PuncturedImtProofData {
+        ImtProofData {
             root: current,
             nf_bounds,
             leaf_pos: 0,
