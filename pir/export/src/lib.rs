@@ -7,8 +7,9 @@
 //!   subtree records at depth 11 (hash + min_key).
 //! - **Tier 1** (~24 MB): 2,048 rows × 12,224 bytes. Each row is a depth-11
 //!   subtree (7 layers of internal nodes + 128 leaf records with hash + min_key).
-//! - **Tier 2** (~4 GB): 262,144 rows × 16,320 bytes. Each row is a depth-18
-//!   subtree (7 layers of internal nodes + 128 leaf records with nf_lo + nf_mid + nf_hi).
+//! - **Tier 2** (~3 GB): 262,144 rows × 12,288 bytes. Each row contains 128
+//!   punctured-range leaf records (nf_lo + nf_mid + nf_hi). No internal nodes;
+//!   the client rebuilds the 7-level subtree locally.
 
 pub mod tier0;
 pub mod tier1;
@@ -269,7 +270,7 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
     // Tier 2
     let t2 = Instant::now();
     let mut f2 = std::io::BufWriter::new(std::fs::File::create(output_dir.join("tier2.bin"))?);
-    tier2::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut f2)?;
+    tier2::export(&tree.ranges, &mut f2)?;
     f2.flush()?;
     info!(elapsed_s = format!("{:.1}", t2.elapsed().as_secs_f64()), "Tier 2 exported");
 

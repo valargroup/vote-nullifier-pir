@@ -52,8 +52,11 @@ pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 128
 /// Internal nodes per Tier 1 row (relative depths 1-6: 2+4+...+64 = 126).
 pub const TIER1_INTERNAL_NODES: usize = (1 << TIER1_LAYERS) - 2; // 126
 
-/// Internal nodes per Tier 2 row (relative depths 1-6: 2+4+...+64 = 126).
-pub const TIER2_INTERNAL_NODES: usize = (1 << TIER2_LAYERS) - 2; // 126
+/// Internal nodes per Tier 2 row.
+///
+/// Set to 0: Tier 2 rows store only leaf records. The client rebuilds the
+/// 7-level subtree locally (~254 Poseidon calls) to extract siblings.
+pub const TIER2_INTERNAL_NODES: usize = 0;
 
 /// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
 /// `[nf_lo, nf_mid, nf_hi]`.
@@ -62,14 +65,14 @@ pub const TIER2_LEAF_BYTES: usize = 96;
 /// Byte size of one Tier 1 row: 126 × 32 (internal) + 128 × 64 (leaf records).
 pub const TIER1_ROW_BYTES: usize = TIER1_INTERNAL_NODES * 32 + TIER1_LEAVES * 64; // 12,224
 
-/// Byte size of one Tier 2 row: 126 × 32 (internal) + 128 × 96 (leaf records).
-pub const TIER2_ROW_BYTES: usize = TIER2_INTERNAL_NODES * 32 + TIER2_LEAVES * TIER2_LEAF_BYTES; // 16,320
+/// Byte size of one Tier 2 row: 128 × 96 (leaf records only).
+pub const TIER2_ROW_BYTES: usize = TIER2_LEAVES * TIER2_LEAF_BYTES; // 12,288
 
 /// Tier 1 item size in bits (for YPIR parameter setup).
 pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8; // 97,792
 
 /// Tier 2 item size in bits (for YPIR parameter setup).
-pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 130,560
+pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 98,304
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 

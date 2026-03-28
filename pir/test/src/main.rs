@@ -535,12 +535,7 @@ fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>
     eprintln!("  Tier 1: {} bytes", tier1_data.len());
 
     let mut tier2_data = Vec::new();
-    pir_export::tier2::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier2_data,
-    )?;
+    pir_export::tier2::export(&tree.ranges, &mut tier2_data)?;
     eprintln!("  Tier 2: {} bytes", tier2_data.len());
 
     Ok((tier0_data, tier1_data, tier2_data))

@@ -104,13 +104,7 @@ fn test_small_tree_round_trip() {
     .unwrap();
 
     let mut tier2_data = Vec::new();
-    pir_export::tier2::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier2_data,
-    )
-    .unwrap();
+    pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
     eprintln!("  Tier sizes: {} / {} / {}", tier0_data.len(), tier1_data.len(), tier2_data.len());
 
@@ -179,8 +173,7 @@ fn test_pir_proof_verifies_independently() {
     pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_data)
         .unwrap();
     let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier2_data)
-        .unwrap();
+    pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
     for &[nf_lo, _, _] in ranges.iter().take(50) {
         let value = nf_lo + Fp::one();
@@ -275,13 +268,7 @@ fn test_subset_export_produces_different_root() {
     )
     .unwrap();
     let mut tier2_data = Vec::new();
-    pir_export::tier2::export(
-        &subset_tree.levels,
-        &subset_tree.ranges,
-        &subset_tree.empty_hashes,
-        &mut tier2_data,
-    )
-    .unwrap();
+    pir_export::tier2::export(&subset_tree.ranges, &mut tier2_data).unwrap();
 
     // Verify proofs for the subset tree work
     for &[nf_lo, _, _] in subset_ranges.iter().take(20) {
@@ -333,22 +320,10 @@ fn test_export_deterministic() {
 
     // Export tier2 twice
     let mut tier2_a = Vec::new();
-    pir_export::tier2::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier2_a,
-    )
-    .unwrap();
+    pir_export::tier2::export(&tree.ranges, &mut tier2_a).unwrap();
 
     let mut tier2_b = Vec::new();
-    pir_export::tier2::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier2_b,
-    )
-    .unwrap();
+    pir_export::tier2::export(&tree.ranges, &mut tier2_b).unwrap();
 
     assert_eq!(
         tier2_a, tier2_b,
@@ -379,13 +354,7 @@ fn test_proof_with_empty_tier2_sibling() {
     )
     .unwrap();
     let mut tier2_data = Vec::new();
-    pir_export::tier2::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier2_data,
-    )
-    .unwrap();
+    pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
     // Find the last populated range — its sibling leaf slot is empty padding.
     let last_idx = ranges.len() - 1;

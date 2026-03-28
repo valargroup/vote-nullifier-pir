@@ -680,13 +680,7 @@ mod tests {
             )
             .unwrap();
             let mut tier2_data = Vec::new();
-            pir_export::tier2::export(
-                &tree.levels,
-                &tree.ranges,
-                &tree.empty_hashes,
-                &mut tier2_data,
-            )
-            .unwrap();
+            pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
             Self {
                 tier0_data,
