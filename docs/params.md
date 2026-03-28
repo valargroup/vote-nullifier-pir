@@ -70,9 +70,9 @@ number of rows and bytes-per-row that YPIR must support.
 |:--|--:|--:|:--|
 | Rows | 2,048 | 262,144 | `1 << TIER0_LAYERS`, `1 << (TIER0_LAYERS + TIER1_LAYERS)` |
 | Leaves/row | 128 | 128 | `1 << TIER{n}_LAYERS` |
-| Internal nodes/row | 126 | 0 | Tier 1: `(1 << TIER1_LAYERS) - 2`; Tier 2: leaf-only rows |
-| Row bytes | 12,224 | 12,288 | Tier 1: `internal × 32 + leaves × 64`; Tier 2: `leaves × 96` |
-| Item bits | 97,792 | 98,304 | `row_bytes × 8` |
+| Internal nodes/row | 0 | 0 | Leaf-only rows; client rebuilds subtree locally |
+| Row bytes | 8,192 | 12,288 | Tier 1: `leaves × 64`; Tier 2: `leaves × 96` |
+| Item bits | 65,536 | 98,304 | `row_bytes × 8` |
 
 ---
 
@@ -92,7 +92,7 @@ pub struct YpirScenario {
 
 | Tier | `num_items` | `item_size_bits` |
 |:--|--:|--:|
-| 1 | 2,048 | 97,792 |
+| 1 | 2,048 | 65,536 |
 | 2 | 262,144 | 98,304 |
 
 The server uses these in two ways:
@@ -131,7 +131,7 @@ db_cols = ceil(item_size_bits / 28,672)
 | | Tier 1 | Tier 2 |
 |:--|--:|--:|
 | `db_rows` | 2,048 | 262,144 |
-| `db_cols` | 4 | 4 |
+| `db_cols` | 3 | 4 |
 
 **3. Ring dimension exponent**
 
@@ -203,9 +203,9 @@ YPIR+SP variant). The concrete values hardcoded in the ypir crate's
 | Parameter | Tier 1 | Tier 2 |
 |:--|--:|--:|
 | `num_items` | 2,048 | 262,144 |
-| `item_size_bits` | 97,792 | 98,304 |
+| `item_size_bits` | 65,536 | 98,304 |
 | `db_rows` | 2,048 | 262,144 |
-| `db_cols` (instances) | 4 | 4 |
+| `db_cols` (instances) | 3 | 4 |
 | `nu_1` | 0 | 7 |
 | `nu_2` | 1 | 1 |
 

@@ -1,11 +1,14 @@
 //! Tier 1 reader: parse and query a single Tier 1 row.
+//!
+//! Each row contains 128 leaf records only (no pre-computed internal nodes).
+//! The client rebuilds the 7-level subtree locally to extract siblings.
 
 use pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
-use crate::{TIER1_INTERNAL_NODES, TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES};
+use crate::{TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES};
 
-/// Parsed Tier 1 row: internal nodes (relative depths 1-6) and leaf records at relative depth 7.
+/// Parsed Tier 1 row: 128 leaf records at relative depth 7.
 pub struct Tier1Row<'a> {
     data: &'a [u8],
 }
@@ -22,19 +25,10 @@ impl<'a> Tier1Row<'a> {
         Ok(Self { data })
     }
 
-    /// Internal node at relative depth d (1..6), position p (0..2^d - 1).
-    pub fn internal_node(&self, rel_depth: usize, pos: usize) -> Fp {
-        debug_assert!((1..TIER1_LAYERS).contains(&rel_depth));
-        debug_assert!(pos < (1 << rel_depth));
-        let bfs_idx = (1usize << rel_depth) - 2 + pos;
-        let offset = bfs_idx * 32;
-        read_fp(&self.data[offset..offset + 32])
-    }
-
     /// Leaf record at index i (0..127): (hash, min_key).
     pub fn leaf_record(&self, i: usize) -> (Fp, Fp) {
         debug_assert!(i < TIER1_LEAVES);
-        let base = TIER1_INTERNAL_NODES * 32 + i * 64;
+        let base = i * 64;
         let hash = read_fp(&self.data[base..base + 32]);
         let min_key = read_fp(&self.data[base + 32..base + 64]);
         (hash, min_key)
@@ -42,27 +36,38 @@ impl<'a> Tier1Row<'a> {
 
     /// Binary search the 128 leaf min_keys to find which sub-subtree contains `value`.
     pub fn find_sub_subtree(&self, value: Fp) -> Option<usize> {
-        let base = TIER1_INTERNAL_NODES * 32;
-        binary_search_records(self.data, base, TIER1_LEAVES, 64, 32, value)
+        binary_search_records(self.data, 0, TIER1_LEAVES, 64, 32, value)
     }
 
-    /// Extract the 7 sibling hashes from this Tier 1 row for a given sub-subtree index.
+    /// Rebuild the 7-level subtree from leaf hashes and extract sibling hashes.
     ///
-    /// Returns siblings at bottom-up levels 8..=14 (plan depths 18..=12).
-    pub fn extract_siblings(&self, sub_idx: usize) -> [Fp; TIER1_LAYERS] {
+    /// Since Tier 1 rows no longer store internal nodes, the client builds the
+    /// tree bottom-up from the 128 leaf hashes (~126 Poseidon calls) to collect
+    /// the 7 siblings needed for the Merkle authentication path.
+    pub fn extract_siblings(
+        &self,
+        sub_idx: usize,
+        hasher: &imt_tree::hasher::PoseidonHasher,
+    ) -> [Fp; TIER1_LAYERS] {
+        let mut current_level: Vec<Fp> = (0..TIER1_LEAVES)
+            .map(|i| {
+                let (hash, _) = self.leaf_record(i);
+                hash
+            })
+            .collect();
+
         let mut siblings = [Fp::default(); TIER1_LAYERS];
-
-        let sibling_leaf = sub_idx ^ 1;
-        let (hash, _) = self.leaf_record(sibling_leaf);
-        siblings[0] = hash;
-
         let mut pos = sub_idx;
-        for rd in (1..TIER1_LAYERS).rev() {
+        for level in 0..TIER1_LAYERS {
+            siblings[level] = current_level[pos ^ 1];
+            let next_len = current_level.len() / 2;
+            let mut next_level = Vec::with_capacity(next_len);
+            for j in 0..next_len {
+                next_level.push(hasher.hash(current_level[2 * j], current_level[2 * j + 1]));
+            }
+            current_level = next_level;
             pos >>= 1;
-            let sibling_pos = pos ^ 1;
-            siblings[TIER1_LAYERS - rd] = self.internal_node(rd, sibling_pos);
         }
-
         siblings
     }
 }
@@ -70,6 +75,7 @@ impl<'a> Tier1Row<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imt_tree::hasher::PoseidonHasher;
 
     #[test]
     fn from_bytes_rejects_non_canonical_field_element() {
@@ -103,7 +109,8 @@ mod tests {
     fn extract_siblings_returns_correct_count() {
         let row = vec![0u8; TIER1_ROW_BYTES];
         let tier1 = Tier1Row::from_bytes(&row).unwrap();
-        let siblings = tier1.extract_siblings(0);
+        let hasher = PoseidonHasher::new();
+        let siblings = tier1.extract_siblings(0, &hasher);
         assert_eq!(siblings.len(), TIER1_LAYERS);
     }
 
@@ -117,10 +124,42 @@ mod tests {
     }
 
     #[test]
-    fn internal_node_matches_at_depth_1() {
-        let row = vec![0u8; TIER1_ROW_BYTES];
+    fn extract_siblings_correctness() {
+        use crate::fp_utils::write_fp;
+
+        let hasher = PoseidonHasher::new();
+        let mut row = vec![0u8; TIER1_ROW_BYTES];
+
+        // Write distinct hash values into the first 4 leaf records
+        // (min_key fields are irrelevant for sibling extraction).
+        let leaf_hashes: Vec<Fp> = (0..TIER1_LEAVES)
+            .map(|i| Fp::from((i + 1) as u64))
+            .collect();
+        for (i, &h) in leaf_hashes.iter().enumerate() {
+            write_fp(&mut row[i * 64..], h);
+        }
+
         let tier1 = Tier1Row::from_bytes(&row).unwrap();
-        let node = tier1.internal_node(1, 0);
-        assert_eq!(node, Fp::zero());
+        let siblings = tier1.extract_siblings(0, &hasher);
+
+        // Level 0 sibling: leaf at index 0 ^ 1 = 1
+        assert_eq!(siblings[0], leaf_hashes[1]);
+
+        // Level 1 sibling: parent of leaves 2,3
+        let expected_level1_sib = hasher.hash(leaf_hashes[2], leaf_hashes[3]);
+        assert_eq!(siblings[1], expected_level1_sib);
+
+        // Verify all 7 siblings by building the tree independently
+        let mut level = leaf_hashes.clone();
+        let mut pos = 0usize;
+        for lev in 0..TIER1_LAYERS {
+            assert_eq!(siblings[lev], level[pos ^ 1]);
+            let next: Vec<Fp> = level
+                .chunks_exact(2)
+                .map(|pair| hasher.hash(pair[0], pair[1]))
+                .collect();
+            level = next;
+            pos >>= 1;
+        }
     }
 }

@@ -1,22 +1,13 @@
-//! Tier 1 export: 2,048 rows, each a depth-11 subtree with 7 internal layers + leaf records.
+//! Tier 1 export: 2,048 rows of 128 leaf records (hash + min_key).
 //!
-//! Row layout (12,224 bytes):
+//! Row layout (8,192 bytes):
 //! ```text
-//! [internal nodes: 126 × 32 bytes, relative depths 1-6 in BFS order]
-//!   depth 1: 2 nodes  → bytes [0..64)
-//!   depth 2: 4 nodes  → bytes [64..192)
-//!   depth 3: 8 nodes  → bytes [192..448)
-//!   ...
-//!   depth 6: 64 nodes → bytes [3008..4032)
 //! [leaf records: 128 × (32-byte hash + 32-byte min_key)]
-//!   record i: hash at 4032+i*64, min_key at 4032+i*64+32
+//!   record i: hash at i*64, min_key at i*64+32
 //! ```
 //!
-//! Internal node at relative depth d (1..6), position p:
-//!   byte offset = ((2^d - 2) + p) * 32
-//!
-//! Leaf record i (0..127):
-//!   byte offset = 126 * 32 + i * 64
+//! Internal nodes are not stored; the client rebuilds the 7-level subtree
+//! locally from the leaf hashes (~126 Poseidon calls).
 
 use std::io::Write;
 
@@ -26,8 +17,8 @@ use pasta_curves::Fp;
 use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 
 use crate::{
-    node_or_empty, subtree_min_key, write_fp, write_internal_nodes, PIR_DEPTH, TIER0_LAYERS,
-    TIER1_INTERNAL_NODES, TIER1_LAYERS, TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_LEAVES,
+    node_or_empty, subtree_min_key, write_fp, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
+    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_LEAVES,
 };
 
 pub use pir_types::tier1::Tier1Row;
@@ -54,7 +45,7 @@ pub fn export(
 
 /// Write a single Tier 1 row for subtree index `s` (at depth 11).
 ///
-/// The subtree root is at bottom-up level `PIR_DEPTH - TIER0_LAYERS` = 15, index `s`.
+/// The subtree root is at bottom-up level `PIR_DEPTH - TIER0_LAYERS` = 14, index `s`.
 fn write_row(
     levels: &[Vec<Fp>],
     ranges: &[PuncturedRange],
@@ -63,30 +54,25 @@ fn write_row(
     buf: &mut [u8],
 ) {
     buf.fill(0);
-    let bu_base = PIR_DEPTH - TIER0_LAYERS; // 15: bottom-up level of subtree root
+    let bu_base = PIR_DEPTH - TIER0_LAYERS;
 
-    // ── Internal nodes: relative depths 1 through (TIER1_LAYERS - 1) ─────
-    let mut offset = write_internal_nodes(levels, empty_hashes, bu_base, TIER1_LAYERS, s, buf);
-
-    debug_assert_eq!(offset, TIER1_INTERNAL_NODES * 32);
-
-    // ── Leaf records: 128 entries at relative depth 7 (depth 18) ─────────
-    //
-    // Bottom-up level = bu_base - TIER1_LAYERS = 15 - 7 = 8.
+    // Leaf records: 128 entries at relative depth 7 (depth 18).
+    // Bottom-up level = bu_base - TIER1_LAYERS.
     // Each record: 32-byte hash + 32-byte min_key.
-    let bu_leaf = bu_base - TIER1_LAYERS; // 7
-    let leaf_start = s * TIER1_LEAVES; // s * 256
+    let bu_leaf = bu_base - TIER1_LAYERS;
+    let leaf_start = s * TIER1_LEAVES;
+    let mut offset = 0;
 
     for i in 0..TIER1_LEAVES {
         let global_idx = leaf_start + i;
 
-        // Hash of the depth-19 subtree root
+        // Hash of the depth-18 subtree root
         let hash = node_or_empty(levels, bu_leaf, global_idx, empty_hashes);
         write_fp(&mut buf[offset..], hash);
         offset += 32;
 
-        // min_key: smallest `low` among all depth-26 leaves in this depth-19 subtree.
-        // Each depth-19 subtree covers TIER2_LEAVES = 128 leaves.
+        // min_key: smallest nf_lo among all leaves in this subtree.
+        // Each subtree covers TIER2_LEAVES = 128 leaves.
         let range_start = global_idx * TIER2_LEAVES;
         let mk = subtree_min_key(ranges, range_start);
         write_fp(&mut buf[offset..], mk);

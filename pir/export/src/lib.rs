@@ -5,8 +5,9 @@
 //!
 //! - **Tier 0** (192 KB): plaintext internal nodes (depths 0–10) + 2,048
 //!   subtree records at depth 11 (hash + min_key).
-//! - **Tier 1** (~24 MB): 2,048 rows × 12,224 bytes. Each row is a depth-11
-//!   subtree (7 layers of internal nodes + 128 leaf records with hash + min_key).
+//! - **Tier 1** (~16 MB): 2,048 rows × 8,192 bytes. Each row contains 128
+//!   leaf records (hash + min_key). No internal nodes; the client rebuilds
+//!   the 7-level subtree locally.
 //! - **Tier 2** (~3 GB): 262,144 rows × 12,288 bytes. Each row contains 128
 //!   punctured-range leaf records (nf_lo + nf_mid + nf_hi). No internal nodes;
 //!   the client rebuilds the 7-level subtree locally.
@@ -32,8 +33,8 @@ use imt_tree::tree::{
 // Re-export tier-layout constants and PirMetadata from pir-types so that
 // existing consumers (tier submodules, tests, downstream crates) keep working.
 pub use pir_types::{
-    PirMetadata, PIR_DEPTH, TIER0_LAYERS, TIER1_INTERNAL_NODES, TIER1_ITEM_BITS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_INTERNAL_NODES, TIER2_ITEM_BITS,
+    PirMetadata, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS, TIER1_LAYERS,
+    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ITEM_BITS,
     TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
