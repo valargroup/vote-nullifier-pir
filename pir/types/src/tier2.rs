@@ -88,12 +88,14 @@ impl<'a> Tier2Row<'a> {
         let mut pos = leaf_idx;
         for level in 0..TIER2_LAYERS {
             siblings[level] = current_level[pos ^ 1];
-            let next_len = current_level.len() / 2;
-            let mut next_level = Vec::with_capacity(next_len);
-            for j in 0..next_len {
-                next_level.push(hasher.hash(current_level[2 * j], current_level[2 * j + 1]));
+            if level < TIER2_LAYERS - 1 {
+                let next_len = current_level.len() / 2;
+                let mut next_level = Vec::with_capacity(next_len);
+                for j in 0..next_len {
+                    next_level.push(hasher.hash(current_level[2 * j], current_level[2 * j + 1]));
+                }
+                current_level = next_level;
             }
-            current_level = next_level;
             pos >>= 1;
         }
         siblings
