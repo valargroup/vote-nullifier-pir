@@ -62,11 +62,25 @@ enum Command {
         parallel: bool,
     },
 
+    /// Verify YPIR round-trip correctness by comparing decoded rows with originals.
+    VerifyYpir,
+
     /// Benchmark YPIR query/response sizes and timing in-process (no HTTP).
     Bench {
         /// Number of YPIR queries per tier.
         #[arg(long, default_value = "3")]
         num_queries: usize,
+    },
+
+    /// Benchmark multiple tier split configurations to compare sizes/timing.
+    BenchSplits {
+        /// Number of YPIR queries per tier per configuration.
+        #[arg(long, default_value = "1")]
+        num_queries: usize,
+
+        /// Run only a specific config, e.g. "11-7-7". Omit to run all.
+        #[arg(long)]
+        config: Option<String>,
     },
 }
 
@@ -88,7 +102,9 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run_server(url, nullifiers, num_proofs, parallel))
         }
+        Command::VerifyYpir => run_verify_ypir(),
         Command::Bench { num_queries } => run_bench(num_queries),
+        Command::BenchSplits { num_queries, config } => run_bench_splits(num_queries, config),
     }
 }
 
@@ -316,6 +332,131 @@ async fn run_server(
     Ok(())
 }
 
+// ── Verify YPIR mode ─────────────────────────────────────────────────────────
+
+fn run_verify_ypir() -> Result<()> {
+    use pir_server::OwnedTierState;
+    use ypir::client::YPIRClient;
+
+    eprintln!("=== YPIR Round-Trip Verification ===\n");
+
+    let mut rng = rand::thread_rng();
+    let raw_nfs: Vec<Fp> = (0..1000).map(|_| Fp::random(&mut rng)).collect();
+    let ranges = pir_export::prepare_nullifiers(raw_nfs);
+    let tree = build_pir_tree(ranges)?;
+    let (_, tier1_data, tier2_data) = export_tiers(&tree)?;
+
+    let tier1_scenario = pir_server::tier1_scenario();
+    let tier2_scenario = pir_server::tier2_scenario();
+
+    eprintln!("Initializing Tier 1 YPIR server...");
+    let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
+
+    for row_idx in [0usize, 1, 100, 2047] {
+        let ypir_client = YPIRClient::from_db_sz(
+            tier1_scenario.num_items as u64,
+            tier1_scenario.item_size_bits as u64,
+            true,
+        );
+        let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
+        let payload = pir_types::serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
+        let answer = tier1_server.server().answer_query(&payload)?;
+        let decoded = ypir_client.decode_response_simplepir(seed, &answer.response);
+
+        let original = &tier1_data[row_idx * TIER1_ROW_BYTES..(row_idx + 1) * TIER1_ROW_BYTES];
+        let decoded_row = &decoded[..TIER1_ROW_BYTES];
+
+        if original == decoded_row {
+            eprintln!("  Tier 1 row {}: MATCH", row_idx);
+        } else {
+            let mismatches: Vec<usize> = original
+                .iter()
+                .zip(decoded_row.iter())
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| i)
+                .collect();
+            eprintln!(
+                "  Tier 1 row {}: MISMATCH at {} byte positions (first: {})",
+                row_idx,
+                mismatches.len(),
+                mismatches.first().unwrap_or(&0)
+            );
+            if let Some(&first) = mismatches.first() {
+                eprintln!(
+                    "    original[{}..{}]: {:02x?}",
+                    first,
+                    (first + 16).min(TIER1_ROW_BYTES),
+                    &original[first..(first + 16).min(TIER1_ROW_BYTES)]
+                );
+                eprintln!(
+                    "    decoded [{}..{}]: {:02x?}",
+                    first,
+                    (first + 16).min(TIER1_ROW_BYTES),
+                    &decoded_row[first..(first + 16).min(TIER1_ROW_BYTES)]
+                );
+            }
+        }
+    }
+
+    drop(tier1_server);
+
+    eprintln!("\nInitializing Tier 2 YPIR server...");
+    let tier2_server = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
+
+    for row_idx in [0usize, 1, 100] {
+        let ypir_client = YPIRClient::from_db_sz(
+            tier2_scenario.num_items as u64,
+            tier2_scenario.item_size_bits as u64,
+            true,
+        );
+        let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
+        let payload = pir_types::serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
+        let answer = tier2_server.server().answer_query(&payload)?;
+        let decoded = ypir_client.decode_response_simplepir(seed, &answer.response);
+
+        let original = &tier2_data[row_idx * TIER2_ROW_BYTES..(row_idx + 1) * TIER2_ROW_BYTES];
+        let decoded_row = &decoded[..TIER2_ROW_BYTES];
+
+        if original == decoded_row {
+            eprintln!("  Tier 2 row {}: MATCH", row_idx);
+        } else {
+            let mismatches: Vec<usize> = original
+                .iter()
+                .zip(decoded_row.iter())
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| i)
+                .collect();
+            eprintln!(
+                "  Tier 2 row {}: MISMATCH at {} byte positions (first: {})",
+                row_idx,
+                mismatches.len(),
+                mismatches.first().unwrap_or(&0)
+            );
+            if let Some(&first) = mismatches.first() {
+                eprintln!(
+                    "    original[{}..{}]: {:02x?}",
+                    first,
+                    (first + 16).min(TIER2_ROW_BYTES),
+                    &original[first..(first + 16).min(TIER2_ROW_BYTES)]
+                );
+                eprintln!(
+                    "    decoded [{}..{}]: {:02x?}",
+                    first,
+                    (first + 16).min(TIER2_ROW_BYTES),
+                    &decoded_row[first..(first + 16).min(TIER2_ROW_BYTES)]
+                );
+            }
+        }
+    }
+
+    drop(tier2_server);
+
+    eprintln!("\n=== Done ===");
+    Ok(())
+}
+
 // ── Bench mode ───────────────────────────────────────────────────────────────
 
 fn run_bench(num_queries: usize) -> Result<()> {
@@ -419,6 +560,210 @@ fn run_bench(num_queries: usize) -> Result<()> {
         format_bytes(tier1_results.avg_response_bytes + tier2_results.avg_response_bytes),
     );
     eprintln!("══════════════════════════════════════════════════════════════");
+
+    Ok(())
+}
+
+// ── Bench-splits mode ────────────────────────────────────────────────────────
+
+struct SplitConfig {
+    t0: usize,
+    t1: usize,
+    t2: usize,
+}
+
+impl SplitConfig {
+    fn tier1_logical_rows(&self) -> usize { 1 << self.t0 }
+    /// YPIR requires at least poly_len=2048 rows; pad up if t0 < 11.
+    fn tier1_rows(&self) -> usize { (1usize << self.t0).max(2048) }
+    fn tier2_rows(&self) -> usize { 1 << (self.t0 + self.t1) }
+    fn tier1_leaves(&self) -> usize { 1 << self.t1 }
+    fn tier2_leaves(&self) -> usize { 1 << self.t2 }
+    fn tier1_row_bytes(&self) -> usize { self.tier1_leaves() * 64 }
+    fn tier2_row_bytes(&self) -> usize { self.tier2_leaves() * 96 }
+    /// YPIR requires item_size_bits >= 2048*14 = 28672 (one SimplePIR column).
+    fn tier1_item_bits(&self) -> usize { (self.tier1_row_bytes() * 8).max(28672) }
+    fn tier2_item_bits(&self) -> usize { (self.tier2_row_bytes() * 8).max(28672) }
+    fn tier1_db_bytes(&self) -> usize { self.tier1_rows() * (self.tier1_item_bits() / 8) }
+    fn tier2_db_bytes(&self) -> usize { self.tier2_rows() * (self.tier2_item_bits() / 8) }
+
+    fn tier0_bytes(&self) -> usize {
+        let internal_nodes = (1usize << self.t0) - 1;
+        internal_nodes * 32 + self.tier1_rows() * 64
+    }
+
+    fn label(&self) -> String {
+        format!("{}-{}-{}", self.t0, self.t1, self.t2)
+    }
+}
+
+struct SplitResults {
+    config: SplitConfig,
+    tier1: BenchResults,
+    tier2: BenchResults,
+    tier1_init_s: f64,
+    tier2_init_s: f64,
+}
+
+fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
+    use pir_server::OwnedTierState;
+    use pir_types::YpirScenario;
+
+    let all_configs = vec![
+        SplitConfig { t0: 11, t1: 7, t2: 7 },
+        SplitConfig { t0: 10, t1: 6, t2: 9 },
+        SplitConfig { t0: 9, t1: 6, t2: 10 },
+        SplitConfig { t0: 9, t1: 7, t2: 9 },
+        SplitConfig { t0: 8, t1: 6, t2: 11 },
+        SplitConfig { t0: 8, t1: 7, t2: 10 },
+        SplitConfig { t0: 10, t1: 5, t2: 10 },
+        SplitConfig { t0: 10, t1: 4, t2: 11 },
+    ];
+
+    let configs: Vec<SplitConfig> = if let Some(ref f) = filter {
+        all_configs.into_iter().filter(|c| c.label() == *f).collect()
+    } else {
+        all_configs
+    };
+
+    if configs.is_empty() {
+        anyhow::bail!("no config matched filter {:?}", filter);
+    }
+
+    eprintln!("=== PIR Split Comparison ({} queries per tier per config) ===\n", num_queries);
+
+    let mut results = Vec::new();
+
+    for cfg in &configs {
+        assert_eq!(cfg.t0 + cfg.t1 + cfg.t2, 25, "splits must sum to PIR_DEPTH=25");
+
+        let t1_scenario = YpirScenario {
+            num_items: cfg.tier1_rows(),
+            item_size_bits: cfg.tier1_item_bits(),
+        };
+        let t2_scenario = YpirScenario {
+            num_items: cfg.tier2_rows(),
+            item_size_bits: cfg.tier2_item_bits(),
+        };
+
+        eprintln!("── Config {} ──────────────────────────────────────────", cfg.label());
+        eprintln!(
+            "  Tier 0: {} (plaintext download)",
+            format_bytes(cfg.tier0_bytes()),
+        );
+        let pad_note = if cfg.tier1_rows() > cfg.tier1_logical_rows() {
+            format!(" (padded from {} logical rows)", cfg.tier1_logical_rows())
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "  Tier 1: {} rows{} × {} B/row = {}, item_bits={}",
+            cfg.tier1_rows(), pad_note, cfg.tier1_row_bytes(),
+            format_bytes(cfg.tier1_db_bytes()), cfg.tier1_item_bits(),
+        );
+        eprintln!(
+            "  Tier 2: {} rows × {} B/row = {}, item_bits={}",
+            cfg.tier2_rows(), cfg.tier2_row_bytes(),
+            format_bytes(cfg.tier2_db_bytes()), cfg.tier2_item_bits(),
+        );
+
+        // Tier 1: create zeroed dummy data of the right size
+        eprintln!("  Initializing Tier 1 YPIR server...");
+        let t1_data = vec![0u8; cfg.tier1_db_bytes()];
+        let t0 = Instant::now();
+        let t1_server = OwnedTierState::new(&t1_data, t1_scenario.clone());
+        let tier1_init_s = t0.elapsed().as_secs_f64();
+        eprintln!("  Tier 1 ready in {:.1}s", tier1_init_s);
+        drop(t1_data);
+
+        let tier1_results = bench_tier(
+            "tier1",
+            t1_scenario.num_items,
+            t1_scenario.item_size_bits,
+            t1_server.server(),
+            num_queries,
+        )?;
+
+        drop(t1_server);
+
+        // Tier 2: create zeroed dummy data of the right size
+        eprintln!("  Initializing Tier 2 YPIR server...");
+        let t2_data = vec![0u8; cfg.tier2_db_bytes()];
+        let t0 = Instant::now();
+        let t2_server = OwnedTierState::new(&t2_data, t2_scenario.clone());
+        let tier2_init_s = t0.elapsed().as_secs_f64();
+        eprintln!("  Tier 2 ready in {:.1}s", tier2_init_s);
+        drop(t2_data);
+
+        let tier2_results = bench_tier(
+            "tier2",
+            t2_scenario.num_items,
+            t2_scenario.item_size_bits,
+            t2_server.server(),
+            num_queries,
+        )?;
+
+        drop(t2_server);
+
+        results.push(SplitResults {
+            config: SplitConfig { t0: cfg.t0, t1: cfg.t1, t2: cfg.t2 },
+            tier1: tier1_results,
+            tier2: tier2_results,
+            tier1_init_s,
+            tier2_init_s,
+        });
+
+        eprintln!();
+    }
+
+    // Print comparison table
+    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    eprintln!("  COMPARISON TABLE");
+    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    eprintln!(
+        "  {:>7} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10}",
+        "Split", "Tier0(dn)", "T1 DB", "T2 DB", "Query(up)", "Resp(dn)", "T1 Srvr", "T2 Srvr", "T2 Init"
+    );
+    eprintln!("  {}", "-".repeat(100));
+    for r in &results {
+        eprintln!(
+            "  {:>7} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10}",
+            r.config.label(),
+            format_bytes(r.config.tier0_bytes()),
+            format_bytes(r.config.tier1_db_bytes()),
+            format_bytes(r.config.tier2_db_bytes()),
+            format_bytes(r.tier1.avg_query_bytes + r.tier2.avg_query_bytes),
+            format_bytes(r.tier1.avg_response_bytes + r.tier2.avg_response_bytes),
+            format_ms(r.tier1.avg_server_ms),
+            format_ms(r.tier2.avg_server_ms),
+            format_ms(r.tier2_init_s * 1000.0),
+        );
+    }
+    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
+
+    // Per-tier breakdown
+    eprintln!("\n  PER-TIER DETAIL");
+    eprintln!("  {}", "-".repeat(100));
+    eprintln!(
+        "  {:>7} {:>12} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10} {:>10}",
+        "Split", "T1 Q(up)", "T1 R(dn)", "T2 Q(up)", "T2 R(dn)", "T1 Gen", "T2 Gen", "T1 Dec", "T2 Dec"
+    );
+    eprintln!("  {}", "-".repeat(100));
+    for r in &results {
+        eprintln!(
+            "  {:>7} {:>12} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10} {:>10}",
+            r.config.label(),
+            format_bytes(r.tier1.avg_query_bytes),
+            format_bytes(r.tier1.avg_response_bytes),
+            format_bytes(r.tier2.avg_query_bytes),
+            format_bytes(r.tier2.avg_response_bytes),
+            format_ms(r.tier1.avg_gen_ms),
+            format_ms(r.tier2.avg_gen_ms),
+            format_ms(r.tier1.avg_decode_ms),
+            format_ms(r.tier2.avg_decode_ms),
+        );
+    }
+    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
 
     Ok(())
 }
