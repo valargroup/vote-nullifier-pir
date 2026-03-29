@@ -9,8 +9,8 @@ avx512 = ["ypir/explicit_avx512"]
 
 [dependencies]
 pir-types  = { path = "../types" }
-ypir = { git = "https://github.com/menonsamir/ypir.git", branch = "artifact", default-features = false, features = ["server"] }
-spiral-rs = { git = "https://github.com/menonsamir/spiral-rs.git", rev = "f2c23c7" }
+ypir = { git = "https://github.com/valargroup/ypir.git", branch = "valar/artifact", default-features = false, features = ["server"] }
+spiral-rs = { git = "https://github.com/valargroup/spiral-rs.git", branch = "valar/avoid-avx512" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"

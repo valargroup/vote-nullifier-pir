@@ -1,14 +1,14 @@
 //! Tier 2 reader: parse and query a single Tier 2 row (punctured-range leaves, K=2).
 //!
-//! Each row contains 128 leaf records only (no pre-computed internal nodes).
-//! The client rebuilds the 7-level subtree locally to extract siblings.
+//! Each row contains TIER2_LEAVES leaf records only (no pre-computed internal
+//! nodes). The client rebuilds the subtree locally to extract siblings.
 
 use pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
 use crate::{TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES};
 
-/// Parsed Tier 2 row: 128 punctured-range leaf records at relative depth 7.
+/// Parsed Tier 2 row: TIER2_LEAVES punctured-range leaf records.
 pub struct Tier2Row<'a> {
     data: &'a [u8],
 }
@@ -59,11 +59,10 @@ impl<'a> Tier2Row<'a> {
         Some(idx)
     }
 
-    /// Rebuild the 7-level subtree from leaf data and extract sibling hashes.
+    /// Rebuild the subtree from leaf data and extract sibling hashes.
     ///
-    /// Since Tier 2 rows no longer store internal nodes, the client hashes
-    /// all 128 leaf records and builds the tree bottom-up (~254 Poseidon calls)
-    /// to collect the 7 siblings needed for the Merkle authentication path.
+    /// The client hashes all leaf records and builds the tree bottom-up to
+    /// collect the TIER2_LAYERS siblings needed for the Merkle authentication path.
     pub fn extract_siblings(
         &self,
         leaf_idx: usize,
@@ -89,12 +88,14 @@ impl<'a> Tier2Row<'a> {
         let mut pos = leaf_idx;
         for level in 0..TIER2_LAYERS {
             siblings[level] = current_level[pos ^ 1];
-            let next_len = current_level.len() / 2;
-            let mut next_level = Vec::with_capacity(next_len);
-            for j in 0..next_len {
-                next_level.push(hasher.hash(current_level[2 * j], current_level[2 * j + 1]));
+            if level < TIER2_LAYERS - 1 {
+                let next_len = current_level.len() / 2;
+                let mut next_level = Vec::with_capacity(next_len);
+                for j in 0..next_len {
+                    next_level.push(hasher.hash(current_level[2 * j], current_level[2 * j + 1]));
+                }
+                current_level = next_level;
             }
-            current_level = next_level;
             pos >>= 1;
         }
         siblings

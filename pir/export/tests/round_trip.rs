@@ -46,7 +46,7 @@ fn construct_proof(
 
     let s2 = tier1.find_sub_subtree(value)?;
 
-    let tier1_siblings = tier1.extract_siblings(s2);
+    let tier1_siblings = tier1.extract_siblings(s2, &hasher);
     for (i, &sib) in tier1_siblings.iter().enumerate() {
         path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS + i] = sib;
     }
