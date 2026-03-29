@@ -21,9 +21,12 @@ pub mod tier2;
 
 // ── Tier-layout constants ────────────────────────────────────────────────────
 
-/// Depth of the PIR Merkle tree (26 levels of edges from root to leaf).
-/// Supports 2^26 = 67,108,864 leaf slots, enough for ~51M nullifier ranges.
-pub const PIR_DEPTH: usize = 26;
+/// Depth of the PIR Merkle tree.
+///
+/// With punctured-range leaves (K=2), each leaf covers two gaps, halving the
+/// leaf count compared to K=1. Depth 25 supports 2^25 = 33,554,432 leaf
+/// slots, enough for ~25.5M punctured ranges from ~51M nullifiers.
+pub const PIR_DEPTH: usize = 25;
 
 /// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 11).
 pub const TIER0_LAYERS: usize = 11;
@@ -31,8 +34,8 @@ pub const TIER0_LAYERS: usize = 11;
 /// Number of layers in each Tier 1 subtree (depth 11 to depth 18).
 pub const TIER1_LAYERS: usize = 7;
 
-/// Number of layers in each Tier 2 subtree (depth 18 to depth 26).
-pub const TIER2_LAYERS: usize = 8;
+/// Number of layers in each Tier 2 subtree (depth 18 to depth 25).
+pub const TIER2_LAYERS: usize = 7;
 
 /// Number of Tier 1 rows (one per depth-11 subtree).
 pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 2048
@@ -43,34 +46,38 @@ pub const TIER2_ROWS: usize = 1 << (TIER0_LAYERS + TIER1_LAYERS); // 262,144
 /// Number of leaves per Tier 1 subtree (at relative depth 7 = global depth 18).
 pub const TIER1_LEAVES: usize = 1 << TIER1_LAYERS; // 128
 
-/// Number of leaves per Tier 2 subtree (at relative depth 8 = global depth 26).
-pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 256
+/// Number of leaves per Tier 2 subtree (at relative depth 7 = global depth 25).
+pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 128
 
 /// Internal nodes per Tier 1 row (relative depths 1-6: 2+4+...+64 = 126).
 pub const TIER1_INTERNAL_NODES: usize = (1 << TIER1_LAYERS) - 2; // 126
 
-/// Internal nodes per Tier 2 row (relative depths 1-7: 2+4+...+128 = 254).
-pub const TIER2_INTERNAL_NODES: usize = (1 << TIER2_LAYERS) - 2; // 254
+/// Internal nodes per Tier 2 row (relative depths 1-6: 2+4+...+64 = 126).
+pub const TIER2_INTERNAL_NODES: usize = (1 << TIER2_LAYERS) - 2; // 126
+
+/// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
+/// `[nf_lo, nf_mid, nf_hi]`.
+pub const TIER2_LEAF_BYTES: usize = 96;
 
 /// Byte size of one Tier 1 row: 126 × 32 (internal) + 128 × 64 (leaf records).
 pub const TIER1_ROW_BYTES: usize = TIER1_INTERNAL_NODES * 32 + TIER1_LEAVES * 64; // 12,224
 
-/// Byte size of one Tier 2 row: 254 × 32 (internal) + 256 × 64 (leaf records).
-pub const TIER2_ROW_BYTES: usize = TIER2_INTERNAL_NODES * 32 + TIER2_LEAVES * 64; // 24,512
+/// Byte size of one Tier 2 row: 126 × 32 (internal) + 128 × 96 (leaf records).
+pub const TIER2_ROW_BYTES: usize = TIER2_INTERNAL_NODES * 32 + TIER2_LEAVES * TIER2_LEAF_BYTES; // 16,320
 
 /// Tier 1 item size in bits (for YPIR parameter setup).
 pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8; // 97,792
 
 /// Tier 2 item size in bits (for YPIR parameter setup).
-pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 196,096
+pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 130,560
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
 /// Metadata written to `pir_root.json` alongside the tier files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PirMetadata {
-    /// Hex-encoded depth-26 Merkle root.
-    pub root26: String,
+    /// Hex-encoded depth-25 Merkle root (PIR tree root for K=2).
+    pub root25: String,
     /// Hex-encoded depth-29 Merkle root (circuit-compatible).
     pub root29: String,
     /// Number of populated leaf ranges in the tree.
@@ -107,7 +114,7 @@ pub struct YpirScenario {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootInfo {
     pub root29: String,
-    pub root26: String,
+    pub root25: String,
     pub num_ranges: usize,
     pub pir_depth: usize,
     pub height: Option<u64>,

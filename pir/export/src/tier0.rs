@@ -15,7 +15,7 @@
 
 use pasta_curves::Fp;
 
-use imt_tree::tree::{Range, TREE_DEPTH};
+use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 
 use crate::{
     subtree_min_key, write_fp, write_internal_nodes, node_or_empty, PIR_DEPTH, TIER0_LAYERS,
@@ -31,7 +31,7 @@ pub use pir_types::tier0::{Tier0Data, TIER0_BYTES, TIER0_INTERNAL_NODES};
 pub fn export(
     root: &Fp,
     levels: &[Vec<Fp>],
-    ranges: &[Range],
+    ranges: &[PuncturedRange],
     empty_hashes: &[Fp; TREE_DEPTH],
 ) -> Vec<u8> {
     let mut buf = vec![0u8; TIER0_BYTES];

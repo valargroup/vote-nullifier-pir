@@ -1,7 +1,7 @@
 pub mod hasher;
 pub mod proof;
 pub mod tree;
-pub use proof::*;
+pub use proof::{ImtProofData, PuncturedImtProofData, PUNCTURE_K};
 pub use tree::*;
 
 #[cfg(test)]

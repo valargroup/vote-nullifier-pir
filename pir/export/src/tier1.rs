@@ -23,7 +23,7 @@ use std::io::Write;
 use anyhow::Result;
 use pasta_curves::Fp;
 
-use imt_tree::tree::{Range, TREE_DEPTH};
+use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 
 use crate::{
     node_or_empty, subtree_min_key, write_fp, write_internal_nodes, PIR_DEPTH, TIER0_LAYERS,
@@ -38,7 +38,7 @@ pub use pir_types::tier1::Tier1Row;
 /// in memory.
 pub fn export(
     levels: &[Vec<Fp>],
-    ranges: &[Range],
+    ranges: &[PuncturedRange],
     empty_hashes: &[Fp; TREE_DEPTH],
     writer: &mut impl Write,
 ) -> Result<()> {
@@ -57,7 +57,7 @@ pub fn export(
 /// The subtree root is at bottom-up level `PIR_DEPTH - TIER0_LAYERS` = 15, index `s`.
 fn write_row(
     levels: &[Vec<Fp>],
-    ranges: &[Range],
+    ranges: &[PuncturedRange],
     empty_hashes: &[Fp; TREE_DEPTH],
     s: usize,
     buf: &mut [u8],

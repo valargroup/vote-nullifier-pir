@@ -164,9 +164,9 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
     let t1 = Instant::now();
     let tree = build_pir_tree(ranges.clone())?;
     eprintln!(
-        "  PIR tree built in {:.1}s (root26={}, root29={})",
+        "  PIR tree built in {:.1}s (root25={}, root29={})",
         t1.elapsed().as_secs_f64(),
-        &hex::encode(tree.root26.to_repr())[..16],
+        &hex::encode(tree.root25.to_repr())[..16],
         &hex::encode(tree.root29.to_repr())[..16],
     );
 
@@ -178,18 +178,16 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
     let mut rng = rand::thread_rng();
     let test_values: Vec<Fp> = (0..num_proofs)
         .map(|_| {
-            // Pick a random populated range and a random value within it
             let idx = rng.gen_range(0..ranges.len());
-            let [low, width] = ranges[idx];
-            // Pick a random offset within the range (truncated to u64 — large sentinel
-            // ranges degenerate to querying `low` directly, which is acceptable for testing).
-            let width_u64 = u64::from_le_bytes(width.to_repr()[..8].try_into().unwrap());
-            let offset_val = if width_u64 > 0 {
-                rng.gen_range(0..=width_u64.min(u64::MAX - 1))
+            let [nf_lo, _nf_mid, nf_hi] = ranges[idx];
+            // Pick a random value strictly between nf_lo and nf_hi (truncated to u64).
+            let span_u64 = u64::from_le_bytes((nf_hi - nf_lo).to_repr()[..8].try_into().unwrap());
+            let offset_val = if span_u64 > 2 {
+                rng.gen_range(1..span_u64.min(u64::MAX - 1))
             } else {
-                0
+                1
             };
-            low + Fp::from(offset_val)
+            nf_lo + Fp::from(offset_val)
         })
         .collect();
 
@@ -270,8 +268,8 @@ async fn run_server(
     let test_values: Vec<Fp> = (0..num_proofs)
         .map(|_| {
             let idx = rng.gen_range(0..ranges.len());
-            let [low, _width] = ranges[idx];
-            low // Use the low value directly (always valid)
+            let [nf_lo, _, _] = ranges[idx];
+            nf_lo + Fp::one() // nf_lo + 1 is always in the punctured range
         })
         .collect();
 
@@ -359,33 +357,24 @@ fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
     let t1 = Instant::now();
     let pir_tree = build_pir_tree(ranges.clone())?;
     eprintln!(
-        "  Depth-26 PIR tree built in {:.1}s (root26={}, root29={})",
+        "  PIR tree built in {:.1}s (root25={}, root29={})",
         t1.elapsed().as_secs_f64(),
-        &hex::encode(pir_tree.root26.to_repr())[..16],
+        &hex::encode(pir_tree.root25.to_repr())[..16],
         &hex::encode(pir_tree.root29.to_repr())[..16],
     );
 
-    // Verify roots match
-    if pir_tree.root29 != tree29.root() {
-        eprintln!(
-            "  WARNING: Root mismatch! PIR root29={} vs tree29 root={}",
-            hex::encode(pir_tree.root29.to_repr()),
-            hex::encode(tree29.root().to_repr()),
-        );
-        // This might happen if the sentinel/range logic differs — log but continue
-    } else {
-        eprintln!("  Roots match! ✓");
-    }
+    // Note: roots won't match because the K=2 punctured tree has different
+    // leaf commitments than the K=1 tree. We verify each independently.
 
     let (tier0_data, tier1_data, tier2_data) = export_tiers(&pir_tree)?;
 
-    // Pick random values and compare proofs
+    // Pick random values — use nf_lo + 1 which is always in the punctured range
     let mut rng = rand::thread_rng();
     let test_values: Vec<Fp> = (0..num_proofs)
         .map(|_| {
             let idx = rng.gen_range(0..ranges.len());
-            let [low, _] = ranges[idx];
-            low
+            let [nf_lo, _, _] = ranges[idx];
+            nf_lo + Fp::one()
         })
         .collect();
 
@@ -393,10 +382,10 @@ fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
     let mut mismatched = 0;
 
     for (i, &value) in test_values.iter().enumerate() {
-        // Get proof from existing system
+        // Get proof from existing K=1 system
         let proof29 = tree29.prove(value);
 
-        // Get proof from PIR system
+        // Get proof from K=2 PIR system
         let proof_pir = pir_client::fetch_proof_local(
             &tier0_data,
             &tier1_data,
@@ -409,19 +398,16 @@ fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
 
         match (proof29, proof_pir) {
             (Some(p29), Ok(ppir)) => {
-                let low_match = p29.low == ppir.low;
-                let width_match = p29.width == ppir.width;
-                let pir_verify = ppir.verify(value);
+                let k1_verify = p29.verify(value);
+                let k2_verify = ppir.verify(value);
 
-                if low_match && width_match && pir_verify {
+                if k1_verify && k2_verify {
                     matched += 1;
                     if i < 5 || i % 20 == 0 {
                         eprintln!(
-                            "  Compare {}/{}: MATCH low={} width={} leaf_pos_29={} leaf_pos_pir={}",
+                            "  Compare {}/{}: BOTH VERIFY leaf_pos_29={} leaf_pos_pir={}",
                             i + 1,
                             num_proofs,
-                            &hex::encode(p29.low.to_repr())[..8],
-                            &hex::encode(p29.width.to_repr())[..8],
                             p29.leaf_pos,
                             ppir.leaf_pos,
                         );
@@ -429,14 +415,8 @@ fn run_compare(nullifiers_path: PathBuf, num_proofs: usize) -> Result<()> {
                 } else {
                     mismatched += 1;
                     eprintln!(
-                        "  Compare {}/{}: MISMATCH low={}/{} width={}/{} verify={}",
-                        i + 1,
-                        num_proofs,
-                        low_match,
-                        &hex::encode(p29.low.to_repr())[..8],
-                        width_match,
-                        &hex::encode(p29.width.to_repr())[..8],
-                        pir_verify,
+                        "  Compare {}/{}: MISMATCH k1_verify={} k2_verify={}",
+                        i + 1, num_proofs, k1_verify, k2_verify,
                     );
                 }
             }
@@ -673,7 +653,7 @@ fn format_ms(ms: f64) -> String {
 /// Export all three tier data blobs from a built PIR tree.
 fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let tier0_data =
-        pir_export::tier0::export(&tree.root26, &tree.levels, &tree.ranges, &tree.empty_hashes);
+        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
     eprintln!("  Tier 0: {} bytes", tier0_data.len());
 
     let mut tier1_data = Vec::new();

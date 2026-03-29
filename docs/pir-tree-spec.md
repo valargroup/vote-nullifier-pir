@@ -1,9 +1,9 @@
 # Private Merkle-Path Retrieval via PIR
 
-**Version:** 0.4
-**Date:** 2026-03-09
+**Version:** 0.5 — Punctured-Range Leaves (K=2)
+**Date:** 2026-03-24
 
-How a client privately retrieves a 26-hash Merkle authentication path from a
+How a client privately retrieves a 25-hash Merkle authentication path from a
 sorted nullifier tree using two PIR queries — without revealing which key
 it is looking up.
 
@@ -13,10 +13,10 @@ it is looking up.
 - [Problem Statement](#problem-statement)
 - [PIR Scheme: YPIR (SimplePIR)](#pir-scheme-ypir-simplepir)
 - [Constants and Sizes](#constants-and-sizes)
-- [Architecture: 11 + 7 + 8](#architecture-11--7--8)
+- [Architecture: 11 + 7 + 7](#architecture-11--7--7)
 - [Tier 0: Plaintext (Depths 0–11)](#tier-0-plaintext-depths-011)
 - [Tier 1: PIR Query 1 (Depths 11–18)](#tier-1-pir-query-1-depths-1118)
-- [Tier 2: PIR Query 2 (Depths 18–26)](#tier-2-pir-query-2-depths-1826)
+- [Tier 2: PIR Query 2 (Depths 18–25)](#tier-2-pir-query-2-depths-1825)
 - [Storage Summary](#storage-summary)
 - [Bandwidth Summary](#bandwidth-summary)
 - [Client Computation Summary](#client-computation-summary)
@@ -34,49 +34,62 @@ protocol. To cast a shielded vote, a client must prove that its note has
 nullifier set. This is a nullifier **non-membership** proof.
 
 The server maintains an Indexed Merkle Tree (see [`imt-tree/`](../imt-tree/))
-over ~51 million Zcash Orchard nullifiers. Each leaf commits to a **gap range**
-between adjacent sorted nullifiers: `leaf = Poseidon(low, high)`. To prove
-non-membership, the client shows its nullifier falls inside one of these gaps.
+over ~51 million Zcash Orchard nullifiers. Each leaf commits to a
+**punctured range** — two adjacent gaps joined by excluding the nullifier
+between them: `leaf = Poseidon3(nf_lo, nf_mid, nf_hi)`. To prove
+non-membership, the client shows its nullifier falls inside one of these
+punctured ranges (strictly between `nf_lo` and `nf_hi`, and not equal to
+`nf_mid`).
 
 The proof is verified inside a zero-knowledge circuit (the delegation circuit),
-which requires a 26-hash Merkle authentication path from leaf to root.
-Downloading the entire tree (~6 GB) to find one path is impractical. Instead,
+which requires a 25-hash Merkle authentication path from leaf to root (padded
+to 29 levels for circuit compatibility).
+Downloading the entire tree (~4 GB) to find one path is impractical. Instead,
 the client uses **Private Information Retrieval (PIR)** to fetch exactly the
 path it needs, without the server learning which nullifier is being queried.
 
+### Punctured-range leaves (K=2)
+
+Instead of one leaf per gap between adjacent nullifiers, each leaf covers
+**two adjacent gaps** by storing three sorted nullifier boundaries
+`[nf_lo, nf_mid, nf_hi]`. The leaf commitment is `Poseidon3(nf_lo, nf_mid, nf_hi)`.
+
+This halves the number of leaves (~25.5M instead of ~51M), reducing tree
+depth from 26 to 25. The circuit cost is essentially unchanged because the
+extra Poseidon permutation in the leaf commitment (2 instead of 1) is offset
+by fewer levels, and a single inequality check (`value ≠ nf_mid`) is trivially
+cheap.
+
 ### Sentinel invariant
 
-The circuit verifies gap widths using a 250-bit range check. To guarantee
-every gap is less than 2²⁵⁰ wide, the tree includes **17 sentinel nullifiers**
-at positions `k × 2²⁵⁰` for k = 0, 1, …, 16. These partition the Pallas
-field (~2²⁵⁴) into segments that satisfy the constraint. The export process
-injects these sentinels before building ranges and the tree. See
-[`imt-tree/README.md`](../imt-tree/README.md) for details on the circuit
-integration.
+The circuit verifies gap widths using a range check. With K=2, the outer
+span `nf_hi − nf_lo` can be up to twice a single gap width, requiring a
+251-bit range check. The tree includes **17+ sentinel nullifiers** at
+positions `k × 2²⁵⁰` for k = 0, 1, …, 16 (plus an extra sentinel at
+`2²⁴⁹` if needed to ensure an odd nullifier count). These partition the
+Pallas field (~2²⁵⁴) into segments where every punctured-range span fits
+within the bound. The export process injects these sentinels before building
+ranges and the tree.
 
 ---
 
 ## Problem Statement
 
-A server holds a Merkle tree over **N ≈ 51 million leaves** (≤ 2²⁶), each
-committing to a gap range between sorted nullifiers. A client wants to
+A server holds a Merkle tree over **N ≈ 25.5 million leaves** (≤ 2²⁵), each
+committing to a punctured range between sorted nullifiers. A client wants to
 privately retrieve the Merkle authentication path for a given key inside a
-key-range — the 26 sibling hashes needed to verify the leaf against the root —
-without revealing which key it is querying.
-
-The client could download all 51 million nullifiers and hash them locally, but
-that would transfer ~6 GB and require ~100 million Poseidon hashes.
-PIR reduces this to two small queries and negligible client-side hashing.
+punctured range — the 25 sibling hashes needed to verify the leaf against
+the root — without revealing which key it is querying.
 
 We use Poseidon as the hash function because authentication paths must be
-verified inside a ZKP. It is relatively slow compared to SHA-256, so
-minimising client hash count is a design goal. We achieve **1 hash** on the
-client during the PIR phase (the ZKP circuit handles the remaining 26).
+verified inside a ZKP. Minimising client hash count is a design goal. We
+achieve **1 hash** on the client during the PIR phase (the ZKP circuit
+handles the remaining 25 PIR siblings + 4 padding levels = 29 total).
 
 ### Design target
 
 Use **2 sequential PIR queries** plus a small plaintext payload to retrieve a
-full 26-hash authentication path. No hash-map or ORAM overhead.
+full 25-hash authentication path. No hash-map or ORAM overhead.
 
 ---
 
@@ -89,19 +102,16 @@ USENIX Security 2024).
 **Why YPIR+SP?** Classic SimplePIR is fast but requires a large database hint
 that the client must download once per session. YPIR eliminates this hint via
 silent preprocessing while retaining SimplePIR's low per-query bandwidth and
-sub-second server processing. Our data regime (6 GB database, 12–24 KB
+sub-second server processing. Our data regime (~4 GB database, 12–16 KB
 records) falls squarely into the "large record" setting from Section 4.6 of
 the paper.
-
-We evaluated InsPIR(e) but chose YPIR+SP for its lower implementation
-complexity and better match to our record-size profile.
 
 | Parameter | Value |
 | --------- | ----- |
 | Tier 1 server processing | ~0.5 s per query (AVX-512) |
-| Tier 2 server processing | ~1.6 s per query (AVX-512) |
+| Tier 2 server processing | ~1.1 s per query (AVX-512) |
 | Row payload (Tier 1) | 12,224 bytes |
-| Row payload (Tier 2) | 24,512 bytes |
+| Row payload (Tier 2) | 16,320 bytes |
 
 See [`docs/params.md`](params.md) for full YPIR lattice parameter derivation.
 
@@ -114,11 +124,12 @@ See [`docs/params.md`](params.md) for full YPIR lattice parameter derivation.
 | K | 32 bytes | Key size (Pallas field element) |
 | V | 32 bytes | Value size (Pallas field element) |
 | H | 32 bytes | Hash output size (Poseidon) |
-| L | 64 bytes | Leaf record: 32-byte key ‖ 32-byte value |
-| D | 26 | Tree depth (root at 0, leaves at 26) |
+| L | 96 bytes | Leaf record: 3 × 32-byte field elements (nf_lo, nf_mid, nf_hi) |
+| D | 25 | PIR tree depth (root at 0, leaves at 25) |
+| D_circuit | 29 | Circuit tree depth (padded from D with 4 empty hash levels) |
 
-A **leaf** is a 64-byte record: 32-byte key ‖ 32-byte value. The leaf hash is
-`Poseidon(key, value)` and is not stored separately.
+A **leaf** is a 96-byte record: `nf_lo ‖ nf_mid ‖ nf_hi`. The leaf hash is
+`Poseidon3(nf_lo, nf_mid, nf_hi)` and is not stored separately.
 
 An **internal node** is a 32-byte hash: `Poseidon(left_child, right_child)`.
 
@@ -126,15 +137,15 @@ An **internal node** is a 32-byte hash: `Poseidon(left_child, right_child)`.
 
 | Component | Count | Size each | Total |
 | --------- | ----- | --------- | ----- |
-| Leaves | 2²⁶ = 67,108,864 | 64 bytes | 4.00 GB |
-| Internal nodes | 2²⁶ − 1 = 67,108,863 | 32 bytes | 2.00 GB |
-| **Total** | | | **≈ 6.00 GB** |
+| Leaves | 2²⁵ = 33,554,432 | 96 bytes | 3.00 GB |
+| Internal nodes | 2²⁵ − 1 = 33,554,431 | 32 bytes | 1.00 GB |
+| **Total** | | | **≈ 4.00 GB** |
 
 ---
 
-## Architecture: 11 + 7 + 8
+## Architecture: 11 + 7 + 7
 
-The 26-layer tree is split into three tiers:
+The 25-layer tree is split into three tiers:
 
 ```
 Depth 0  ──────────────  root
@@ -149,10 +160,10 @@ Depth 11 ──────────────  2,048 subtree roots
   │
 Depth 18 ──────────────  262,144 subtree roots
   │
-  │   TIER 2: PIR Query 2 (8 layers)
-  │   Depths 18–26
+  │   TIER 2: PIR Query 2 (7 layers)
+  │   Depths 18–25
   │
-Depth 26 ──────────────  leaves (up to 67,108,864)
+Depth 25 ──────────────  leaves (up to 33,554,432)
 ```
 
 Authentication path coverage:
@@ -161,8 +172,11 @@ Authentication path coverage:
 | ---- | ----------------- | ------ |
 | Tier 0 (plaintext) | 11 | 1–11 |
 | Tier 1 (PIR query) | 7 | 12–18 |
-| Tier 2 (PIR query) | 8 | 19–26 |
-| **Total** | **26** | **1–26** |
+| Tier 2 (PIR query) | 7 | 19–25 |
+| **Total** | **25** | **1–25** |
+
+The circuit expects 29 sibling hashes. The remaining 4 levels (depths 26–29)
+are padded with pre-computed empty subtree hashes.
 
 At each tier the client must learn:
 - The sibling hashes along the path to the queried key
@@ -192,7 +206,7 @@ Each record is an interleaved pair: 32-byte `hash` ‖ 32-byte `min_key`.
 | Field | Size | Purpose |
 | ----- | ---- | ------- |
 | `hash` | 32 bytes | Merkle hash of the subtree rooted here |
-| `min_key` | 32 bytes | Smallest key in this subtree (for binary search) |
+| `min_key` | 32 bytes | Smallest `nf_lo` in this subtree (for binary search) |
 
 Count: 2¹¹ = 2,048 records × 64 bytes = **131,072 bytes**
 
@@ -277,20 +291,20 @@ Leaf storage: 128 × 64 = **8,192 bytes**
 
 ---
 
-## Tier 2: PIR Query 2 (Depths 18–26)
+## Tier 2: PIR Query 2 (Depths 18–25)
 
 ### Database layout
 
 | Property | Value | Derivation |
 | -------- | ----- | ---------- |
 | Rows | 262,144 | One per depth-18 subtree |
-| Layers per row | 8 | Relative depths 1–8 |
-| Content per row | Complete 8-layer subtree | See below |
+| Layers per row | 7 | Relative depths 1–7 |
+| Content per row | Complete 7-layer subtree | See below |
 
 The subtree root (depth-18 node) is **not** included — the client has it from
 Tier 1.
 
-**Internal nodes** (relative depths 1–7, absolute depths 19–25):
+**Internal nodes** (relative depths 1–6, absolute depths 19–24):
 
 | Relative depth | Count | Cumulative |
 | -------------- | ----- | ---------- |
@@ -300,36 +314,34 @@ Tier 1.
 | 4 | 16 | 30 |
 | 5 | 32 | 62 |
 | 6 | 64 | 126 |
-| 7 | 128 | 254 |
-| **Total** | **254** | 2⁸ − 2 = 254 |
+| **Total** | **126** | 2⁷ − 2 = 126 |
 
-Internal node storage: 254 × 32 bytes = **8,128 bytes**
+Internal node storage: 126 × 32 bytes = **4,032 bytes**
 
-**Leaf records** (relative depth 8, absolute depth 26 — the actual tree leaves):
+**Leaf records** (relative depth 7, absolute depth 25 — the actual tree leaves):
 
-Each record is: 32-byte `key` ‖ 32-byte `value`. No separate hash field; the
-leaf hash is computed as `Poseidon(key, value)`.
+Each record is: 32-byte `nf_lo` ‖ 32-byte `nf_mid` ‖ 32-byte `nf_hi`. No
+separate hash field; the leaf hash is computed as
+`Poseidon3(nf_lo, nf_mid, nf_hi)`.
 
-Leaf count: 2⁸ = 256
-Leaf storage: 256 × 64 = **16,384 bytes**
+Leaf count: 2⁷ = 128
+Leaf storage: 128 × 96 = **12,288 bytes**
 
-**Row total: 8,128 + 16,384 = 24,512 bytes**
+**Row total: 4,032 + 12,288 = 16,320 bytes**
 
 ### Empty-leaf padding
 
-Partially-filled rows pad remaining entries with `key = p − 1` (the maximum
-Pallas field element) and `value = 0`. Using the max field element ensures
-padding sorts after all real leaves, preserving the sorted invariant for
-binary search. Padding with `key = 0` would break the search because zero
-sorts before real keys.
+Partially-filled rows pad remaining entries with all-zero fields:
+`nf_lo = 0, nf_mid = 0, nf_hi = 0`. The empty leaf hash
+`Poseidon3(0, 0, 0)` is used as the empty subtree leaf.
 
 ### Database size
 
 | Metric | Derivation | Result |
 | ------ | ---------- | ------ |
-| Raw | 262,144 × 24,512 | ≈ **5.97 GB** |
-| — leaf data portion | 262,144 × 16,384 | 4.00 GB (= all 2²⁶ leaves × 64 B) |
-| — internal node portion | 262,144 × 8,128 | ≈ 1.97 GB (depths 19–25) |
+| Raw | 262,144 × 16,320 | ≈ **3.98 GB** |
+| — leaf data portion | 262,144 × 12,288 | 3.00 GB (= all 2²⁵ leaves × 96 B) |
+| — internal node portion | 262,144 × 4,032 | ≈ 0.98 GB (depths 19–24) |
 
 ### Client procedure
 
@@ -338,15 +350,16 @@ sorts before real keys.
 
 2. Issue PIR query for this row.
 
-3. **Binary search** the 256 leaf keys to find the target key and retrieve its
-   value. Records are interleaved `(key, value)`, so the search steps by
-   stride 64 and reads `key` at byte offset `8,128 + i × 64`.
+3. **Binary search** the 128 leaf `nf_lo` values to find the target leaf.
+   Records are at stride 96 and the search reads `nf_lo` at byte offset
+   `4,032 + i × 96`. Verify the value falls strictly inside the punctured
+   range: `nf_lo < value < nf_hi` and `value ≠ nf_mid`.
 
-4. **Read 8 sibling hashes** from the row:
-   - 1 sibling at depth 26: the leaf at index `target_position XOR 1`.
-     Compute its hash as `Poseidon(key ‖ value)` — this is the **only hash
-     the client computes** during the PIR phase.
-   - 7 siblings at depths 19–25: read from the 254 internal nodes by walking
+4. **Read 7 sibling hashes** from the row:
+   - 1 sibling at depth 25: the leaf at index `target_position XOR 1`.
+     Compute its hash as `Poseidon3(nf_lo, nf_mid, nf_hi)` — this is the
+     **only hash the client computes** during the PIR phase.
+   - 6 siblings at depths 19–24: read from the 126 internal nodes by walking
      upward from the target leaf position.
 
 ---
@@ -361,12 +374,9 @@ sorts before real keys.
 | Depth-11 hashes + keys | Tier 0 | 131,072 B | 2¹¹ × 64 |
 | Depths 12–17 internal hashes | Tier 1 rows | 8,257,536 B | 2,048 × 126 × 32 |
 | Depth-18 hashes + keys | Tier 1 rows | 16,777,216 B | 2,048 × 128 × 64 |
-| Depths 19–25 internal hashes | Tier 2 rows | 2,130,706,432 B | 262,144 × 254 × 32 |
-| Depth-26 leaves (key + value) | Tier 2 rows | 4,294,967,296 B | 262,144 × 256 × 64 |
-| **Total** | | **≈ 6.02 GB** | |
-
-The slight excess over the 6.00 GB raw tree comes from auxiliary `min_key`
-fields stored alongside hashes in Tier 0 and Tier 1 for binary search.
+| Depths 19–24 internal hashes | Tier 2 rows | 1,056,964,608 B | 262,144 × 126 × 32 |
+| Depth-25 leaves (nf_lo + nf_mid + nf_hi) | Tier 2 rows | 3,221,225,472 B | 262,144 × 128 × 96 |
+| **Total** | | **≈ 4.01 GB** | |
 
 ### Server storage
 
@@ -374,8 +384,8 @@ fields stored alongside hashes in Tier 0 and Tier 1 for binary search.
 | -------- | -------- | ----- |
 | Tier 0 (plaintext) | 192 KB | Cacheable, public |
 | Tier 1 (PIR) | 23.9 MB | Small enough for any PIR scheme |
-| Tier 2 (PIR) | 5.97 GB | Binding constraint for scheme selection |
-| **Total (raw)** | **≈ 6.02 GB** | |
+| Tier 2 (PIR) | 3.98 GB | Binding constraint for scheme selection |
+| **Total (raw)** | **≈ 4.01 GB** | **33% smaller than v0.4 (6.02 GB)** |
 
 Whether the server stores raw or padded rows depends on the PIR scheme. YPIR
 operates on raw data and handles alignment internally via `FilePtIter` packing.
@@ -408,14 +418,15 @@ rebuilt.
 | ---- | ------------- | --------------- | ------------------- |
 | Tier 0 | Over 2,048 keys | 0 | 11 |
 | Tier 1 | Over 128 keys | 0 | 7 |
-| Tier 2 | Over 256 keys | 1 (sibling leaf) | 8 |
-| **Total** | | **1** | **26** |
+| Tier 2 | Over 128 keys | 1 (sibling leaf via Poseidon3) | 7 |
+| **Total** | | **1** | **25** |
 
 All internal node hashes are pre-computed and served directly: Tier 0 sends
 depths 0–10 as plaintext; Tier 1 and Tier 2 rows contain pre-computed internal
-hashes. The client computes exactly **1 Poseidon hash** total: the sibling
-leaf hash in Tier 2, computed as `Poseidon(key, value)`. The ZKP circuit
-verifies the full 26-hash authentication path against the public root.
+hashes. The client computes exactly **1 Poseidon3 hash** total: the sibling
+leaf hash in Tier 2, computed as `Poseidon3(nf_lo, nf_mid, nf_hi)`. The ZKP
+circuit verifies the full 29-hash authentication path (25 PIR siblings + 4
+empty-hash padding) against the public root.
 
 ---
 
@@ -456,21 +467,21 @@ Bytes 4,032–12,223:    leaf_records[0..127]      128 × 64 B = 8,192 B
 - Sibling of position p: position `p XOR 1`
 - Parent of position p: position `p >> 1` at depth `d − 1`
 
-### Tier 2 row layout (24,512 bytes)
+### Tier 2 row layout (16,320 bytes)
 
 ```
-Bytes 0–8,127:         internal_nodes[0..253]    254 × 32 B = 8,128 B
-                       (BFS: 2 at depth 1, 4 at depth 2, ..., 128 at depth 7)
-Bytes 8,128–24,511:    leaf_records[0..255]      256 × 64 B = 16,384 B
-                       (each: 32-byte key ‖ 32-byte value)
+Bytes 0–4,031:         internal_nodes[0..125]    126 × 32 B = 4,032 B
+                       (BFS: 2 at depth 1, 4 at depth 2, ..., 64 at depth 6)
+Bytes 4,032–16,319:    leaf_records[0..127]      128 × 96 B = 12,288 B
+                       (each: 32-byte nf_lo ‖ 32-byte nf_mid ‖ 32-byte nf_hi)
 ```
 
 **Indexing:**
 
-- Internal node byte offset: `((2^d − 2) + p) × 32` for d ∈ [1, 7], p ∈ [0, 2^d)
-- Leaf record byte offset: `8,128 + i × 64` for i ∈ [0, 256)
-  - `key` at `+0`, `value` at `+32`
-- Empty leaf records use `key = p − 1` (max field element), `value = 0`
+- Internal node byte offset: `((2^d − 2) + p) × 32` for d ∈ [1, 6], p ∈ [0, 2^d)
+- Leaf record byte offset: `4,032 + i × 96` for i ∈ [0, 128)
+  - `nf_lo` at `+0`, `nf_mid` at `+32`, `nf_hi` at `+64`
+- Empty leaf records use all-zero fields.
 
 ---
 
@@ -500,8 +511,13 @@ Bytes 8,128–24,511:    leaf_records[0..255]      256 × 64 B = 16,384 B
    without speculation (e.g., querying multiple candidate Tier 2 rows).
 
 3. **Tier 2 row utilisation:** If the PIR scheme pads rows to a power-of-two
-   boundary (e.g., 32 KB), usable utilisation is 24,512 / 32,768 = 74.8%.
-   The spare bytes could store neighbouring subtree data as a guard band.
+   boundary (e.g., 16 KB), usable utilisation is 16,320 / 16,384 = 99.6%.
+
+4. **Client-computed internal nodes:** A future optimization could remove
+   pre-computed internal nodes from Tier 2 rows, storing only leaf data
+   (12,288 bytes per row). The client would rebuild the 7-level subtree
+   locally (~254 Poseidon hashes, ~3 ms on mobile). Combined with punctured
+   ranges this would reduce Tier 2 to ~3.00 GB.
 
 ---
 
