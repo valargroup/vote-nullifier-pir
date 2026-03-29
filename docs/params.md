@@ -5,12 +5,18 @@ codebase, and how they flow from tree constants to lattice parameters.
 
 **Contents**
 
-- [Overview](#overview)
-- [Tree-layout constants](#tree-layout-constants)
-- [Scenario construction](#scenario-construction)
-- [YPIR lattice parameters](#ypir-lattice-parameters)
-- [Client-side reconstruction](#client-side-reconstruction)
-- [Upstream reference](#upstream-reference)
+- [PIR Parameters](#pir-parameters)
+  - [Overview](#overview)
+  - [Tree-layout constants](#tree-layout-constants)
+    - [Tree depth and layers](#tree-depth-and-layers)
+    - [Database dimensions](#database-dimensions)
+  - [Scenario construction](#scenario-construction)
+  - [YPIR lattice parameters](#ypir-lattice-parameters)
+    - [Step-by-step derivation](#step-by-step-derivation)
+    - [Fixed cryptographic constants](#fixed-cryptographic-constants)
+    - [Summary: concrete values per tier](#summary-concrete-values-per-tier)
+  - [Client-side reconstruction](#client-side-reconstruction)
+  - [Upstream references](#upstream-references)
 
 ---
 
@@ -53,20 +59,20 @@ number of rows and bytes-per-row that YPIR must support.
 
 | Constant | Value | Meaning |
 |:--|--:|:--|
-| `PIR_DEPTH` | 26 | Total tree depth (2^26 leaf slots) |
+| `PIR_DEPTH` | 25 | Total tree depth (2^25 leaf slots) |
 | `TIER0_LAYERS` | 11 | Plaintext tier (not PIR-fetched) |
 | `TIER1_LAYERS` | 7 | Layers per Tier 1 subtree |
-| `TIER2_LAYERS` | 8 | Layers per Tier 2 subtree |
+| `TIER2_LAYERS` | 7 | Layers per Tier 2 subtree |
 
 ### Database dimensions
 
 | Constant | Tier 1 | Tier 2 | How derived |
 |:--|--:|--:|:--|
 | Rows | 2,048 | 262,144 | `1 << TIER0_LAYERS`, `1 << (TIER0_LAYERS + TIER1_LAYERS)` |
-| Leaves/row | 128 | 256 | `1 << TIER{n}_LAYERS` |
-| Internal nodes/row | 126 | 254 | `(1 << TIER{n}_LAYERS) - 2` |
-| Row bytes | 12,224 | 24,512 | `internal × 32 + leaves × 64` |
-| Item bits | 97,792 | 196,096 | `row_bytes × 8` |
+| Leaves/row | 128 | 128 | `1 << TIER{n}_LAYERS` |
+| Internal nodes/row | 0 | 0 | Leaf-only rows; client rebuilds subtree locally |
+| Row bytes | 8,192 | 12,288 | Tier 1: `leaves × 64`; Tier 2: `leaves × 96` |
+| Item bits | 65,536 | 98,304 | `row_bytes × 8` |
 
 ---
 
@@ -86,8 +92,8 @@ pub struct YpirScenario {
 
 | Tier | `num_items` | `item_size_bits` |
 |:--|--:|--:|
-| 1 | 2,048 | 97,792 |
-| 2 | 262,144 | 196,096 |
+| 1 | 2,048 | 65,536 |
+| 2 | 262,144 | 98,304 |
 
 The server uses these in two ways:
 
@@ -125,7 +131,7 @@ db_cols = ceil(item_size_bits / 28,672)
 | | Tier 1 | Tier 2 |
 |:--|--:|--:|
 | `db_rows` | 2,048 | 262,144 |
-| `db_cols` | 4 | 7 |
+| `db_cols` | 3 | 4 |
 
 **3. Ring dimension exponent**
 
@@ -159,7 +165,7 @@ Hardcoded in `params_for_scenario_simplepir` and `internal_params_for`.
 These correspond to the YPIR+SP variant described in
 [YPIR: High-Throughput Single-Server PIR with Silent Preprocessing](https://eprint.iacr.org/2024/270.pdf)
 (Menon & Wu, 2024). Our system uses YPIR+SP (SimplePIR-based packing)
-because each tier row is a large record (12–24 KB), matching the
+because each tier row is a large record (~12 KB), matching the
 "large record" setting from Section 4.6 of the paper.
 
 The values below are set by the ypir crate. For reference, the paper's
@@ -197,9 +203,9 @@ YPIR+SP variant). The concrete values hardcoded in the ypir crate's
 | Parameter | Tier 1 | Tier 2 |
 |:--|--:|--:|
 | `num_items` | 2,048 | 262,144 |
-| `item_size_bits` | 97,792 | 196,096 |
+| `item_size_bits` | 65,536 | 98,304 |
 | `db_rows` | 2,048 | 262,144 |
-| `db_cols` (instances) | 4 | 7 |
+| `db_cols` (instances) | 3 | 4 |
 | `nu_1` | 0 | 7 |
 | `nu_2` | 1 | 1 |
 

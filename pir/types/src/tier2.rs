@@ -1,12 +1,14 @@
 //! Tier 2 reader: parse and query a single Tier 2 row (punctured-range leaves, K=2).
+//!
+//! Each row contains TIER2_LEAVES leaf records only (no pre-computed internal
+//! nodes). The client rebuilds the subtree locally to extract siblings.
 
 use pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
-use crate::{TIER2_INTERNAL_NODES, TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES};
+use crate::{TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES};
 
-/// Parsed Tier 2 row: internal nodes (relative depths 1-6) and 128 punctured-range
-/// leaf records at relative depth 7.
+/// Parsed Tier 2 row: TIER2_LEAVES punctured-range leaf records.
 pub struct Tier2Row<'a> {
     data: &'a [u8],
 }
@@ -23,20 +25,11 @@ impl<'a> Tier2Row<'a> {
         Ok(Self { data })
     }
 
-    /// Internal node at relative depth d (1..TIER2_LAYERS-1), position p (0..2^d - 1).
-    pub fn internal_node(&self, rel_depth: usize, pos: usize) -> Fp {
-        debug_assert!((1..TIER2_LAYERS).contains(&rel_depth));
-        debug_assert!(pos < (1 << rel_depth));
-        let bfs_idx = (1usize << rel_depth) - 2 + pos;
-        let offset = bfs_idx * 32;
-        read_fp(&self.data[offset..offset + 32])
-    }
-
     /// Leaf record at index i: `(nf_lo, nf_mid, nf_hi)` — the three boundary
     /// nullifiers of a punctured range.
     pub fn leaf_record(&self, i: usize) -> (Fp, Fp, Fp) {
         debug_assert!(i < TIER2_LEAVES);
-        let base = TIER2_INTERNAL_NODES * 32 + i * TIER2_LEAF_BYTES;
+        let base = i * TIER2_LEAF_BYTES;
         let nf_lo = read_fp(&self.data[base..base + 32]);
         let nf_mid = read_fp(&self.data[base + 32..base + 64]);
         let nf_hi = read_fp(&self.data[base + 64..base + 96]);
@@ -52,8 +45,7 @@ impl<'a> Tier2Row<'a> {
         if valid_leaves == 0 {
             return None;
         }
-        let base = TIER2_INTERNAL_NODES * 32;
-        let idx = binary_search_records(self.data, base, valid_leaves, TIER2_LEAF_BYTES, 0, value)?;
+        let idx = binary_search_records(self.data, 0, valid_leaves, TIER2_LEAF_BYTES, 0, value)?;
 
         let (nf_lo, nf_mid, nf_hi) = self.leaf_record(idx);
         let offset = value - nf_lo;
@@ -67,11 +59,10 @@ impl<'a> Tier2Row<'a> {
         Some(idx)
     }
 
-    /// Extract the sibling hashes from this Tier 2 row for a given leaf index.
+    /// Rebuild the subtree from leaf data and extract sibling hashes.
     ///
-    /// The sibling at the leaf level (bottom-up 0) is computed by hashing the
-    /// sibling's three boundary nullifiers with `hash3`. Upper siblings are
-    /// read from the pre-computed internal nodes.
+    /// The client hashes all leaf records and builds the tree bottom-up to
+    /// collect the TIER2_LAYERS siblings needed for the Merkle authentication path.
     pub fn extract_siblings(
         &self,
         leaf_idx: usize,
@@ -79,23 +70,34 @@ impl<'a> Tier2Row<'a> {
         hasher: &imt_tree::hasher::PoseidonHasher,
     ) -> [Fp; TIER2_LAYERS] {
         debug_assert!(valid_leaves <= TIER2_LEAVES);
+
+        let empty_leaf = hasher.hash3(Fp::zero(), Fp::zero(), Fp::zero());
+
+        let mut current_level: Vec<Fp> = (0..TIER2_LEAVES)
+            .map(|i| {
+                if i < valid_leaves {
+                    let (lo, mid, hi) = self.leaf_record(i);
+                    hasher.hash3(lo, mid, hi)
+                } else {
+                    empty_leaf
+                }
+            })
+            .collect();
+
         let mut siblings = [Fp::default(); TIER2_LAYERS];
-
-        let sibling_leaf_idx = leaf_idx ^ 1;
-        siblings[0] = if sibling_leaf_idx < valid_leaves {
-            let (nf_lo, nf_mid, nf_hi) = self.leaf_record(sibling_leaf_idx);
-            hasher.hash3(nf_lo, nf_mid, nf_hi)
-        } else {
-            hasher.hash3(Fp::zero(), Fp::zero(), Fp::zero())
-        };
-
         let mut pos = leaf_idx;
-        for rd in (1..TIER2_LAYERS).rev() {
+        for level in 0..TIER2_LAYERS {
+            siblings[level] = current_level[pos ^ 1];
+            if level < TIER2_LAYERS - 1 {
+                let next_len = current_level.len() / 2;
+                let mut next_level = Vec::with_capacity(next_len);
+                for j in 0..next_len {
+                    next_level.push(hasher.hash(current_level[2 * j], current_level[2 * j + 1]));
+                }
+                current_level = next_level;
+            }
             pos >>= 1;
-            let sibling_pos = pos ^ 1;
-            siblings[TIER2_LAYERS - rd] = self.internal_node(rd, sibling_pos);
         }
-
         siblings
     }
 }
@@ -122,13 +124,12 @@ mod tests {
     #[test]
     fn punctured_leaf_record_round_trip() {
         let mut row = vec![0u8; TIER2_ROW_BYTES];
-        let base = TIER2_INTERNAL_NODES * 32;
         let hasher = PoseidonHasher::new();
 
         // Write a punctured range [10, 20, 30] at leaf 0
-        write_fp(&mut row[base..], Fp::from(10u64));
-        write_fp(&mut row[base + 32..], Fp::from(20u64));
-        write_fp(&mut row[base + 64..], Fp::from(30u64));
+        write_fp(&mut row[0..], Fp::from(10u64));
+        write_fp(&mut row[32..], Fp::from(20u64));
+        write_fp(&mut row[64..], Fp::from(30u64));
 
         let tier2 = Tier2Row::from_bytes(&row).unwrap();
         let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(0);
@@ -144,7 +145,7 @@ mod tests {
         assert!(tier2.find_leaf(Fp::from(20u64), 1).is_none());
         assert!(tier2.find_leaf(Fp::from(30u64), 1).is_none());
 
-        // Sibling hash uses hash3
+        // Sibling at leaf level: empty because leaf 1 is padding
         let sibs = tier2.extract_siblings(0, 1, &hasher);
         assert_eq!(sibs[0], hasher.hash3(Fp::zero(), Fp::zero(), Fp::zero()));
     }
