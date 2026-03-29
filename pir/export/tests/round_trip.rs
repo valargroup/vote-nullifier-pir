@@ -357,7 +357,6 @@ fn test_export_deterministic() {
 }
 
 #[test]
-#[test]
 /// Regression test: a leaf whose tier-2 sibling is an empty padding slot must
 /// still produce a valid proof. Before the K=2 empty-hash fix, `extract_siblings`
 /// used `hash3(0,0,0)` while `build_levels` padded with `hash(0,0)`, causing a
