@@ -28,48 +28,49 @@ pub mod tier2;
 /// slots, enough for ~25.5M punctured ranges from ~51M nullifiers.
 pub const PIR_DEPTH: usize = 25;
 
-/// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 11).
-pub const TIER0_LAYERS: usize = 11;
+/// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 9).
+pub const TIER0_LAYERS: usize = 9;
 
-/// Number of layers in each Tier 1 subtree (depth 11 to depth 18).
-pub const TIER1_LAYERS: usize = 7;
+/// Number of layers in each Tier 1 subtree (depth 9 to depth 15).
+pub const TIER1_LAYERS: usize = 6;
 
-/// Number of layers in each Tier 2 subtree (depth 18 to depth 25).
-pub const TIER2_LAYERS: usize = 7;
+/// Number of layers in each Tier 2 subtree (depth 15 to depth 25).
+pub const TIER2_LAYERS: usize = 10;
 
-/// Number of Tier 1 rows (one per depth-11 subtree).
-pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 2048
+/// Number of Tier 1 rows (one per depth-9 subtree).
+pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 512
 
-/// Number of Tier 2 rows (one per depth-18 subtree).
-pub const TIER2_ROWS: usize = 1 << (TIER0_LAYERS + TIER1_LAYERS); // 262,144
+/// Number of Tier 2 rows (one per depth-15 subtree).
+pub const TIER2_ROWS: usize = 1 << (TIER0_LAYERS + TIER1_LAYERS); // 32,768
 
-/// Number of leaves per Tier 1 subtree (at relative depth 7 = global depth 18).
-pub const TIER1_LEAVES: usize = 1 << TIER1_LAYERS; // 128
+/// Number of leaves per Tier 1 subtree (at relative depth 6 = global depth 15).
+pub const TIER1_LEAVES: usize = 1 << TIER1_LAYERS; // 64
 
-/// Number of leaves per Tier 2 subtree (at relative depth 7 = global depth 25).
-pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 128
+/// Number of leaves per Tier 2 subtree (at relative depth 10 = global depth 25).
+pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 1,024
 
-/// Internal nodes per Tier 1 row (relative depths 1-6: 2+4+...+64 = 126).
-pub const TIER1_INTERNAL_NODES: usize = (1 << TIER1_LAYERS) - 2; // 126
+/// YPIR SimplePIR requires at least 2048 rows (`poly_len`). When TIER1_ROWS
+/// is smaller, the YPIR database is padded with zero rows up to this minimum.
+pub const YPIR_MIN_ROWS: usize = 2048;
 
-/// Internal nodes per Tier 2 row (relative depths 1-6: 2+4+...+64 = 126).
-pub const TIER2_INTERNAL_NODES: usize = (1 << TIER2_LAYERS) - 2; // 126
+/// Number of rows in the Tier 1 YPIR database (padded to YPIR minimum).
+pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS { TIER1_ROWS } else { YPIR_MIN_ROWS }; // 2,048
 
 /// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
 /// `[nf_lo, nf_mid, nf_hi]`.
 pub const TIER2_LEAF_BYTES: usize = 96;
 
-/// Byte size of one Tier 1 row: 126 × 32 (internal) + 128 × 64 (leaf records).
-pub const TIER1_ROW_BYTES: usize = TIER1_INTERNAL_NODES * 32 + TIER1_LEAVES * 64; // 12,224
+/// Byte size of one Tier 1 row: 64 × 64 (leaf records only).
+pub const TIER1_ROW_BYTES: usize = TIER1_LEAVES * 64; // 4,096
 
-/// Byte size of one Tier 2 row: 126 × 32 (internal) + 128 × 96 (leaf records).
-pub const TIER2_ROW_BYTES: usize = TIER2_INTERNAL_NODES * 32 + TIER2_LEAVES * TIER2_LEAF_BYTES; // 16,320
+/// Byte size of one Tier 2 row: 1,024 × 96 (leaf records only).
+pub const TIER2_ROW_BYTES: usize = TIER2_LEAVES * TIER2_LEAF_BYTES; // 98,304
 
 /// Tier 1 item size in bits (for YPIR parameter setup).
-pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8; // 97,792
+pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8;
 
 /// Tier 2 item size in bits (for YPIR parameter setup).
-pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 130,560
+pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 

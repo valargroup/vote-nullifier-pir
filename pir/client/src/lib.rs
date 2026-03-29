@@ -122,11 +122,12 @@ fn process_tier1(
     nullifier: Fp,
     path: &mut [Fp; TREE_DEPTH],
 ) -> Result<usize> {
+    let hasher = PoseidonHasher::new();
     let tier1 = Tier1Row::from_bytes(tier1_row)?;
     let s2 = tier1
         .find_sub_subtree(nullifier)
         .context("nullifier not found in any Tier 1 sub-subtree")?;
-    fill_path(path, PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS, &tier1.extract_siblings(s2));
+    fill_path(path, PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS, &tier1.extract_siblings(s2, &hasher));
     Ok(s2)
 }
 
@@ -680,13 +681,7 @@ mod tests {
             )
             .unwrap();
             let mut tier2_data = Vec::new();
-            pir_export::tier2::export(
-                &tree.levels,
-                &tree.ranges,
-                &tree.empty_hashes,
-                &mut tier2_data,
-            )
-            .unwrap();
+            pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
             Self {
                 tier0_data,

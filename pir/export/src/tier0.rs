@@ -1,13 +1,12 @@
-//! Tier 0 export: plaintext internal nodes (depths 0-10) + subtree records at depth 11.
+//! Tier 0 export: plaintext internal nodes + subtree records.
 //!
-//! Layout (196,576 bytes):
+//! Layout (TIER0_BYTES bytes):
 //! ```text
 //! [depth 0: 1 × 32 bytes (root)]
 //! [depth 1: 2 × 32 bytes]
-//! [depth 2: 4 × 32 bytes]
 //! ...
-//! [depth 10: 1024 × 32 bytes]
-//! [subtree records: 2048 × (32-byte hash + 32-byte min_key)]
+//! [depth TIER0_LAYERS-1: 2^(TIER0_LAYERS-1) × 32 bytes]
+//! [subtree records: TIER1_ROWS × (32-byte hash + 32-byte min_key)]
 //! ```
 //!
 //! BFS position of node at depth d, index i: `(2^d - 1) + i`.
