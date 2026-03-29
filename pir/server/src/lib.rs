@@ -19,7 +19,7 @@ use ypir::server::YServer;
 // Re-export shared types and constants so existing consumers can import from pir_server.
 pub use pir_types::{
     HealthInfo, PirMetadata, RootInfo, YpirScenario, TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES,
-    TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
+    TIER1_YPIR_ROWS, TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
 const U64_BYTES: usize = std::mem::size_of::<u64>();
@@ -59,10 +59,10 @@ impl Drop for Aligned64 {
     }
 }
 
-/// Tier 1 YPIR scenario.
+/// Tier 1 YPIR scenario (padded to YPIR minimum row count).
 pub fn tier1_scenario() -> YpirScenario {
     YpirScenario {
-        num_items: TIER1_ROWS,
+        num_items: TIER1_YPIR_ROWS,
         item_size_bits: TIER1_ITEM_BITS,
     }
 }
@@ -481,10 +481,10 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
         "Tier 1 loaded"
     );
     anyhow::ensure!(
-        tier1_data.len() == TIER1_ROWS * TIER1_ROW_BYTES,
+        tier1_data.len() == TIER1_YPIR_ROWS * TIER1_ROW_BYTES,
         "tier1.bin size mismatch: got {} bytes, expected {}",
         tier1_data.len(),
-        TIER1_ROWS * TIER1_ROW_BYTES
+        TIER1_YPIR_ROWS * TIER1_ROW_BYTES
     );
 
     let tier2_data = std::fs::read(pir_data_dir.join("tier2.bin"))?;
