@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS,
-    TIER2_ROW_BYTES,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES,
+    TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
 use super::state::{AppState, ServerPhase};

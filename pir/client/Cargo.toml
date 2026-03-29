@@ -11,7 +11,7 @@ wiremock = "0.6"
 [dependencies]
 pir-types  = { path = "../types", features = ["reader"] }
 imt-tree = { path = "../../imt-tree" }
-ypir = { git = "https://github.com/menonsamir/ypir.git", branch = "artifact", default-features = false }
+ypir = { git = "https://github.com/valargroup/ypir.git", branch = "valar/artifact", default-features = false }
 hex = "0.4"
 anyhow = "1.0"
 ff = "0.13"

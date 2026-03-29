@@ -24,9 +24,6 @@ use crate::{
 pub use pir_types::tier1::Tier1Row;
 
 /// Export all Tier 1 rows to a writer.
-///
-/// Rows are computed and written one at a time to avoid materializing all rows
-/// in memory.
 pub fn export(
     levels: &[Vec<Fp>],
     ranges: &[PuncturedRange],

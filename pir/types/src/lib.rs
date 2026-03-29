@@ -54,17 +54,17 @@ pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 128
 /// `[nf_lo, nf_mid, nf_hi]`.
 pub const TIER2_LEAF_BYTES: usize = 96;
 
-/// Byte size of one Tier 1 row: 128 × 64 (leaf records only).
+/// Byte size of one Tier 1 row (logical data): 128 × 64 (leaf records only).
 pub const TIER1_ROW_BYTES: usize = TIER1_LEAVES * 64; // 8,192
 
-/// Byte size of one Tier 2 row: 128 × 96 (leaf records only).
+/// Byte size of one Tier 2 row (logical data): 128 × 96 (leaf records only).
 pub const TIER2_ROW_BYTES: usize = TIER2_LEAVES * TIER2_LEAF_BYTES; // 12,288
 
 /// Tier 1 item size in bits (for YPIR parameter setup).
-pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8; // 65,536
+pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8;
 
 /// Tier 2 item size in bits (for YPIR parameter setup).
-pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8; // 98,304
+pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
