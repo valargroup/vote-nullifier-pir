@@ -1,13 +1,12 @@
-//! Tier 2 export: 262,144 rows of 128 punctured-range leaf records (K=2).
+//! Tier 2 export: TIER2_ROWS rows of TIER2_LEAVES punctured-range leaf records (K=2).
 //!
-//! Row layout (12,288 bytes):
+//! Row layout (TIER2_ROW_BYTES bytes):
 //! ```text
-//! [leaf records: 128 × (32-byte nf_lo + 32-byte nf_mid + 32-byte nf_hi)]
+//! [leaf records: TIER2_LEAVES × (32-byte nf_lo + 32-byte nf_mid + 32-byte nf_hi)]
 //!   record i: nf_lo at i*96, nf_mid at i*96+32, nf_hi at i*96+64
 //! ```
 //!
-//! Internal nodes are not stored; the client rebuilds the 7-level subtree
-//! locally from the leaf data (~254 Poseidon calls).
+//! Internal nodes are not stored; the client rebuilds the subtree locally.
 
 use std::io::Write;
 

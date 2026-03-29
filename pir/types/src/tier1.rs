@@ -1,14 +1,14 @@
 //! Tier 1 reader: parse and query a single Tier 1 row.
 //!
-//! Each row contains 128 leaf records only (no pre-computed internal nodes).
-//! The client rebuilds the 7-level subtree locally to extract siblings.
+//! Each row contains TIER1_LEAVES leaf records only (no pre-computed internal
+//! nodes). The client rebuilds the subtree locally to extract siblings.
 
 use pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
 use crate::{TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES};
 
-/// Parsed Tier 1 row: 128 leaf records at relative depth 7.
+/// Parsed Tier 1 row: TIER1_LEAVES leaf records.
 pub struct Tier1Row<'a> {
     data: &'a [u8],
 }
@@ -25,7 +25,7 @@ impl<'a> Tier1Row<'a> {
         Ok(Self { data })
     }
 
-    /// Leaf record at index i (0..127): (hash, min_key).
+    /// Leaf record at index i: (hash, min_key).
     pub fn leaf_record(&self, i: usize) -> (Fp, Fp) {
         debug_assert!(i < TIER1_LEAVES);
         let base = i * 64;
@@ -34,16 +34,15 @@ impl<'a> Tier1Row<'a> {
         (hash, min_key)
     }
 
-    /// Binary search the 128 leaf min_keys to find which sub-subtree contains `value`.
+    /// Binary search the leaf min_keys to find which sub-subtree contains `value`.
     pub fn find_sub_subtree(&self, value: Fp) -> Option<usize> {
         binary_search_records(self.data, 0, TIER1_LEAVES, 64, 32, value)
     }
 
-    /// Rebuild the 7-level subtree from leaf hashes and extract sibling hashes.
+    /// Rebuild the subtree from leaf hashes and extract sibling hashes.
     ///
-    /// Since Tier 1 rows no longer store internal nodes, the client builds the
-    /// tree bottom-up from the 128 leaf hashes (~126 Poseidon calls) to collect
-    /// the 7 siblings needed for the Merkle authentication path.
+    /// The client builds the tree bottom-up from the leaf hashes to collect
+    /// the TIER1_LAYERS siblings needed for the Merkle authentication path.
     pub fn extract_siblings(
         &self,
         sub_idx: usize,
@@ -149,7 +148,7 @@ mod tests {
         let expected_level1_sib = hasher.hash(leaf_hashes[2], leaf_hashes[3]);
         assert_eq!(siblings[1], expected_level1_sib);
 
-        // Verify all 7 siblings by building the tree independently
+        // Verify all siblings by building the tree independently
         let mut level = leaf_hashes.clone();
         let mut pos = 0usize;
         for lev in 0..TIER1_LAYERS {

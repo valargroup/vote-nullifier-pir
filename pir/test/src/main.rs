@@ -352,7 +352,7 @@ fn run_verify_ypir() -> Result<()> {
     eprintln!("Initializing Tier 1 YPIR server...");
     let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
 
-    for row_idx in [0usize, 1, 100, 2047] {
+    for row_idx in [0usize, 1, 100, TIER1_ROWS - 1] {
         let ypir_client = YPIRClient::from_db_sz(
             tier1_scenario.num_items as u64,
             tier1_scenario.item_size_bits as u64,

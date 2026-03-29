@@ -3,14 +3,13 @@
 //! Builds a depth-25 Merkle tree from punctured-range leaves (K=2) and exports
 //! the three tier files consumed by `pir-server`:
 //!
-//! - **Tier 0** (192 KB): plaintext internal nodes (depths 0–10) + 2,048
-//!   subtree records at depth 11 (hash + min_key).
-//! - **Tier 1** (~16 MB): 2,048 rows × 8,192 bytes. Each row contains 128
-//!   leaf records (hash + min_key). No internal nodes; the client rebuilds
-//!   the 7-level subtree locally.
-//! - **Tier 2** (~3 GB): 262,144 rows × 12,288 bytes. Each row contains 128
-//!   punctured-range leaf records (nf_lo + nf_mid + nf_hi). No internal nodes;
-//!   the client rebuilds the 7-level subtree locally.
+//! - **Tier 0** (~49 KB): plaintext internal nodes + subtree records.
+//! - **Tier 1** (~8 MB): TIER1_YPIR_ROWS rows × TIER1_ROW_BYTES. Each row
+//!   contains TIER1_LEAVES leaf records (hash + min_key). No internal nodes;
+//!   the client rebuilds the subtree locally.
+//! - **Tier 2** (~3 GB): TIER2_ROWS rows × TIER2_ROW_BYTES. Each row contains
+//!   TIER2_LEAVES punctured-range leaf records (nf_lo + nf_mid + nf_hi). No
+//!   internal nodes; the client rebuilds the subtree locally.
 
 pub mod tier0;
 pub mod tier1;
@@ -34,7 +33,7 @@ use imt_tree::tree::{
 // existing consumers (tier submodules, tests, downstream crates) keep working.
 pub use pir_types::{
     PirMetadata, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ITEM_BITS,
+    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS, TIER2_ITEM_BITS,
     TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
