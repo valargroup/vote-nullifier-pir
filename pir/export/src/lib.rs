@@ -24,7 +24,7 @@ use tracing::info;
 
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{
-    build_levels, build_punctured_ranges, commit_punctured_ranges, precompute_empty_hashes_k2,
+    build_levels, build_punctured_ranges, commit_punctured_ranges, precompute_empty_hashes,
     verify_punctured_range_spans, PuncturedRange, TREE_DEPTH,
 };
 
@@ -75,7 +75,7 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
         "PIR leaf hashing"
     );
 
-    let empty_hashes = precompute_empty_hashes_k2();
+    let empty_hashes = precompute_empty_hashes();
 
     let t1 = Instant::now();
     let (root25, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);

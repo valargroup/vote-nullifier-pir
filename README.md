@@ -45,14 +45,14 @@ graph TD
 
 | Crate | Path | Description |
 |-------|------|-------------|
-| **imt-tree** | `imt-tree/` | Indexed Merkle Tree library. Builds depth-29 nullifier non-inclusion trees with Poseidon hashing, gap-range exclusion proofs, and sentinel nullifiers for circuit compatibility. |
+| **imt-tree** | `imt-tree/` | Indexed Merkle Tree library. Poseidon hashing, punctured-range exclusion proofs (K=2), and tree-building primitives for circuit compatibility. |
 | **pir-types** | `pir/types/` | Lightweight shared types (`YpirScenario`, `RootInfo`, `HealthInfo`) serialised over HTTP between server and client. Also contains YPIR wire-format helpers. |
-| **pir-export** | `pir/export/` | Builds the depth-26 PIR tree and exports it as three binary tier files (tier0, tier1, tier2) consumed by the server and client. |
+| **pir-export** | `pir/export/` | Builds the depth-25 PIR tree from punctured-range leaves (K=2) and exports it as three binary tier files (tier0, tier1, tier2) consumed by the server and client. |
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides an async `PirClient` API and a local in-process mode. |
 | **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
 | **nf-server** | `nf-server/` | Unified CLI binary with `ingest`, `export`, and `serve` subcommands. The `serve` subcommand starts the PIR HTTP server (feature-gated). |
-| **pir-test** | `pir/test/` | End-to-end test harness with `small`, `local`, `server`, `compare`, and `bench` modes. |
+| **pir-test** | `pir/test/` | End-to-end test harness with `small`, `local`, `server`, and `bench` modes. |
 
 ## Pipeline
 
@@ -109,7 +109,6 @@ All data is stored as flat binary files:
 - `nullifiers.bin` — Append-only raw 32-byte nullifier blobs
 - `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
 - `nullifiers.index` — Height-to-offset index for subset loading
-- `nullifiers.tree` — Serialised NullifierTree sidecar
 - `pir-data/` — Tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`)
 
 ## PIR Write Ups
