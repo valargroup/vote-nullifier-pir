@@ -8,7 +8,7 @@ use pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::TREE_DEPTH;
-use imt_tree::PuncturedImtProofData;
+use imt_tree::ImtProofData;
 
 use pir_export::tier0::Tier0Data;
 use pir_export::tier1::Tier1Row;
@@ -27,7 +27,7 @@ fn construct_proof(
     value: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
     root29: Fp,
-) -> Option<PuncturedImtProofData> {
+) -> Option<ImtProofData> {
     let hasher = PoseidonHasher::new();
     let tier0 = Tier0Data::from_bytes(tier0_data.to_vec()).ok()?;
 
@@ -69,7 +69,7 @@ fn construct_proof(
     let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_idx;
     let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(leaf_idx);
 
-    Some(PuncturedImtProofData {
+    Some(ImtProofData {
         root: root29,
         nf_bounds: [nf_lo, nf_mid, nf_hi],
         leaf_pos: global_leaf_idx as u32,

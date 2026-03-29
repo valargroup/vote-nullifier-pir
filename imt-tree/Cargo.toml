@@ -10,11 +10,9 @@ hex = "0.4"
 pasta_curves = "0.5"
 halo2_gadgets = { version = "0.3", default-features = false }
 rayon = "1"
-tracing = "0.1"
 
 [dev-dependencies]
 criterion = "0.5"
-halo2_proofs = "0.3"
 rand = "0.8"
 
 [[bench]]
