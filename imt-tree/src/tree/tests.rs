@@ -286,7 +286,7 @@ fn test_verify_punctured_range_spans_accepts_small_spans() {
 
 #[test]
 fn test_verify_punctured_range_spans_rejects_huge_span() {
-    // Manually construct a range with span close to 2^254 (larger than 2^251)
+    // Manually construct a range with span close to 2^254 (larger than 2^250)
     let huge_hi = Fp::one().neg(); // p - 1
     let ranges = vec![[Fp::zero(), fp(1), huge_hi]];
     assert!(

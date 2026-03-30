@@ -56,16 +56,17 @@ fn verify_merkle_path(
 /// 1. **Leaf hash**: `leaf = Poseidon3(nf_lo, nf_mid, nf_hi)` — two
 ///    Poseidon permutations (width-3 sponge, `ConstantLength<3>`).
 /// 2. **Merkle path**: 29 × swap + Poseidon → `computed_root`.
-/// 3. **Strict interval**: `nf_lo < value < nf_hi` via two 251-bit range
+/// 3. **Strict interval**: `nf_lo < value < nf_hi` via two 250-bit range
 ///    checks on `value - nf_lo - 1` and `nf_hi - value - 1`.
 /// 4. **Non-equality**: `value ≠ nf_mid` by witnessing `inverse(value - nf_mid)`.
 /// 5. **Root pin**: `computed_root = nf_imt_root` (not gated on `is_note_real`).
 ///
 /// ## Soundness invariants
 ///
-/// The interval check relies on `nf_hi - nf_lo ≤ 2^251`, which is
-/// guaranteed by sentinel nullifiers at `k × 2^250` spacing. Without this
-/// bound, a field-wrapping span would defeat the range check.
+/// The interval check relies on `nf_hi - nf_lo ≤ 2^250`, which is
+/// guaranteed by sentinel nullifiers at `k × 2^249` spacing (each K=2
+/// leaf spans two intervals: `2 × 2^249 = 2^250`). Without this bound,
+/// a field-wrapping span would defeat the range check.
 ///
 /// The ordering `nf_lo < nf_mid < nf_hi` is enforced by tree construction
 /// (sorted nullifier input) and locked by the Merkle commitment — a
