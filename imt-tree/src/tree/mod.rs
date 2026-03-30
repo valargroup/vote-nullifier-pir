@@ -54,7 +54,14 @@ pub fn build_punctured_ranges(sorted_nfs: &[Fp]) -> Vec<PuncturedRange> {
     (0..num_leaves)
         .map(|i| {
             let base = i * 2;
-            [sorted_nfs[base], sorted_nfs[base + 1], sorted_nfs[base + 2]]
+            let (lo, mid, hi) = (sorted_nfs[base], sorted_nfs[base + 1], sorted_nfs[base + 2]);
+            assert!(
+                lo < mid && mid < hi,
+                "punctured range {i} violates strict ordering: \
+                 nf_lo={lo:?}, nf_mid={mid:?}, nf_hi={hi:?} \
+                 (input must be sorted and deduplicated)"
+            );
+            [lo, mid, hi]
         })
         .collect()
 }
@@ -92,22 +99,19 @@ pub fn find_punctured_range_for_value(ranges: &[PuncturedRange], value: Fp) -> O
     Some(idx)
 }
 
-/// Verify that every punctured range has outer span `≤ 2^251`.
+/// Verify that every punctured range has outer span `≤ 2^250`.
 ///
-/// For K=2, the outer span `nf_hi - nf_lo` can be up to twice a single gap
-/// width. With the standard sentinel spacing of `2^250`, spans between
-/// consecutive sentinels are exactly `2^251`. This function checks that no
-/// span exceeds that bound.
-///
-/// A tighter bound (`≤ 2^250`) can be achieved by doubling sentinel density
-/// (spacing `2^249`). See `pir-export` for sentinel injection.
+/// For K=2, the outer span `nf_hi - nf_lo` covers two consecutive sentinel
+/// intervals. With sentinel spacing `2^249`, the maximum span is
+/// `2 * 2^249 = 2^250`, which matches the circuit's 250-bit range check
+/// (25 limbs × 10 bits).
 pub fn verify_punctured_range_spans(ranges: &[PuncturedRange]) -> anyhow::Result<()> {
-    let max_span = Fp::from(2u64).pow([251, 0, 0, 0]);
+    let max_span = Fp::from(2u64).pow([250, 0, 0, 0]);
     for (i, &[nf_lo, _, nf_hi]) in ranges.iter().enumerate() {
         let span = nf_hi - nf_lo;
         anyhow::ensure!(
             span <= max_span,
-            "punctured range {i} has span > 2^251: nf_lo={nf_lo:?}, nf_hi={nf_hi:?}"
+            "punctured range {i} has span > 2^250: nf_lo={nf_lo:?}, nf_hi={nf_hi:?}"
         );
     }
     Ok(())

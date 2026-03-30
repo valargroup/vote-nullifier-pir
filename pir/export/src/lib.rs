@@ -169,15 +169,24 @@ pub fn write_internal_nodes(
 }
 
 /// Exponent used for sentinel nullifier spacing: `2^SENTINEL_EXPONENT`.
-const SENTINEL_EXPONENT: u64 = 250;
+///
+/// With K=2 punctured ranges each leaf spans two consecutive sentinel
+/// intervals, so the outer span is `2 * 2^SENTINEL_EXPONENT`. The circuit's
+/// range check is 250 bits, requiring span < 2^250. Therefore the exponent
+/// must be at most 249.
+const SENTINEL_EXPONENT: u64 = 249;
 
 /// Number of sentinel nullifiers injected: `0, 1*step, 2*step, ..., SENTINEL_COUNT*step`.
-const SENTINEL_COUNT: u64 = 16;
+///
+/// With step = 2^249, we need 33 sentinels (0..=32) so that
+/// `32 * 2^249 = 2^254` covers the Pallas field (p ≈ 2^254.9).
+const SENTINEL_COUNT: u64 = 32;
 
 /// Sort raw nullifiers, inject circuit-required sentinels, and build punctured ranges (K=2).
 ///
 /// Sentinels injected:
-/// - `k * 2^250` for `k = 0..=16` — required by the circuit's gap-width constraint.
+/// - `k * 2^249` for `k = 0..=32` — required by the circuit's 250-bit range check
+///   (each K=2 leaf spans two intervals → span = 2 * 2^249 = 2^250).
 /// - `p - 1` — closes the tail of the field so every non-nullifier value is
 ///   covered by some punctured range.
 ///
@@ -298,13 +307,13 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
 
 /// Build punctured ranges from raw nullifiers with sentinel nullifiers injected.
 ///
-/// Sentinels are `k * 2^250` for k in 0..=16 plus `p - 1` to close the tail.
+/// Sentinels are `k * 2^249` for k in 0..=32 plus `p - 1` to close the tail.
 /// After injection the list is sorted, deduplicated, and padded to an odd
 /// count if needed.
 pub fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<PuncturedRange> {
     use ff::Field as _;
-    let step = Fp::from(2u64).pow([250, 0, 0, 0]);
-    let mut all_nfs: Vec<Fp> = (0u64..=16).map(|k| step * Fp::from(k)).collect();
+    let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
+    let mut all_nfs: Vec<Fp> = (0u64..=SENTINEL_COUNT).map(|k| step * Fp::from(k)).collect();
     all_nfs.push(Fp::one().neg()); // p - 1
     all_nfs.extend_from_slice(raw_nfs);
     all_nfs.sort();
