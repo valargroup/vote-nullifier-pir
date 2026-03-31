@@ -38,7 +38,7 @@ pub fn export(
     Ok(())
 }
 
-/// Write a single Tier 2 row for subtree index `s` (at depth 18).
+/// Write a single Tier 2 row for subtree index `s` (at depth TIER0_LAYERS + TIER1_LAYERS = 15).
 fn write_row(
     ranges: &[PuncturedRange],
     s: usize,
