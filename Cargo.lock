@@ -53,7 +53,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -64,7 +64,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -629,7 +629,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1340,7 +1340,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1563,7 +1563,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1723,8 +1723,8 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
+ "valar-ypir",
  "wiremock",
- "ypir",
 ]
 
 [[package]]
@@ -1756,11 +1756,11 @@ dependencies = [
  "pir-types",
  "serde",
  "serde_json",
- "spiral-rs",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "ypir",
+ "valar-spiral-rs 0.5.0 (git+https://github.com/valargroup/spiral-rs.git?branch=valar%2Favoid-avx512)",
+ "valar-ypir",
 ]
 
 [[package]]
@@ -1779,7 +1779,7 @@ dependencies = [
  "pir-types",
  "rand 0.8.5",
  "tokio",
- "ypir",
+ "valar-ypir",
 ]
 
 [[package]]
@@ -2181,7 +2181,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2477,7 +2477,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2491,20 +2491,6 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-
-[[package]]
-name = "spiral-rs"
-version = "0.4.0"
-source = "git+https://github.com/valargroup/spiral-rs.git?branch=valar%2Favoid-avx512#e06c730f958ddd0717fda43ae43eb7c628290bd4"
-dependencies = [
- "fastrand",
- "getrandom 0.2.17",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "serde_json",
- "sha2",
- "subtle",
-]
 
 [[package]]
 name = "stable_deref_trait"
@@ -2615,7 +2601,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3076,6 +3062,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "valar-spiral-rs"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce897de77f8b80c06e3457da2db3585333d2882f9e9f420ac8a79ab6e6a43f09"
+dependencies = [
+ "fastrand",
+ "getrandom 0.2.17",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde_json",
+ "sha2",
+ "subtle",
+]
+
+[[package]]
+name = "valar-spiral-rs"
+version = "0.5.0"
+source = "git+https://github.com/valargroup/spiral-rs.git?branch=valar%2Favoid-avx512#2a6386a6f2c194bb721d24e8bed0ef9adf6046a0"
+dependencies = [
+ "fastrand",
+ "getrandom 0.2.17",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde_json",
+ "sha2",
+ "subtle",
+]
+
+[[package]]
+name = "valar-ypir"
+version = "0.1.0"
+source = "git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact#970156c297df90bb1871b39e04f0d03b8036f4f9"
+dependencies = [
+ "cc",
+ "clap",
+ "env_logger",
+ "fastrand",
+ "log",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde_json",
+ "sha1",
+ "test-log",
+ "valar-spiral-rs 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3286,7 +3320,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3633,25 +3667,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
-]
-
-[[package]]
-name = "ypir"
-version = "0.1.0"
-source = "git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact#bb4d68bf0022b1b6cefc1fda8bf25ea8bce36fef"
-dependencies = [
- "cc",
- "clap",
- "env_logger",
- "fastrand",
- "log",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "serde",
- "serde_json",
- "sha1",
- "spiral-rs",
- "test-log",
 ]
 
 [[package]]
