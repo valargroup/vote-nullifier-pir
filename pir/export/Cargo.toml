@@ -12,7 +12,7 @@ cli = ["dep:nf-ingest"]
 
 [dependencies]
 pir-types = { path = "../types", features = ["reader"] }
-imt-tree = { path = "../../imt-tree" }
+imt-tree = "0.1"
 nf-ingest = { path = "../../nf-ingest", optional = true }
 anyhow = "1.0"
 hex = "0.4"
