@@ -34,13 +34,36 @@ enum Command {
     Serve(cmd_serve::Args),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[cfg(feature = "serve")]
+fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
+    let dsn = match command {
+        Command::Serve(args) => args.sentry_dsn.as_str(),
+        _ => "",
+    };
+    sentry::init((dsn, sentry::ClientOptions {
+        release: sentry::release_name!(),
+        sample_rate: 1.0,
+        traces_sample_rate: 1.0,
+        attach_stacktrace: true,
+        ..Default::default()
+    }))
+}
+
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    match cli.command {
-        Command::Ingest(args) => cmd_ingest::run(args).await,
-        Command::Export(args) => cmd_export::run(args),
-        #[cfg(feature = "serve")]
-        Command::Serve(args) => cmd_serve::run(args).await,
-    }
+
+    #[cfg(feature = "serve")]
+    let _sentry_guard = init_sentry(&cli.command);
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            match cli.command {
+                Command::Ingest(args) => cmd_ingest::run(args).await,
+                Command::Export(args) => cmd_export::run(args),
+                #[cfg(feature = "serve")]
+                Command::Serve(args) => cmd_serve::run(args).await,
+            }
+        })
 }

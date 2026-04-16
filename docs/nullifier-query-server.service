@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/nf-ingest
+EnvironmentFile=-/opt/nf-ingest/.env
 ExecStart=/opt/nf-ingest/nf-server serve \
     --pir-data-dir /opt/nf-ingest/pir-data \
     --data-dir /opt/nf-ingest \

@@ -89,9 +89,14 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
+          envs: SENTRY_DSN
           script: |
+            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
+            sudo chmod 600 /opt/nf-ingest/.env
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
             sudo systemctl restart nullifier-query-server
+        env:
+          SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
