@@ -132,9 +132,19 @@ pub(crate) async fn post_snapshot_prepare(
     tokio::task::spawn(async move {
         let _rebuild_guard = rebuild_guard;
         let result = run_rebuild(state_clone.clone(), height).await;
-        if let Err(e) = result {
+        if let Err(ref e) = result {
             let msg = format!("{:?}", e);
             warn!(error = %msg, "rebuild failed");
+            sentry::with_scope(
+                |scope| {
+                    scope.set_tag("operation", "rebuild");
+                    scope.set_tag("target_height", height.to_string());
+                },
+                || {
+                    let err: &dyn std::error::Error = e.as_ref();
+                    sentry::capture_error(err);
+                },
+            );
             let mut phase = state_clone.phase.write().await;
             *phase = ServerPhase::Error { message: msg };
         }

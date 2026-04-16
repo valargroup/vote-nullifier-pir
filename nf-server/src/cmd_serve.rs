@@ -9,7 +9,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Args as ClapArgs;
+use sentry::integrations::tower as sentry_tower;
 use tokio::sync::RwLock;
+use tower::ServiceBuilder;
 
 use nf_ingest::config;
 use nf_ingest::file_store;
@@ -42,10 +44,20 @@ pub struct Args {
     /// If set, POST /snapshot/prepare will reject rebuilds when a round is active.
     #[arg(long, env = "SVOTE_CHAIN_URL")]
     chain_url: Option<String>,
+
+    /// Sentry DSN for error tracking. When empty, Sentry is disabled.
+    #[arg(long, env = "SENTRY_DSN", default_value = "")]
+    pub(crate) sentry_dsn: String,
 }
 
 pub async fn run(args: Args) -> Result<()> {
     tracing_subscriber::fmt::init();
+
+    let tx = sentry::start_transaction(sentry::TransactionContext::new(
+        "server-startup",
+        "startup",
+    ));
+    sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
 
     let lwd_urls = config::resolve_lwd_urls(&args.lwd_url);
 
@@ -53,6 +65,9 @@ pub async fn run(args: Args) -> Result<()> {
 
     eprintln!("Loading tier files from {:?}...", args.pir_data_dir);
     let serving = pir_server::load_serving_state(&args.pir_data_dir)?;
+
+    tx.finish();
+    sentry::capture_message("nf-server started", sentry::Level::Info);
 
     let state = Arc::new(AppState {
         phase: RwLock::new(ServerPhase::Serving),
@@ -82,6 +97,11 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/health", get(handlers::get_health))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .layer(cors)
+        .layer(
+            ServiceBuilder::new()
+                .layer(sentry_tower::NewSentryLayer::new_from_top())
+                .layer(sentry_tower::SentryHttpLayer::with_transaction()),
+        )
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", args.port);

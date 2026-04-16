@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-serve = ["dep:pir-server", "dep:axum", "dep:tracing", "dep:tracing-subscriber", "dep:tower-http", "dep:reqwest"]
+serve = ["dep:pir-server", "dep:axum", "dep:tracing", "dep:tracing-subscriber", "dep:tower-http", "dep:reqwest", "dep:sentry", "dep:tower"]
 avx512 = ["serve", "pir-server/avx512"]
 
 [dependencies]
@@ -16,6 +16,8 @@ tracing            = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 tower-http         = { version = "0.5", features = ["cors"], optional = true }
 reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+sentry             = { version = "0.35", default-features = false, features = ["backtrace", "contexts", "panic", "tower-axum-matched-path"], optional = true }
+tower              = { version = "0.4", optional = true }
 
 # Always needed
 pir-export        = { path = "../pir/export" }

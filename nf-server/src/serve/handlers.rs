@@ -128,11 +128,14 @@ async fn get_tier_row(
             row,
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read error: {e}"),
-        )
-            .into_response(),
+        Err(ref e) => {
+            sentry::capture_error(e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read error: {e}"),
+            )
+                .into_response()
+        }
     }
 }
 
