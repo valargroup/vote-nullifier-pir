@@ -11,9 +11,6 @@ members = [
     "nf-ingest",
 ]
 
-[patch.crates-io]
-imt-tree = { path = "imt-tree" }
-
 [profile.release]
 lto = "fat"
 codegen-units = 1
