@@ -1389,6 +1389,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "imt-tree"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d10acb863735c6c82c0c79e8752696096a86eb4d1e2fe0005ded4fae066297e"
+dependencies = [
+ "anyhow",
+ "ff",
+ "halo2_gadgets",
+ "hex",
+ "pasta_curves",
+ "rayon",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1625,7 +1639,7 @@ dependencies = [
  "anyhow",
  "ff",
  "hex",
- "imt-tree",
+ "imt-tree 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pasta_curves",
  "prost",
  "rayon",
@@ -1645,7 +1659,7 @@ dependencies = [
  "clap",
  "ff",
  "hex",
- "imt-tree",
+ "imt-tree 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "nf-ingest",
  "pasta_curves",
  "pir-export",
@@ -2021,7 +2035,7 @@ dependencies = [
  "ff",
  "futures",
  "hex",
- "imt-tree",
+ "imt-tree 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "pasta_curves",
  "pir-export",
@@ -2042,7 +2056,7 @@ dependencies = [
  "clap",
  "ff",
  "hex",
- "imt-tree",
+ "imt-tree 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "nf-ingest",
  "pasta_curves",
  "pir-types",
@@ -2095,7 +2109,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ff",
- "imt-tree",
+ "imt-tree 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pasta_curves",
  "serde",
 ]
@@ -3610,7 +3624,8 @@ dependencies = [
 [[package]]
 name = "valar-ypir"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact#970156c297df90bb1871b39e04f0d03b8036f4f9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a86b46d9519c49680c58a222cd6891e08e382fb24ea281819de7f2fa64985c"
 dependencies = [
  "cc",
  "clap",

@@ -2,6 +2,10 @@
 name = "pir-types"
 version = "0.1.0"
 edition = "2021"
+description = "Shared wire types and tier-layout constants for the vote-nullifier-pir subsystem (YPIR-based non-membership proofs over a 51M-entry Zcash nullifier set)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/valargroup/vote-nullifier-pir"
+readme = "README.md"
 
 [features]
 default = []
