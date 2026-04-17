@@ -8,10 +8,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
-use pasta_curves::Fp;
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
-// Re-exported so downstream crates (e.g. librustvoting) can reference the type
+use pasta_curves::Fp;
+// Re-exported so downstream crates (e.g. zcash_voting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
 pub use imt_tree::ImtProofData;
 
@@ -102,11 +102,7 @@ fn fill_path(path: &mut [Fp; TREE_DEPTH], offset: usize, siblings: &[Fp]) {
 
 /// Locate the nullifier's subtree in Tier 0, fill its siblings into `path`,
 /// and return the subtree index `s1`.
-fn process_tier0(
-    tier0: &Tier0Data,
-    nullifier: Fp,
-    path: &mut [Fp; TREE_DEPTH],
-) -> Result<usize> {
+fn process_tier0(tier0: &Tier0Data, nullifier: Fp, path: &mut [Fp; TREE_DEPTH]) -> Result<usize> {
     let s1 = tier0
         .find_subtree(nullifier)
         .context("nullifier not found in any Tier 0 subtree")?;
@@ -116,17 +112,17 @@ fn process_tier0(
 
 /// Parse a Tier 1 row, locate the nullifier's sub-subtree, fill its siblings
 /// into `path`, and return the sub-subtree index `s2`.
-fn process_tier1(
-    tier1_row: &[u8],
-    nullifier: Fp,
-    path: &mut [Fp; TREE_DEPTH],
-) -> Result<usize> {
+fn process_tier1(tier1_row: &[u8], nullifier: Fp, path: &mut [Fp; TREE_DEPTH]) -> Result<usize> {
     let hasher = PoseidonHasher::new();
     let tier1 = Tier1Row::from_bytes(tier1_row)?;
     let s2 = tier1
         .find_sub_subtree(nullifier)
         .context("nullifier not found in any Tier 1 sub-subtree")?;
-    fill_path(path, PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS, &tier1.extract_siblings(s2, &hasher));
+    fill_path(
+        path,
+        PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS,
+        &tier1.extract_siblings(s2, &hasher),
+    );
     Ok(s2)
 }
 
@@ -149,7 +145,11 @@ fn process_tier2_and_build(
         .find_leaf(nullifier, valid_leaves)
         .context("nullifier not found in Tier 2 leaf scan")?;
 
-    fill_path(path, 0, &tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher));
+    fill_path(
+        path,
+        0,
+        &tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher),
+    );
     // Pad from PIR depth (25) to circuit depth (29) with empty hashes.
     fill_path(path, PIR_DEPTH, &empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
@@ -322,10 +322,7 @@ impl PirClient {
 
         // Real index on success, dummy index 0 on failure. PIR hides the
         // queried index from the server, so the dummy is indistinguishable.
-        let t2_row_idx = tier1_outcome
-            .as_ref()
-            .map(|(idx, _)| *idx)
-            .unwrap_or(0);
+        let t2_row_idx = tier1_outcome.as_ref().map(|(idx, _)| *idx).unwrap_or(0);
 
         // Validate the tier 2 index before passing it to ypir_query.
         // ypir_query has an ensure!(row_idx < num_items) that returns Err
@@ -338,12 +335,17 @@ impl PirClient {
         let t2_bounds_err = if t2_row_idx >= self.tier2_scenario.num_items {
             Some(anyhow::anyhow!(
                 "tier2 row_idx {} >= num_items {}",
-                t2_row_idx, self.tier2_scenario.num_items
+                t2_row_idx,
+                self.tier2_scenario.num_items
             ))
         } else {
             None
         };
-        let t2_query_idx = if t2_bounds_err.is_some() { 0 } else { t2_row_idx };
+        let t2_query_idx = if t2_bounds_err.is_some() {
+            0
+        } else {
+            t2_row_idx
+        };
 
         // Always send tier 2 to void error-based oracles.
         let tier2_result = self
@@ -368,14 +370,21 @@ impl PirClient {
         )?;
 
         let total_ms = note_start.elapsed().as_secs_f64() * 1000.0;
-        Ok((proof, NoteTiming { tier1: tier1_timing, tier2: tier2_timing, total_ms }))
+        Ok((
+            proof,
+            NoteTiming {
+                tier1: tier1_timing,
+                tier2: tier2_timing,
+                total_ms,
+            },
+        ))
     }
 
     /// Send a YPIR query for a tier row and return the decrypted row bytes.
     /// This function handles the key client PIR operations:
     /// 1. Generate keys
     /// 2. Query
-    /// 3. Recover 
+    /// 3. Recover
     async fn ypir_query(
         &self,
         scenario: &YpirScenario,
@@ -386,7 +395,9 @@ impl PirClient {
         anyhow::ensure!(
             row_idx < scenario.num_items,
             "{} row_idx {} >= num_items {}",
-            tier_name, row_idx, scenario.num_items
+            tier_name,
+            row_idx,
+            scenario.num_items
         );
         let t0 = Instant::now();
         let ypir_client = YPIRClient::from_db_sz(
@@ -425,15 +436,15 @@ impl PirClient {
         if !status.is_success() {
             anyhow::bail!(
                 "{} query failed: HTTP {} body={}",
-                tier_name, status, String::from_utf8_lossy(&response_bytes)
+                tier_name,
+                status,
+                String::from_utf8_lossy(&response_bytes)
             );
         }
         let rtt_ms = t1.elapsed().as_secs_f64() * 1000.0;
         let download_from_server_ms = (rtt_ms - send_ms).max(0.0);
         let net_queue_ms = server_total_ms.map(|server_ms| (rtt_ms - server_ms).max(0.0));
-        let upload_to_server_ms = server_total_ms.map(|server_ms| {
-            (send_ms - server_ms).max(0.0)
-        });
+        let upload_to_server_ms = server_total_ms.map(|server_ms| (send_ms - server_ms).max(0.0));
 
         // Decode the response. Wrap in catch_unwind so that assert panics
         // in the YPIR library (e.g. `val < lwe_q_prime` in the LWE decode
@@ -457,7 +468,9 @@ impl PirClient {
         anyhow::ensure!(
             decoded.len() >= expected_row_bytes,
             "{} decoded response too short: {} bytes, expected >= {}",
-            tier_name, decoded.len(), expected_row_bytes
+            tier_name,
+            decoded.len(),
+            expected_row_bytes
         );
         Ok((
             decoded[..expected_row_bytes].to_vec(),
@@ -568,7 +581,8 @@ fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f6
         );
         log::trace!(
             "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
-            t.tier1.server_req_id, t.tier2.server_req_id
+            t.tier1.server_req_id,
+            t.tier2.server_req_id
         );
     }
 }
@@ -593,7 +607,7 @@ fn parse_header_u64(headers: &reqwest::header::HeaderMap, name: &'static str) ->
 
 /// Synchronous wrapper around [`PirClient`] for use from non-async code.
 ///
-/// Owns a Tokio runtime internally so callers (e.g. librustvoting, which must
+/// Owns a Tokio runtime internally so callers (e.g. zcash_voting, which must
 /// stay synchronous for the Halo2 prover) don't need to manage one.
 pub struct PirClientBlocking {
     inner: PirClient,
@@ -956,12 +970,8 @@ mod tests {
         let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
         let ranges = build_ranges_with_sentinels(&raw_nfs);
         let tree = pir_export::build_pir_tree(ranges).unwrap();
-        let tier0_data = pir_export::tier0::export(
-            &tree.root25,
-            &tree.levels,
-            &tree.ranges,
-            &tree.empty_hashes,
-        );
+        let tier0_data =
+            pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
 
         let root_info = pir_types::RootInfo {
             root29: hex::encode(tree.root29.to_repr()),
@@ -1010,16 +1020,12 @@ mod tests {
         // ── query endpoints (corrupted responses) ───────────────────────
         Mock::given(method("POST"))
             .and(path("/tier1/query"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_bytes(vec![0xDE; 65536]),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xDE; 65536]))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
             .and(path("/tier2/query"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_bytes(vec![0xAD; 65536]),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xAD; 65536]))
             .mount(&server)
             .await;
 
