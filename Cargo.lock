@@ -2044,7 +2044,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
- "valar-ypir 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "valar-ypir",
  "wiremock",
 ]
 
@@ -2081,7 +2081,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "valar-spiral-rs",
- "valar-ypir 0.1.0 (git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact)",
+ "valar-ypir",
 ]
 
 [[package]]
@@ -2100,7 +2100,7 @@ dependencies = [
  "pir-types",
  "rand 0.8.5",
  "tokio",
- "valar-ypir 0.1.0 (git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact)",
+ "valar-ypir",
 ]
 
 [[package]]
@@ -3626,25 +3626,6 @@ name = "valar-ypir"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38a86b46d9519c49680c58a222cd6891e08e382fb24ea281819de7f2fa64985c"
-dependencies = [
- "cc",
- "clap",
- "env_logger",
- "fastrand",
- "log",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "serde",
- "serde_json",
- "sha1",
- "test-log",
- "valar-spiral-rs",
-]
-
-[[package]]
-name = "valar-ypir"
-version = "0.1.0"
-source = "git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact#970156c297df90bb1871b39e04f0d03b8036f4f9"
 dependencies = [
  "cc",
  "clap",
