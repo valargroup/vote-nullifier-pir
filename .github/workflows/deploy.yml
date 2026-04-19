@@ -1,13 +1,26 @@
-# Deploy nf-server to a remote host on every push to main.
-# Requires repository secrets: DEPLOY_HOST, DEPLOY_USER, SSH_KEY.
+# Deploy a tagged nf-server release to PIR hosts via SSH.
+# Manual trigger only — select a release tag (e.g. v0.3.0) when running.
+# Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY, NF_SENTRY_DSN.
 # See docs/deploy-setup.md for one-time remote setup.
 
 name: Deploy nf-server
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch: # allow manual run
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to deploy (e.g. v0.3.0)"
+        required: true
+        type: string
+      targets:
+        description: "Which hosts to deploy to"
+        required: true
+        type: choice
+        options:
+          - both
+          - primary
+          - backup
+        default: both
 
 permissions:
   contents: read
@@ -16,77 +29,50 @@ env:
   DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
-  build:
-    name: Build
+  deploy:
+    name: Deploy ${{ inputs.release_tag }} to ${{ matrix.host_label }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host_label: primary
+            host_secret: PIR_PRIMARY_HOST
+          - host_label: backup
+            host_secret: PIR_BACKUP_HOST
     steps:
-      - name: Checkout
+      - name: Skip if not targeted
+        if: inputs.targets != 'both' && inputs.targets != matrix.host_label
+        run: echo "Skipping ${{ matrix.host_label }}" && exit 0
+
+      - name: Checkout (for service file)
+        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: actions/checkout@v4
 
-      - name: Set up Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2025-02-25
-
-      - name: Cache Rust build
-        uses: actions/cache@v4
-        with:
-          path: |
-            target
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-nf-server-v2-nightly-2025-02-25-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-nf-server-v2-nightly-2025-02-25-
-
-      - name: Build release binary
-        run: cd nf-server && cargo build --release --target x86_64-unknown-linux-gnu --features serve,avx512
-        env:
-          # Explicit --target separates host vs target compilation. Build
-          # scripts and proc-macros compile for the host (baseline x86-64),
-          # while target-specific RUSTFLAGS only apply to the actual binary.
-          # Without --target, RUSTFLAGS poison build scripts too → SIGILL on
-          # runners that lack AVX-512.
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C target-feature=+avx512f,+avx512bw,+avx512dq,+avx512cd,+avx512vl"
-
-      - name: Upload binary and config
-        uses: actions/upload-artifact@v4
-        with:
-          name: nf-server-binaries
-          path: |
-            target/x86_64-unknown-linux-gnu/release/nf-server
-            docs/nullifier-query-server.service
-
-  deploy:
-    name: Deploy to remote
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: nf-server-binaries
-
-      - name: Flatten artifacts
+      - name: Stage deploy artifacts
+        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         run: |
-          cp target/x86_64-unknown-linux-gnu/release/nf-server /tmp/nf-server
-          cp docs/nullifier-query-server.service /tmp/nullifier-query-server.service
-          rm -rf target docs
-          mv /tmp/nf-server /tmp/nullifier-query-server.service .
+          cp docs/nullifier-query-server.service .
+          rm -rf nf-server/
+          curl -fL --retry 5 -o nf-server \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+          chmod +x nf-server
 
       - name: Deploy via SSH
+        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
+          host: ${{ secrets[matrix.host_secret] }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           source: "nf-server,nullifier-query-server.service"
           target: ${{ env.DEPLOY_PATH }}
 
-      - name: Install config and restart services
+      - name: Install and restart
+        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
+          host: ${{ secrets[matrix.host_secret] }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           envs: SENTRY_DSN
@@ -98,5 +84,23 @@ jobs:
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
             sudo systemctl restart nullifier-query-server
+            echo "Deployed ${{ inputs.release_tag }} to ${{ matrix.host_label }}"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
+
+      - name: Health check
+        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets[matrix.host_secret] }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            sleep 5
+            if curl -sf http://localhost:3000/health > /dev/null; then
+              echo "Health check passed on ${{ matrix.host_label }}"
+            else
+              echo "Health check FAILED on ${{ matrix.host_label }}"
+              sudo journalctl -u nullifier-query-server --no-pager -n 30
+              exit 1
+            fi
