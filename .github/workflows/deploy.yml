@@ -105,11 +105,17 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            sleep 5
-            if curl -sf http://localhost:3000/health > /dev/null; then
-              echo "Health check passed on ${{ matrix.host_label }}"
-            else
-              echo "Health check FAILED on ${{ matrix.host_label }}"
-              sudo journalctl -u nullifier-query-server --no-pager -n 30
-              exit 1
-            fi
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:3000/health > /dev/null; then
+                echo "Health check passed on ${{ matrix.host_label }} (attempt $i)"
+                exit 0
+              fi
+              echo "Waiting for service... attempt $i/12"
+              sleep 5
+            done
+            echo "Health check FAILED on ${{ matrix.host_label }} after 60s"
+            sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+            sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
+              sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
+              echo "No logs available"
+            exit 1
