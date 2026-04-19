@@ -2,8 +2,8 @@
 
 This guide covers two deployment paths:
 
-- **[Binary setup](#binary-setup-operators)** — Download a pre-built binary and run the service. No Rust toolchain or git clone required.
-- **[Source setup](#source-setup-developers)** — Build from source with CI/CD-driven deployment.
+- **[Binary setup](#binary-setup-operators)** -- Download a pre-built binary and run the service. No Rust toolchain or git clone required.
+- **[Source setup](#source-setup-developers)** -- Build from source with CI/CD-driven deployment.
 
 ---
 
@@ -11,8 +11,8 @@ This guide covers two deployment paths:
 
 | Resource | Minimum | Recommended | Notes |
 |----------|---------|-------------|-------|
-| **CPU** | x86-64 (any) | x86-64 with AVX-512 | AVX-512 gives ~2× query throughput. Intel Ice Lake / Sapphire Rapids or newer. AMD Zen 4+. |
-| **RAM** | 16 GB | 32 GB | The server loads ~6 GB of tier data and builds YPIR internal structures. Peak usage during initialization is roughly 2× the tier data size. |
+| **CPU** | x86-64 (any) | x86-64 with AVX-512 | AVX-512 gives ~2x query throughput. Intel Ice Lake / Sapphire Rapids or newer. AMD Zen 4+. |
+| **RAM** | 16 GB | 32 GB | The server loads ~6 GB of tier data and builds YPIR internal structures. Peak usage during initialization is roughly 2x the tier data size. |
 | **Disk** | 20 GB free | 40 GB free | Nullifier data (~1.6 GB), PIR tier files (~6 GB), plus headroom for ingestion and re-export. |
 | **OS** | Linux (x86-64) | Ubuntu 22.04+ / Debian 12+ | macOS (arm64/amd64) binaries are also published but not recommended for production serving. |
 | **Network** | Outbound HTTPS | Static IP or DNS A record | Needs outbound access to a lightwalletd gRPC endpoint for ingestion. Inbound access on the serve port for clients. |
@@ -175,13 +175,18 @@ The unit file in `docs/nullifier-query-server.service` uses `/opt/nf-ingest` as 
 
 ### GitHub repository secrets
 
-In the repo: **Settings -> Secrets and variables -> Actions**, add:
+The CI workflows use these repository secrets (**Settings > Secrets and variables > Actions**):
 
-| Secret              | Description |
-|---------------------|-------------|
-| `DEPLOY_HOST`       | Remote hostname or IP (e.g. `ingest.example.com` or `192.0.2.10`). |
-| `DEPLOY_USER`       | SSH user on that host (e.g. `deploy` or `ubuntu`). |
-| `SSH_PASSWORD`      | SSH password for that user. |
+| Secret | Used by | Description |
+|--------|---------|-------------|
+| `PIR_PRIMARY_HOST` | `deploy.yml` | Hostname or IP of the PIR primary server. |
+| `PIR_BACKUP_HOST` | `deploy.yml` | Hostname or IP of the PIR backup server. |
+| `DEPLOY_HOST` | `resync.yml` | Hostname or IP of the resync target (typically the primary). |
+| `DEPLOY_USER` | all | SSH username on the remote hosts. |
+| `SSH_KEY` | all | SSH private key for authentication. |
+| `NF_SENTRY_DSN` | `deploy.yml` | Sentry DSN written to `/opt/nf-ingest/.env` on deploy. |
+| `DO_ACCESS_KEY` | `release.yml` | DigitalOcean Spaces access key (optional; for artifact mirroring). |
+| `DO_SECRET_KEY` | `release.yml` | DigitalOcean Spaces secret key (optional). |
 
 ### One-time setup on the remote host
 
@@ -223,11 +228,11 @@ After ingest, re-export with `nf-server export` and restart the serve process, o
 ### Changing deploy path or restart command
 
 - **Deploy path**: Edit the `env.DEPLOY_PATH` in `.github/workflows/deploy.yml` (default `/opt/nf-ingest`).
-- **Restart command**: Edit the "Install config and restart services" step in that workflow if you use a different service name.
+- **Restart command**: Edit the "Install and restart" step in that workflow if you use a different service name.
 
 ### Manual runs
 
-Both `deploy.yml` and `resync.yml` support `workflow_dispatch`, so you can trigger them from **Actions -> Run workflow** without pushing to `main`.
+Both `deploy.yml` and `resync.yml` support `workflow_dispatch`, so you can trigger them from **Actions > Run workflow** without pushing to `main`.
 
 ### Test locally
 
@@ -253,68 +258,37 @@ Then check `http://localhost:3000/health` and `http://localhost:3000/root`.
 
 ## CI/CD workflows
 
-The workflows in `.github/workflows/` handle building and deploying `nf-server`:
+```mermaid
+flowchart LR
+    tag["git tag v*"] --> release["release.yml\nbuild + GitHub Release\n+ DO Spaces"]
+    release --> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
+    deploy --> health["health check\nlocalhost:3000/health"]
+    manual["workflow_dispatch"] -.-> deploy
+    resync["resync.yml\ningest + export + restart"] -.-> pirHost["PIR host"]
+```
 
-- **`deploy.yml`** — Builds on every push to `main` and deploys to a remote host via SSH.
-- **`release.yml`** — Builds multi-platform binaries and publishes a GitHub Release on version tags.
-- **`resync.yml`** — Manually triggers a nullifier resync (ingest + export + restart) on the remote host.
+| Workflow | Trigger | What it does |
+|----------|---------|-------------|
+| [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
+| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs health check. Supports deploying to primary, backup, or both. |
+| [`resync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/resync.yml) | Manual `workflow_dispatch` | SSHes to the deploy host and runs the full ingest/export/restart pipeline. Optional `max_height` input to stop at a specific block. Also runs automatically on PIR hosts via `nf-resync.timer` (default: daily at 03:00 UTC). |
 
 ---
 
-## Terraform (infrastructure as code)
+## Infrastructure
 
-The `terraform/` directory manages two DigitalOcean Droplets (primary + backup) behind a Cloudflare Load Balancer with automatic failover.
+PIR infrastructure (droplets, volumes, firewalls, DNS) is managed by Terraform in the
+[vote-infrastructure](https://github.com/valargroup/vote-infrastructure) repo. Two
+DigitalOcean droplets (primary + backup) sit in the `vote-sdk-vpc` VPC with Cloudflare
+DNS records:
 
-### Quick start
+| Hostname | Droplet | Size |
+|----------|---------|------|
+| `pir-primary.<domain>` | `vote-nullifier-pir-primary` | `g-8vcpu-32gb-intel` (Premium Intel, AVX-512) |
+| `pir-backup.<domain>` | `vote-nullifier-pir-backup` | `m-4vcpu-32gb-intel` (Premium Intel, AVX-512) |
+| `pir.<domain>` | pir-primary (convenience alias) | -- |
 
-```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-# Fill in real values (DO token, CF token, zone ID, domain, SSH keys)
-terraform init
-terraform plan
-terraform apply
-```
-
-### Architecture
-
-- **Primary** (`vote-nullifier-pir-primary`): 8 vCPU / 32 GB Premium Intel with AVX-512.
-- **Backup** (`vote-nullifier-pir-backup`): 4 vCPU / 32 GB Memory-Optimized Premium Intel with AVX-512.
-- Both join the existing `vote-sdk-vpc` VPC (looked up by name, not managed here).
-- Cloudflare LB on `pir.<domain>` routes all traffic to primary; backup only receives traffic when the primary fails health checks (`/health`, 10 s interval, 2 consecutive failures).
-- Per-host unproxied A records (`pir-primary.<domain>`, `pir-backup.<domain>`) enable Caddy ACME and direct ops access.
-- Cloud-init provisions each host: installs Caddy, mounts the block volume, downloads `nf-server` from a GitHub release, bootstraps snapshot data from DO Spaces, and starts a systemd timer for periodic re-sync.
-
-### State migration from vote-sdk
-
-If PIR resources were previously managed by `vote-sdk/terraform/`, migrate them to avoid recreation:
-
-```bash
-# In vote-sdk/terraform/ — remove resources from state (does NOT destroy them)
-terraform state rm digitalocean_volume.pir_primary_data
-terraform state rm digitalocean_volume.pir_backup_data
-terraform state rm digitalocean_droplet.pir_primary
-terraform state rm digitalocean_droplet.pir_backup
-terraform state rm digitalocean_firewall.pir
-terraform state rm cloudflare_record.pir_primary
-terraform state rm cloudflare_record.pir_backup
-terraform state rm cloudflare_load_balancer_monitor.pir_health
-terraform state rm cloudflare_load_balancer_pool.pir_primary
-terraform state rm cloudflare_load_balancer_pool.pir_backup
-terraform state rm cloudflare_load_balancer.pir
-
-# In vote-nullifier-pir/terraform/ — import each resource
-terraform import digitalocean_volume.pir_primary_data <volume-id>
-terraform import digitalocean_volume.pir_backup_data <volume-id>
-terraform import digitalocean_droplet.pir_primary <droplet-id>
-terraform import digitalocean_droplet.pir_backup <droplet-id>
-terraform import digitalocean_firewall.pir <firewall-id>
-terraform import cloudflare_record.pir_primary <zone-id>/<record-id>
-terraform import cloudflare_record.pir_backup <zone-id>/<record-id>
-terraform import cloudflare_load_balancer_monitor.pir_health <account-id>/<monitor-id>
-terraform import cloudflare_load_balancer_pool.pir_primary <account-id>/<pool-id>
-terraform import cloudflare_load_balancer_pool.pir_backup <account-id>/<pool-id>
-terraform import 'cloudflare_load_balancer.pir' <zone-id>/<lb-id>
-```
-
-Get the resource IDs from `terraform state show <address>` in the vote-sdk terraform directory before removing them. After import, run `terraform plan` in both directories to confirm zero diff.
+Cloud-init templates in `vote-infrastructure/cloud-init/pir.yaml` handle first-boot
+provisioning: install Caddy, mount the block volume, download `nf-server` from a
+GitHub release, bootstrap snapshot data from DO Spaces, and start a systemd timer for
+periodic re-sync.
