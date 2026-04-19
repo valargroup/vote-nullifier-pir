@@ -49,13 +49,14 @@ jobs:
         if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: actions/checkout@v4
 
-      - name: Download release binary
+      - name: Stage deploy artifacts
         if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         run: |
+          cp docs/nullifier-query-server.service .
+          rm -rf nf-server/
           curl -fL --retry 5 -o nf-server \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
           chmod +x nf-server
-          cp docs/nullifier-query-server.service .
 
       - name: Deploy via SSH
         if: inputs.targets == 'both' || inputs.targets == matrix.host_label
