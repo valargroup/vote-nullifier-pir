@@ -43,7 +43,32 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
     sentry::init((dsn, sentry::ClientOptions {
         release: sentry::release_name!(),
         sample_rate: 1.0,
-        traces_sample_rate: 1.0,
+        // Only trace known API routes. SentryHttpLayer names transactions as
+        // "METHOD /path" (raw URI) at sampling time, so unmatched paths such
+        // as GET /favicon.ico are visible here and can be dropped.
+        traces_sampler: Some(std::sync::Arc::new(|ctx: &sentry::TransactionContext| {
+            let name = ctx.name();
+            // Allow the startup trace and all registered API routes.
+            let known: &[&str] = &[
+                "server-startup",
+                "GET /tier0",
+                "GET /params/tier1",
+                "GET /params/tier2",
+                "POST /tier1/query",
+                "POST /tier2/query",
+                "GET /tier1/row/",
+                "GET /tier2/row/",
+                "GET /root",
+                "GET /health",
+                "POST /snapshot/prepare",
+                "GET /snapshot/status",
+            ];
+            if known.iter().any(|&r| name.starts_with(r)) {
+                1.0
+            } else {
+                0.0
+            }
+        })),
         attach_stacktrace: true,
         ..Default::default()
     }))
