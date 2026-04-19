@@ -144,3 +144,12 @@ jobs:
                 "s3://vote/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
             fi
           done
+
+  deploy:
+    name: Deploy to PIR hosts
+    needs: distribute
+    uses: ./.github/workflows/deploy.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+      targets: both
+    secrets: inherit

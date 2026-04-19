@@ -1,5 +1,5 @@
 # Deploy a tagged nf-server release to PIR hosts via SSH.
-# Manual trigger only — select a release tag (e.g. v0.3.0) when running.
+# Triggered automatically after a release build, or manually via workflow_dispatch.
 # Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY, NF_SENTRY_DSN.
 # See docs/deploy-setup.md for one-time remote setup.
 
@@ -20,6 +20,15 @@ on:
           - both
           - primary
           - backup
+        default: both
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+      targets:
+        required: false
+        type: string
         default: both
 
 permissions:
