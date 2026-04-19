@@ -258,3 +258,63 @@ The workflows in `.github/workflows/` handle building and deploying `nf-server`:
 - **`deploy.yml`** — Builds on every push to `main` and deploys to a remote host via SSH.
 - **`release.yml`** — Builds multi-platform binaries and publishes a GitHub Release on version tags.
 - **`resync.yml`** — Manually triggers a nullifier resync (ingest + export + restart) on the remote host.
+
+---
+
+## Terraform (infrastructure as code)
+
+The `terraform/` directory manages two DigitalOcean Droplets (primary + backup) behind a Cloudflare Load Balancer with automatic failover.
+
+### Quick start
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Fill in real values (DO token, CF token, zone ID, domain, SSH keys)
+terraform init
+terraform plan
+terraform apply
+```
+
+### Architecture
+
+- **Primary** (`vote-nullifier-pir-primary`): 8 vCPU / 32 GB Premium Intel with AVX-512.
+- **Backup** (`vote-nullifier-pir-backup`): 4 vCPU / 32 GB Memory-Optimized Premium Intel with AVX-512.
+- Both join the existing `vote-sdk-vpc` VPC (looked up by name, not managed here).
+- Cloudflare LB on `pir.<domain>` routes all traffic to primary; backup only receives traffic when the primary fails health checks (`/health`, 10 s interval, 2 consecutive failures).
+- Per-host unproxied A records (`pir-primary.<domain>`, `pir-backup.<domain>`) enable Caddy ACME and direct ops access.
+- Cloud-init provisions each host: installs Caddy, mounts the block volume, downloads `nf-server` from a GitHub release, bootstraps snapshot data from DO Spaces, and starts a systemd timer for periodic re-sync.
+
+### State migration from vote-sdk
+
+If PIR resources were previously managed by `vote-sdk/terraform/`, migrate them to avoid recreation:
+
+```bash
+# In vote-sdk/terraform/ — remove resources from state (does NOT destroy them)
+terraform state rm digitalocean_volume.pir_primary_data
+terraform state rm digitalocean_volume.pir_backup_data
+terraform state rm digitalocean_droplet.pir_primary
+terraform state rm digitalocean_droplet.pir_backup
+terraform state rm digitalocean_firewall.pir
+terraform state rm cloudflare_record.pir_primary
+terraform state rm cloudflare_record.pir_backup
+terraform state rm cloudflare_load_balancer_monitor.pir_health
+terraform state rm cloudflare_load_balancer_pool.pir_primary
+terraform state rm cloudflare_load_balancer_pool.pir_backup
+terraform state rm cloudflare_load_balancer.pir
+
+# In vote-nullifier-pir/terraform/ — import each resource
+terraform import digitalocean_volume.pir_primary_data <volume-id>
+terraform import digitalocean_volume.pir_backup_data <volume-id>
+terraform import digitalocean_droplet.pir_primary <droplet-id>
+terraform import digitalocean_droplet.pir_backup <droplet-id>
+terraform import digitalocean_firewall.pir <firewall-id>
+terraform import cloudflare_record.pir_primary <zone-id>/<record-id>
+terraform import cloudflare_record.pir_backup <zone-id>/<record-id>
+terraform import cloudflare_load_balancer_monitor.pir_health <account-id>/<monitor-id>
+terraform import cloudflare_load_balancer_pool.pir_primary <account-id>/<pool-id>
+terraform import cloudflare_load_balancer_pool.pir_backup <account-id>/<pool-id>
+terraform import 'cloudflare_load_balancer.pir' <zone-id>/<lb-id>
+```
+
+Get the resource IDs from `terraform state show <address>` in the vote-sdk terraform directory before removing them. After import, run `terraform plan` in both directories to confirm zero diff.
