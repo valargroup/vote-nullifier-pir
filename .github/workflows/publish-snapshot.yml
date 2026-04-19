@@ -1,0 +1,168 @@
+# Build a PIR snapshot at a given block height and publish it to DO Spaces
+# under s3://vote/snapshots/<height>/ for download by nf-server replicas
+# and the admin UI. Runs on PIR_BACKUP_HOST so the primary stays focused
+# on serving; backup keeps serving its current snapshot throughout.
+#
+# Pure publish operation: writes to /tmp on the host, never touches the
+# live /opt/nf-ingest/pir-data/ tree, never restarts the service.
+#
+# Requires repository secrets:
+#   PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY,
+#   DO_ACCESS_KEY, DO_SECRET_KEY.
+
+name: Publish nullifier snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      height:
+        description: "Target block height (rounded down to nearest multiple of 10). If empty, uses the latest chain tip."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DEPLOY_PATH: /opt/nf-ingest
+  DO_BUCKET: vote
+  DO_PREFIX: snapshots
+  DO_PUBLIC_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
+
+jobs:
+  publish:
+    name: Build and upload snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Round height down to nearest multiple of 10
+        id: round_height
+        run: |
+          set -euo pipefail
+          H="${{ github.event.inputs.height }}"
+          if [ -z "$H" ]; then
+            H=$(curl -sf "https://api.blockchair.com/zcash/stats" | jq -r '.data.best_block_height')
+          fi
+          ROUNDED=$(( (H / 10) * 10 ))
+          echo "value=$ROUNDED" >> "$GITHUB_OUTPUT"
+          echo "Target height: $ROUNDED"
+
+      - name: Build snapshot, upload to DO Spaces, verify
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+          DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
+        with:
+          host: ${{ secrets.PIR_BACKUP_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: DO_ACCESS_KEY,DO_SECRET_KEY
+          command_timeout: 90m
+          script: |
+            set -euo pipefail
+
+            H=${{ steps.round_height.outputs.value }}
+            STAGE="/tmp/snap-$H"
+            BUCKET="${{ env.DO_BUCKET }}"
+            PREFIX="${{ env.DO_PREFIX }}"
+            PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
+
+            echo "==> Ensuring s3cmd and jq are installed"
+            if ! command -v s3cmd >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq s3cmd jq
+            fi
+
+            echo "==> Writing s3cmd config"
+            S3CFG="$(mktemp)"
+            trap 'rm -f "$S3CFG"; rm -rf "$STAGE"' EXIT
+            cat > "$S3CFG" <<EOF
+            [default]
+            access_key = $DO_ACCESS_KEY
+            secret_key = $DO_SECRET_KEY
+            host_base = fra1.digitaloceanspaces.com
+            host_bucket = %(bucket)s.fra1.digitaloceanspaces.com
+            bucket_location = fra1
+            use_https = True
+            EOF
+
+            echo "==> Ingest nullifiers up to height $H (from chain tip)"
+            cd "${{ env.DEPLOY_PATH }}"
+            ./nf-server ingest \
+              --data-dir "${{ env.DEPLOY_PATH }}" \
+              --lwd-url https://zec.rocks:443 \
+              --invalidate \
+              --max-height "$H"
+
+            echo "==> Export tier files to staging dir $STAGE (does not touch live pir-data/)"
+            rm -rf "$STAGE"
+            mkdir -p "$STAGE"
+            ./nf-server export \
+              --data-dir "${{ env.DEPLOY_PATH }}" \
+              --output-dir "$STAGE"
+
+            echo "==> Verify exported pir_root.json height matches input"
+            EXPORT_HEIGHT=$(jq -r '.height // empty' "$STAGE/pir_root.json")
+            if [ -z "$EXPORT_HEIGHT" ] || [ "$EXPORT_HEIGHT" != "$H" ]; then
+              echo "ERROR: pir_root.json height ($EXPORT_HEIGHT) != requested ($H)"
+              exit 1
+            fi
+
+            echo "==> Building manifest.json"
+            BIN_SHA=$(sha256sum "${{ env.DEPLOY_PATH }}/nf-server" | awk '{print $1}')
+            CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            FILES_JSON=$(
+              cd "$STAGE"
+              for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+                size=$(stat -c%s "$f")
+                sha=$(sha256sum "$f" | awk '{print $1}')
+                jq -n --arg name "$f" --argjson size "$size" --arg sha "$sha" \
+                  '{($name): {size: $size, sha256: $sha}}'
+              done | jq -s 'add'
+            )
+            jq -n \
+              --argjson height "$H" \
+              --arg created_at "$CREATED_AT" \
+              --arg nf_server_sha256 "$BIN_SHA" \
+              --arg git_ref "${{ github.ref_name }}" \
+              --arg git_sha "${{ github.sha }}" \
+              --argjson files "$FILES_JSON" \
+              '{
+                schema_version: 1,
+                height: $height,
+                created_at: $created_at,
+                nf_server_sha256: $nf_server_sha256,
+                publisher: { git_ref: $git_ref, git_sha: $git_sha },
+                files: $files
+              }' > "$STAGE/manifest.json"
+            cat "$STAGE/manifest.json"
+
+            echo "==> Upload data files to s3://$BUCKET/$PREFIX/$H/ (manifest last)"
+            for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+              echo "  - $f"
+              s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
+                --acl-public --force --no-progress
+            done
+            echo "  - manifest.json (last, so partial uploads stay invisible)"
+            s3cmd -c "$S3CFG" put "$STAGE/manifest.json" "s3://$BUCKET/$PREFIX/$H/manifest.json" \
+              --acl-public --force --no-progress \
+              --add-header="Cache-Control:no-cache, max-age=0"
+
+            echo "==> Verify round-trip: download manifest + tier0 over HTTPS, re-check sha256"
+            VERIFY_DIR=$(mktemp -d)
+            trap 'rm -f "$S3CFG"; rm -rf "$STAGE" "$VERIFY_DIR"' EXIT
+            curl -fsSL "$PUBLIC_BASE/$H/manifest.json" -o "$VERIFY_DIR/manifest.json"
+            REMOTE_HEIGHT=$(jq -r '.height' "$VERIFY_DIR/manifest.json")
+            REMOTE_TIER0_SHA=$(jq -r '.files["tier0.bin"].sha256' "$VERIFY_DIR/manifest.json")
+            if [ "$REMOTE_HEIGHT" != "$H" ]; then
+              echo "ERROR: remote manifest height ($REMOTE_HEIGHT) != $H"
+              exit 1
+            fi
+            curl -fsSL "$PUBLIC_BASE/$H/tier0.bin" -o "$VERIFY_DIR/tier0.bin"
+            ACTUAL_TIER0_SHA=$(sha256sum "$VERIFY_DIR/tier0.bin" | awk '{print $1}')
+            if [ "$ACTUAL_TIER0_SHA" != "$REMOTE_TIER0_SHA" ]; then
+              echo "ERROR: downloaded tier0.bin sha256 mismatch"
+              echo "  expected: $REMOTE_TIER0_SHA"
+              echo "  actual:   $ACTUAL_TIER0_SHA"
+              exit 1
+            fi
+            echo "==> Snapshot $H published and verified at $PUBLIC_BASE/$H/"
