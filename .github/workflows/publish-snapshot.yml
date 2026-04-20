@@ -166,3 +166,32 @@ jobs:
               exit 1
             fi
             echo "==> Snapshot $H published and verified at $PUBLIC_BASE/$H/"
+
+  notify-slack:
+    name: Slack Notification
+    if: ${{ always() && needs.publish.result == 'failure' }}
+    needs: [publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack on failure
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "PIR Snapshot Publish failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "PIR Snapshot Publish Failed" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Publish nullifier snapshot>" },
+                    { "type": "mrkdwn", "text": "*Height:*\n`${{ inputs.height || 'latest' }}`" }
+                  ]
+                }
+              ]
+            }

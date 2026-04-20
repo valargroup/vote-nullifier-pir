@@ -153,3 +153,36 @@ jobs:
       release_tag: ${{ github.ref_name }}
       targets: both
     secrets: inherit
+
+  notify-slack:
+    name: Slack Notification
+    if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
+    needs: [build, release, distribute, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack on failure
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "PIR Release failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "PIR Release Failed" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Release>" },
+                    { "type": "mrkdwn", "text": "*Tag:*\n`${{ github.ref_name }}`" }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBuild: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}` | Deploy: `${{ needs.deploy.result }}`" }
+                }
+              ]
+            }
