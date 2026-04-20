@@ -22,6 +22,7 @@ use crate::metrics;
 use crate::serve::handlers;
 use crate::serve::rebuild;
 use crate::serve::state::{AppState, ServerPhase};
+use crate::serve::watchdog;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -79,6 +80,22 @@ pub struct Args {
     #[arg(long, env = "SVOTE_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
     bootstrap_timeout_secs: u64,
 
+    /// How long the host must continuously serve a snapshot older
+    /// than the canonical voting-config height before the watchdog
+    /// emits a Sentry error event (which Sentry's Slack integration
+    /// then routes to the on-call channel). Default 30 minutes.
+    /// Set to 0 to disable the watchdog entirely.
+    #[arg(long, env = "SVOTE_STALE_THRESHOLD_SECS", default_value = "1800")]
+    stale_threshold_secs: u64,
+
+    /// How often the watchdog checks `served` vs `expected`. The tick
+    /// interval also bounds the precision of the `stale_seconds` gauge
+    /// and the `stale_threshold_secs` deadline, so the default of 60s
+    /// gives ±1m precision on a 30m threshold. Capped below the
+    /// threshold at runtime.
+    #[arg(long, env = "SVOTE_WATCHDOG_TICK_SECS", default_value = "60")]
+    watchdog_tick_secs: u64,
+
     /// Sentry DSN for error tracking. When empty, Sentry is disabled.
     #[arg(long, env = "SENTRY_DSN", default_value = "")]
     pub(crate) sentry_dsn: String,
@@ -86,9 +103,7 @@ pub struct Args {
 
 pub async fn run(args: Args) -> Result<()> {
     tracing_subscriber::fmt::init();
-
     let lwd_urls = config::resolve_lwd_urls(&args.lwd_url);
-
     let state = Arc::new(AppState {
         phase: RwLock::new(ServerPhase::Starting {
             progress: "initializing".to_string(),
@@ -135,6 +150,8 @@ pub async fn run(args: Args) -> Result<()> {
     let warm_state = Arc::clone(&state);
     let warm_data_dir = args.data_dir.clone();
     let warm_pir_dir = args.pir_data_dir.clone();
+    let warm_stale_threshold_secs = args.stale_threshold_secs;
+    let warm_watchdog_tick_secs = args.watchdog_tick_secs;
     // Self-bootstrap from the published snapshot CDN before we try to
     // load tier files. On a fresh host this populates `pir_data_dir/`
     // from scratch; on an existing host this is a no-op when the local
@@ -215,6 +232,25 @@ pub async fn run(args: Args) -> Result<()> {
                 }
                 *warm_state.serving.write().await = Some(serving);
                 *warm_state.phase.write().await = ServerPhase::Serving;
+                // Spawn the snapshot-stale watchdog only after `served_height` is
+                // populated; otherwise the first tick would always observe
+                // `served=0` and start a false stale episode. A zero threshold
+                // disables the watchdog entirely (kill-switch for ops).
+                if warm_stale_threshold_secs > 0 {
+                    let threshold = Duration::from_secs(warm_stale_threshold_secs);
+                    // Tick faster than the threshold so we don't overshoot by a
+                    // full tick. Floor at 1s for sanity.
+                    let raw_tick = Duration::from_secs(warm_watchdog_tick_secs.max(1));
+                    let tick = raw_tick.min(threshold);
+                    eprintln!(
+                        "snapshot watchdog: tick={}s threshold={}s",
+                        tick.as_secs(),
+                        threshold.as_secs(),
+                    );
+                    watchdog::spawn(tick, threshold);
+                } else {
+                    eprintln!("snapshot watchdog: disabled (stale_threshold_secs=0)");
+                }
                 tx.finish();
                 sentry::capture_message("nf-server ready", sentry::Level::Info);
             }

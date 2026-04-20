@@ -28,6 +28,7 @@ struct Metrics {
     bootstrap_duration: HistogramVec,
     served_height: IntGauge,
     expected_height: IntGauge,
+    stale_seconds: IntGauge,
 }
 
 fn metrics() -> &'static Metrics {
@@ -88,6 +89,18 @@ fn metrics() -> &'static Metrics {
         )
         .expect("valid metric");
 
+        // Seconds the host has been observed serving a stale snapshot
+        // (`served_height < expected_height` with `expected_height > 0`).
+        // 0 while converged. Reset to 0 the moment served catches up.
+        // Updated by the watchdog loop in `serve::watchdog`; the alert
+        // rule fires when this exceeds the configured threshold.
+        let stale_seconds = IntGauge::new(
+            "nf_snapshot_stale_seconds",
+            "Seconds this host has been continuously observed serving a snapshot \
+             older than the canonical voting-config height (0 if currently converged).",
+        )
+        .expect("valid metric");
+
         registry
             .register(Box::new(bootstrap_attempts.clone()))
             .expect("register attempts");
@@ -106,6 +119,9 @@ fn metrics() -> &'static Metrics {
         registry
             .register(Box::new(expected_height.clone()))
             .expect("register expected");
+        registry
+            .register(Box::new(stale_seconds.clone()))
+            .expect("register stale_seconds");
 
         Metrics {
             registry,
@@ -115,6 +131,7 @@ fn metrics() -> &'static Metrics {
             bootstrap_duration,
             served_height,
             expected_height,
+            stale_seconds,
         }
     })
 }
@@ -145,8 +162,21 @@ pub fn served_height_set(h: u64) {
     metrics().served_height.set(h as i64);
 }
 
+pub fn served_height_get() -> u64 {
+    metrics().served_height.get().max(0) as u64
+}
+
 pub fn expected_height_set(h: u64) {
     metrics().expected_height.set(h as i64);
+}
+
+pub fn expected_height_get() -> u64 {
+    metrics().expected_height.get().max(0) as u64
+}
+
+pub fn stale_seconds_set(s: u64) {
+    // i64::MAX is plenty (~292 billion years); clamp anyway for safety.
+    metrics().stale_seconds.set(s.min(i64::MAX as u64) as i64);
 }
 
 /// `GET /metrics` handler — Prometheus text exposition.
@@ -188,6 +218,7 @@ mod tests {
         bootstrap_duration_observe(std::time::Duration::from_secs(2));
         served_height_set(100);
         expected_height_set(101);
+        stale_seconds_set(42);
 
         let mf = metrics().registry.gather();
         let names: Vec<&str> = mf.iter().map(|f| f.get_name()).collect();
@@ -197,5 +228,10 @@ mod tests {
         assert!(names.contains(&"nf_snapshot_bootstrap_duration_seconds"));
         assert!(names.contains(&"nf_snapshot_served_height"));
         assert!(names.contains(&"nf_snapshot_expected_height"));
+        assert!(names.contains(&"nf_snapshot_stale_seconds"));
+
+        // Getters reflect the most recent set call.
+        assert_eq!(served_height_get(), 100);
+        assert_eq!(expected_height_get(), 101);
     }
 }
