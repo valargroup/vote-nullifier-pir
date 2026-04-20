@@ -143,6 +143,90 @@ curl https://pir.example.com/health
 
 ---
 
+## Snapshot-stale alerting
+
+`nf-server` includes an in-process watchdog that fires a Sentry error
+event when the host serves a snapshot older than the canonical
+voting-config height for longer than a configurable threshold (default
+30 minutes). Sentry's Slack integration then routes the event to the
+on-call channel.
+
+### What gets observed
+
+The watchdog ticks every 60 seconds and compares two Prometheus
+gauges on the same host:
+
+- `nf_snapshot_served_height` -- height of the snapshot currently
+  loaded into the PIR tree (set during `load_serving_state`).
+- `nf_snapshot_expected_height` -- height the published voting-config
+  declares as canonical (set during the startup bootstrap).
+
+A host is **stale** iff `expected_height > 0 && served_height < expected_height`.
+Both partial staleness (e.g. `served=3312880, expected=3312890`) and
+complete staleness (e.g. `served=0, expected=3312890`, meaning no
+local snapshot at all) trigger the same alert -- the latter is just
+the worst case.
+
+The continuous staleness duration is exposed as
+`nf_snapshot_stale_seconds`, which dashboards can graph and which
+goes back to 0 the moment the host catches up.
+
+### Configuration
+
+| Env var | CLI flag | Default | Effect |
+|---------|----------|---------|--------|
+| `SVOTE_STALE_THRESHOLD_SECS` | `--stale-threshold-secs` | `1800` (30 min) | How long staleness must persist before Sentry fires. `0` disables the watchdog entirely. |
+| `SVOTE_WATCHDOG_TICK_SECS` | `--watchdog-tick-secs` | `60` | Polling cadence. Capped below the threshold at runtime. |
+
+Both have production defaults baked in -- there is nothing to add to
+`/etc/default/nf-server` unless you want to override.
+
+### Sentry-side alert rule (one-time setup)
+
+The Sentry events are tagged for filtering:
+
+| Tag | Value |
+|-----|-------|
+| `alert` | `snapshot_stale` |
+| `served_height` | the current served height as a string |
+| `expected_height` | the canonical height as a string |
+| `gap_blocks` | `expected - served` |
+| `stale_seconds` | how long this host has been stale |
+
+Configure the alert in Sentry (one rule per project):
+
+1. **Settings → Integrations → Slack** -- install the Sentry Slack app
+   into your workspace if not already present, then **Add Workspace**
+   in the project. Pick a channel like `#oncall-pir`.
+2. **Alerts → Create Alert Rule** with:
+   - Environment: `production`
+   - When: *An issue is created*
+   - If: *The issue's tags match `alert` equals `snapshot_stale`*
+   - Then: *Send a Slack notification to `#oncall-pir`*
+3. Save the rule. Optionally add a *resolved* notification using
+   `level: info` + `message contains "snapshot height converged"` --
+   the watchdog emits an info event when the gap closes after an
+   alert.
+
+### Verification
+
+Stand up a verification fire by temporarily setting a tiny threshold
+and bumping `voting-config.snapshot_height` to a value that has no
+published snapshot (or tail one host's `/metrics` while you do it):
+
+```bash
+ssh root@<host> 'echo SVOTE_STALE_THRESHOLD_SECS=120 >> /etc/default/nf-server && systemctl restart nullifier-query-server'
+# Wait ~3 minutes, then check the channel.
+ssh root@<host> 'sed -i /SVOTE_STALE_THRESHOLD_SECS/d /etc/default/nf-server && systemctl restart nullifier-query-server'
+```
+
+A real fire shows up in Sentry as an issue with the
+`alert:snapshot_stale` tag and an Error level. If you do not see the
+Slack message but the issue is in Sentry, the wiring problem is on
+the Sentry → Slack side, not in `nf-server`.
+
+---
+
 ## Source setup (developers)
 
 This path is for contributors and operators who want to build from source with CI/CD-driven deployment.
