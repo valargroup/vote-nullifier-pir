@@ -5,10 +5,14 @@
 //!   - `export` — Build the PIR tree and write tier files for the server.
 //!   - `serve`  — Start the PIR HTTP server (feature-gated behind `serve`).
 
+#[cfg(feature = "serve")]
+mod bootstrap;
 mod cmd_export;
 mod cmd_ingest;
 #[cfg(feature = "serve")]
 mod cmd_serve;
+#[cfg(feature = "serve")]
+mod metrics;
 #[cfg(feature = "serve")]
 mod serve;
 
@@ -49,6 +53,8 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
         traces_sampler: Some(std::sync::Arc::new(|ctx: &sentry::TransactionContext| {
             let name = ctx.name();
             // Allow the startup trace and all registered API routes.
+            // /metrics is intentionally excluded: Prometheus scrapes
+            // would otherwise dominate Sentry transactions.
             let known: &[&str] = &[
                 "server-startup",
                 "GET /tier0",

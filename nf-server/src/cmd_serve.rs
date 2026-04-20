@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use axum::extract::DefaultBodyLimit;
@@ -16,6 +17,8 @@ use tower::ServiceBuilder;
 use nf_ingest::config;
 use nf_ingest::file_store;
 
+use crate::bootstrap;
+use crate::metrics;
 use crate::serve::handlers;
 use crate::serve::rebuild;
 use crate::serve::state::{AppState, ServerPhase};
@@ -45,6 +48,37 @@ pub struct Args {
     #[arg(long, env = "SVOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
+    /// URL of the published `voting-config.json` whose `snapshot_height`
+    /// is treated as the canonical height every PIR replica should
+    /// serve. Set to an empty string to disable the startup
+    /// self-bootstrap entirely (operator manages snapshots manually).
+    #[arg(
+        long,
+        env = "SVOTE_VOTING_CONFIG_URL",
+        default_value = bootstrap::Config::DEFAULT_VOTING_CONFIG_URL
+    )]
+    voting_config_url: String,
+
+    /// Bucket origin for pre-computed PIR snapshots (matches the
+    /// admin UI's `SVOTE_PRECOMPUTED_BASE_URL`). The bootstrap fetches
+    /// `<base>/snapshots/<height>/{manifest.json,tier0.bin,...}`.
+    /// Trailing slashes are trimmed. Empty disables the download
+    /// portion of the bootstrap (operators relying on out-of-band
+    /// staging can keep the voting-config height check enabled).
+    #[arg(
+        long,
+        env = "SVOTE_PRECOMPUTED_BASE_URL",
+        default_value = bootstrap::Config::DEFAULT_PRECOMPUTED_BASE_URL
+    )]
+    precomputed_base_url: String,
+
+    /// Per-request timeout for the snapshot bootstrap in seconds.
+    /// Defaults to 30 minutes — a slow tier0 fetch from the wrong
+    /// region can sit close to that, so we err on the side of
+    /// patience rather than spurious failures on a fresh host.
+    #[arg(long, env = "SVOTE_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
+    bootstrap_timeout_secs: u64,
+
     /// Sentry DSN for error tracking. When empty, Sentry is disabled.
     #[arg(long, env = "SENTRY_DSN", default_value = "")]
     pub(crate) sentry_dsn: String,
@@ -63,8 +97,37 @@ pub async fn run(args: Args) -> Result<()> {
 
     file_store::rebuild_index(&args.data_dir)?;
 
+    // Self-bootstrap from the published snapshot CDN before we try to
+    // load tier files. On a fresh host this populates `pir_data_dir/`
+    // from scratch; on an existing host this is a no-op when the local
+    // pir_root.json already matches voting-config.snapshot_height.
+    let bootstrap_cfg = bootstrap::Config {
+        voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
+        precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
+        pir_data_dir: args.pir_data_dir.clone(),
+        http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
+    };
+    match bootstrap::run(&bootstrap_cfg).await {
+        Ok(outcome) => eprintln!("snapshot bootstrap: {outcome:?}"),
+        Err(e) => {
+            // Hard error (e.g. unwritable pir-data-dir): surface to
+            // Sentry and abort startup. Soft errors (network, missing
+            // remote snapshot at this height) are mapped to
+            // `Outcome::FellThrough` inside `bootstrap::run` and never
+            // reach this branch.
+            sentry::capture_message(
+                &format!("snapshot bootstrap hard error: {e}"),
+                sentry::Level::Error,
+            );
+            return Err(e);
+        }
+    }
+
     eprintln!("Loading tier files from {:?}...", args.pir_data_dir);
     let serving = pir_server::load_serving_state(&args.pir_data_dir)?;
+    if let Some(h) = serving.metadata.height {
+        metrics::served_height_set(h);
+    }
 
     tx.finish();
     sentry::capture_message("nf-server started", sentry::Level::Info);
@@ -94,6 +157,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/root", get(handlers::get_root))
         .route("/snapshot/prepare", post(rebuild::post_snapshot_prepare))
         .route("/snapshot/status", get(rebuild::get_snapshot_status))
+        .route("/metrics", get(metrics::handle_metrics))
         .route("/health", get(handlers::get_health))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .layer(cors)
