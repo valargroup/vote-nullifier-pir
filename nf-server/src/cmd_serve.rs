@@ -87,59 +87,18 @@ pub struct Args {
 pub async fn run(args: Args) -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let tx = sentry::start_transaction(sentry::TransactionContext::new(
-        "server-startup",
-        "startup",
-    ));
-    sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
-
     let lwd_urls = config::resolve_lwd_urls(&args.lwd_url);
 
-    file_store::rebuild_index(&args.data_dir)?;
-
-    // Self-bootstrap from the published snapshot CDN before we try to
-    // load tier files. On a fresh host this populates `pir_data_dir/`
-    // from scratch; on an existing host this is a no-op when the local
-    // pir_root.json already matches voting-config.snapshot_height.
-    let bootstrap_cfg = bootstrap::Config {
-        voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
-        precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
-        pir_data_dir: args.pir_data_dir.clone(),
-        http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
-    };
-    match bootstrap::run(&bootstrap_cfg).await {
-        Ok(outcome) => eprintln!("snapshot bootstrap: {outcome:?}"),
-        Err(e) => {
-            // Hard error (e.g. unwritable pir-data-dir): surface to
-            // Sentry and abort startup. Soft errors (network, missing
-            // remote snapshot at this height) are mapped to
-            // `Outcome::FellThrough` inside `bootstrap::run` and never
-            // reach this branch.
-            sentry::capture_message(
-                &format!("snapshot bootstrap hard error: {e}"),
-                sentry::Level::Error,
-            );
-            return Err(e);
-        }
-    }
-
-    eprintln!("Loading tier files from {:?}...", args.pir_data_dir);
-    let serving = pir_server::load_serving_state(&args.pir_data_dir)?;
-    if let Some(h) = serving.metadata.height {
-        metrics::served_height_set(h);
-    }
-
-    tx.finish();
-    sentry::capture_message("nf-server started", sentry::Level::Info);
-
     let state = Arc::new(AppState {
-        phase: RwLock::new(ServerPhase::Serving),
-        serving: RwLock::new(Some(serving)),
+        phase: RwLock::new(ServerPhase::Starting {
+            progress: "initializing".to_string(),
+        }),
+        serving: RwLock::new(None),
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         data_dir: args.data_dir.clone(),
         pir_data_dir: args.pir_data_dir.clone(),
         lwd_urls,
-        chain_url: args.chain_url,
+        chain_url: args.chain_url.clone(),
         next_req_id: AtomicU64::new(0),
         inflight_requests: AtomicUsize::new(0),
     });
@@ -159,6 +118,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/snapshot/status", get(rebuild::get_snapshot_status))
         .route("/metrics", get(metrics::handle_metrics))
         .route("/health", get(handlers::get_health))
+        .route("/ready", get(handlers::get_ready))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .layer(cors)
         .layer(
@@ -166,11 +126,117 @@ pub async fn run(args: Args) -> Result<()> {
                 .layer(sentry_tower::NewSentryLayer::new_from_top())
                 .layer(sentry_tower::SentryHttpLayer::with_transaction()),
         )
-        .with_state(state);
+        .with_state(Arc::clone(&state));
 
     let addr = format!("0.0.0.0:{}", args.port);
-    eprintln!("Listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("Listening on {addr}");
+
+    let warm_state = Arc::clone(&state);
+    let warm_data_dir = args.data_dir.clone();
+    let warm_pir_dir = args.pir_data_dir.clone();
+    // Self-bootstrap from the published snapshot CDN before we try to
+    // load tier files. On a fresh host this populates `pir_data_dir/`
+    // from scratch; on an existing host this is a no-op when the local
+    // pir_root.json already matches voting-config.snapshot_height.
+    let warm_bootstrap_cfg = bootstrap::Config {
+        voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
+        precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
+        pir_data_dir: args.pir_data_dir.clone(),
+        http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
+    };
+    tokio::spawn(async move {
+        let tx =
+            sentry::start_transaction(sentry::TransactionContext::new("server-startup", "startup"));
+        sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
+
+        {
+            let mut phase = warm_state.phase.write().await;
+            *phase = ServerPhase::Starting {
+                progress: "rebuilding nullifier index".to_string(),
+            };
+        }
+        let index_result =
+            tokio::task::spawn_blocking(move || file_store::rebuild_index(&warm_data_dir)).await;
+        match index_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let msg = format!("startup index rebuild failed: {e:#}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+                return;
+            }
+            Err(e) => {
+                let msg = format!("startup index rebuild task failed: {e}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+                return;
+            }
+        }
+
+        {
+            let mut phase = warm_state.phase.write().await;
+            *phase = ServerPhase::Starting {
+                progress: "snapshot bootstrap".to_string(),
+            };
+        }
+        match bootstrap::run(&warm_bootstrap_cfg).await {
+            Ok(outcome) => eprintln!("snapshot bootstrap: {outcome:?}"),
+            Err(e) => {
+                let msg = format!("snapshot bootstrap hard error: {e:#}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+                return;
+            }
+        }
+
+        {
+            let mut phase = warm_state.phase.write().await;
+            *phase = ServerPhase::Starting {
+                progress: "loading tier files".to_string(),
+            };
+        }
+        let load =
+            tokio::task::spawn_blocking(move || pir_server::load_serving_state(&warm_pir_dir))
+                .await;
+        match load {
+            Ok(Ok(serving)) => {
+                if let Some(h) = serving.metadata.height {
+                    metrics::served_height_set(h);
+                }
+                *warm_state.serving.write().await = Some(serving);
+                *warm_state.phase.write().await = ServerPhase::Serving;
+                tx.finish();
+                sentry::capture_message("nf-server ready", sentry::Level::Info);
+            }
+            Ok(Err(e)) => {
+                let msg = format!("initial load failed: {e:#}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+            }
+            Err(e) => {
+                let msg = format!("initial load task failed: {e}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+            }
+        }
+    });
+
     axum::serve(listener, app).await?;
 
     Ok(())

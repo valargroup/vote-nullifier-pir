@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES,
-    TIER2_ROWS, TIER2_ROW_BYTES,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS,
+    TIER2_ROW_BYTES,
 };
 
 use super::state::{AppState, ServerPhase};
@@ -159,16 +159,15 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
 pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let phase = state.phase.read().await;
     let serving = state.serving.read().await;
-
-    let status = match &*phase {
-        ServerPhase::Serving => "ok",
-        ServerPhase::Rebuilding { .. } => "rebuilding",
-        ServerPhase::Error { .. } => "error",
-    };
-
     let (tier1_rows, tier2_rows) = match serving.as_ref() {
         Some(s) => (s.tier1_scenario.num_items, s.tier2_scenario.num_items),
         None => (0, 0),
+    };
+    let status = match &*phase {
+        ServerPhase::Starting { .. } => "starting",
+        ServerPhase::Serving => "ok",
+        ServerPhase::Rebuilding { .. } => "rebuilding",
+        ServerPhase::Error { .. } => "error",
     };
 
     let info = HealthInfo {
@@ -179,4 +178,21 @@ pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoR
         tier2_row_bytes: TIER2_ROW_BYTES,
     };
     axum::Json(info)
+}
+
+/// `GET /ready` — Return 200 only when the server is serving queries.
+pub(crate) async fn get_ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let phase = state.phase.read().await;
+    match &*phase {
+        ServerPhase::Serving => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "status": "ok" })),
+        )
+            .into_response(),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!(&*phase)),
+        )
+            .into_response(),
+    }
 }

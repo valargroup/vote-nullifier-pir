@@ -20,7 +20,10 @@ use clap::{Parser, Subcommand};
 
 /// Top-level CLI parser.
 #[derive(Parser)]
-#[command(name = "nf-server", about = "Unified nullifier pipeline: ingest, export, and serve PIR data")]
+#[command(
+    name = "nf-server",
+    about = "Unified nullifier pipeline: ingest, export, and serve PIR data"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -44,40 +47,44 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
         Command::Serve(args) => args.sentry_dsn.as_str(),
         _ => "",
     };
-    sentry::init((dsn, sentry::ClientOptions {
-        release: sentry::release_name!(),
-        sample_rate: 1.0,
-        // Only trace known API routes. SentryHttpLayer names transactions as
-        // "METHOD /path" (raw URI) at sampling time, so unmatched paths such
-        // as GET /favicon.ico are visible here and can be dropped.
-        traces_sampler: Some(std::sync::Arc::new(|ctx: &sentry::TransactionContext| {
-            let name = ctx.name();
-            // Allow the startup trace and all registered API routes.
-            // /metrics is intentionally excluded: Prometheus scrapes
-            // would otherwise dominate Sentry transactions.
-            let known: &[&str] = &[
-                "server-startup",
-                "GET /tier0",
-                "GET /params/tier1",
-                "GET /params/tier2",
-                "POST /tier1/query",
-                "POST /tier2/query",
-                "GET /tier1/row/",
-                "GET /tier2/row/",
-                "GET /root",
-                "GET /health",
-                "POST /snapshot/prepare",
-                "GET /snapshot/status",
-            ];
-            if known.iter().any(|&r| name.starts_with(r)) {
-                1.0
-            } else {
-                0.0
-            }
-        })),
-        attach_stacktrace: true,
-        ..Default::default()
-    }))
+    sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            sample_rate: 1.0,
+            // Only trace known API routes. SentryHttpLayer names transactions as
+            // "METHOD /path" (raw URI) at sampling time, so unmatched paths such
+            // as GET /favicon.ico are visible here and can be dropped.
+            traces_sampler: Some(std::sync::Arc::new(|ctx: &sentry::TransactionContext| {
+                let name = ctx.name();
+                // Allow the startup trace and all registered API routes.
+                // /metrics is intentionally excluded: Prometheus scrapes
+                // would otherwise dominate Sentry transactions.
+                let known: &[&str] = &[
+                    "server-startup",
+                    "GET /tier0",
+                    "GET /params/tier1",
+                    "GET /params/tier2",
+                    "POST /tier1/query",
+                    "POST /tier2/query",
+                    "GET /tier1/row/",
+                    "GET /tier2/row/",
+                    "GET /root",
+                    "GET /health",
+                    "GET /ready",
+                    "POST /snapshot/prepare",
+                    "GET /snapshot/status",
+                ];
+                if known.iter().any(|&r| name.starts_with(r)) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })),
+            attach_stacktrace: true,
+            ..Default::default()
+        },
+    ))
 }
 
 fn main() -> anyhow::Result<()> {
