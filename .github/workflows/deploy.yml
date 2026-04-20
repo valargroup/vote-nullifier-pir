@@ -127,3 +127,33 @@ jobs:
               sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
               echo "No logs available"
             exit 1
+
+  notify-slack:
+    name: Slack Notification
+    if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack on failure
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "PIR Deploy failed",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": "PIR Deploy Failed" }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Deploy nf-server>" },
+                    { "type": "mrkdwn", "text": "*Tag:*\n`${{ inputs.release_tag }}`" },
+                    { "type": "mrkdwn", "text": "*Targets:*\n`${{ inputs.targets }}`" }
+                  ]
+                }
+              ]
+            }
