@@ -163,7 +163,20 @@ pub async fn run(args: Args) -> Result<()> {
         pir_data_dir: args.pir_data_dir.clone(),
         http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
     };
+    // Hold `rebuild_lock` for the entire duration of the startup
+    // pipeline (index rebuild → bootstrap → load). This serialises
+    // startup against `POST /snapshot/prepare`, which also acquires
+    // this lock before touching `data_dir` / `pir_data_dir`. Without
+    // it, a prepare call arriving in the Starting window would race
+    // with `rebuild_index`, `bootstrap::run`, and `load_serving_state`
+    // on the same on-disk stores and clobber `phase` / `serving`.
+    //
+    // The prepare handler separately refuses to run unless the phase
+    // is `Serving` or `Rebuilding`, so during Starting it returns 503
+    // with a clear error instead of spinning on lock contention.
+    let startup_guard = Arc::clone(&warm_state.rebuild_lock).lock_owned().await;
     tokio::spawn(async move {
+        let _startup_guard = startup_guard;
         let tx =
             sentry::start_transaction(sentry::TransactionContext::new("server-startup", "startup"));
         sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
