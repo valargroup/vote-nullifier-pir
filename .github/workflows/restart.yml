@@ -1,0 +1,190 @@
+# Rolling restart of the PIR fleet.
+#
+# nf-server self-bootstraps from the published voting-config /
+# precomputed-snapshot bucket on startup. So the entire flow for
+# "make replicas pick up a new snapshot_height" is just a restart.
+# This workflow exists so that step doesn't require ssh access from
+# every operator's laptop.
+#
+# Ordering: when targets=both, backup is restarted first and primary
+# only starts once backup is healthy AND has converged on the
+# expected height. That keeps at least one replica online throughout
+# (pir.<domain> is the convenience alias for primary, so primary
+# carries traffic while backup is restarting; once primary restarts,
+# backup is already serving the new snapshot).
+#
+# Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST,
+# DEPLOY_USER, SSH_KEY. See docs/runbooks/restart-pir-fleet.md.
+
+name: Restart PIR fleet
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Which hosts to restart (rolling, backup-then-primary when both)"
+        required: true
+        type: choice
+        options:
+          - both
+          - primary
+          - backup
+        default: both
+      verify_height_converged:
+        description: "After restart, fail the job if served_height < expected_height"
+        required: false
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      targets:
+        required: false
+        type: string
+        default: both
+      verify_height_converged:
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  restart_backup:
+    name: Restart backup
+    if: inputs.targets == 'both' || inputs.targets == 'backup'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restart and verify
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PIR_BACKUP_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: VERIFY_HEIGHT
+          # Cold-start budget: snapshot self-bootstrap (~30s for the
+          # ~6 GB CDN download in-region) + load_serving_state (mmaps
+          # and parses ~6 GB of tier files into memory, 60-90s on the
+          # production droplets). 6 minutes leaves headroom for a
+          # slow link without waiting forever on a real failure.
+          command_timeout: 6m
+          script: |
+            set -eu
+
+            echo "==> Restarting nullifier-query-server on backup"
+            sudo systemctl restart nullifier-query-server
+
+            echo "==> Waiting for /health to return 200"
+            for i in $(seq 1 60); do
+              if curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
+                echo "Health check passed (attempt $i)"
+                break
+              fi
+              echo "Waiting for service... attempt $i/60"
+              sleep 5
+            done
+
+            if ! curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
+              echo "Health check FAILED after 5m"
+              sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+              sudo journalctl -u nullifier-query-server --no-pager -n 80 2>/dev/null \
+                || tail -120 /var/log/syslog 2>/dev/null | grep -i nf-server \
+                || echo "No logs available"
+              exit 1
+            fi
+
+            METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
+            SERVED=$(printf '%s\n' "$METRICS"   | awk '$1=="nf_snapshot_served_height"   {print int($2); exit}')
+            EXPECTED=$(printf '%s\n' "$METRICS" | awk '$1=="nf_snapshot_expected_height" {print int($2); exit}')
+            : "${SERVED:=0}"
+            : "${EXPECTED:=0}"
+
+            echo "==> Snapshot heights: served=$SERVED expected=$EXPECTED"
+
+            if [ "$VERIFY_HEIGHT" = "true" ]; then
+              if [ "$EXPECTED" -le 0 ]; then
+                echo "FAIL: nf_snapshot_expected_height is 0; voting-config bootstrap likely failed."
+                exit 1
+              fi
+              if [ "$SERVED" -lt "$EXPECTED" ]; then
+                echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
+                exit 1
+              fi
+              echo "OK: backup converged on height $SERVED"
+            else
+              echo "Skipping height verification (verify_height_converged=false)"
+            fi
+        env:
+          VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
+
+  restart_primary:
+    name: Restart primary
+    needs: restart_backup
+    # Run when:
+    #  - target includes primary, AND
+    #  - backup either succeeded OR was skipped (target=primary only).
+    # If backup ran and failed we DO NOT restart primary -- losing
+    # both replicas at once is the only thing this workflow is
+    # designed to prevent.
+    if: |
+      always() &&
+      (inputs.targets == 'both' || inputs.targets == 'primary') &&
+      (needs.restart_backup.result == 'success' || needs.restart_backup.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restart and verify
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PIR_PRIMARY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: VERIFY_HEIGHT
+          command_timeout: 6m
+          script: |
+            set -eu
+
+            echo "==> Restarting nullifier-query-server on primary"
+            sudo systemctl restart nullifier-query-server
+
+            echo "==> Waiting for /health to return 200"
+            for i in $(seq 1 60); do
+              if curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
+                echo "Health check passed (attempt $i)"
+                break
+              fi
+              echo "Waiting for service... attempt $i/60"
+              sleep 5
+            done
+
+            if ! curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
+              echo "Health check FAILED after 5m"
+              sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+              sudo journalctl -u nullifier-query-server --no-pager -n 80 2>/dev/null \
+                || tail -120 /var/log/syslog 2>/dev/null | grep -i nf-server \
+                || echo "No logs available"
+              exit 1
+            fi
+
+            METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
+            SERVED=$(printf '%s\n' "$METRICS"   | awk '$1=="nf_snapshot_served_height"   {print int($2); exit}')
+            EXPECTED=$(printf '%s\n' "$METRICS" | awk '$1=="nf_snapshot_expected_height" {print int($2); exit}')
+            : "${SERVED:=0}"
+            : "${EXPECTED:=0}"
+
+            echo "==> Snapshot heights: served=$SERVED expected=$EXPECTED"
+
+            if [ "$VERIFY_HEIGHT" = "true" ]; then
+              if [ "$EXPECTED" -le 0 ]; then
+                echo "FAIL: nf_snapshot_expected_height is 0; voting-config bootstrap likely failed."
+                exit 1
+              fi
+              if [ "$SERVED" -lt "$EXPECTED" ]; then
+                echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
+                exit 1
+              fi
+              echo "OK: primary converged on height $SERVED"
+            else
+              echo "Skipping height verification (verify_height_converged=false)"
+            fi
+        env:
+          VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
