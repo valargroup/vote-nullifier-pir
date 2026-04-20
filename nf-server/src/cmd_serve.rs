@@ -103,93 +103,17 @@ pub struct Args {
 
 pub async fn run(args: Args) -> Result<()> {
     tracing_subscriber::fmt::init();
-
-    let tx =
-        sentry::start_transaction(sentry::TransactionContext::new("server-startup", "startup"));
-    sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
-
     let lwd_urls = config::resolve_lwd_urls(&args.lwd_url);
-
-    file_store::rebuild_index(&args.data_dir)?;
-
-    // Self-bootstrap from the published snapshot CDN before we try to
-    // load tier files. On a fresh host this populates `pir_data_dir/`
-    // from scratch; on an existing host this is a no-op when the local
-    // pir_root.json already matches voting-config.snapshot_height.
-    let bootstrap_cfg = bootstrap::Config {
-        voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
-        precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
-        pir_data_dir: args.pir_data_dir.clone(),
-        http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
-    };
-    match bootstrap::run(&bootstrap_cfg).await {
-        Ok(outcome) => eprintln!("snapshot bootstrap: {outcome:?}"),
-        Err(e) => {
-            // Hard error (e.g. unwritable pir-data-dir): surface to
-            // Sentry and abort startup. Soft errors (network, missing
-            // remote snapshot at this height) are mapped to
-            // `Outcome::FellThrough` inside `bootstrap::run` and never
-            // reach this branch.
-            sentry::capture_message(
-                &format!("snapshot bootstrap hard error: {e}"),
-                sentry::Level::Error,
-            );
-            return Err(e);
-        }
-    }
-
-    eprintln!("Loading tier files from {:?}...", args.pir_data_dir);
-    let serving = pir_server::load_serving_state(&args.pir_data_dir)?;
-    if let Some(h) = serving.metadata.height {
-        metrics::served_height_set(h);
-    }
-
-    // Spawn the snapshot-stale watchdog only after `served_height` is
-    // populated; otherwise the first tick would always observe
-    // `served=0` and start a false stale episode.
-    //
-    // We gate on BOTH a non-zero threshold (kill-switch for ops) AND a
-    // configured SENTRY_DSN. Without a DSN, `sentry::capture_message`
-    // is a no-op, so ticking forever would burn CPU and update the
-    // `nf_snapshot_stale_seconds` gauge without ever paging anyone —
-    // that's strictly worse than running cleanly and silently.
-    // Local-dev and bench runs (no DSN, no Sentry project) therefore
-    // get a quiet server; production hosts always have the DSN pinned
-    // in /opt/nf-ingest/.env so the watchdog is on by default there.
-    let dsn_configured = !args.sentry_dsn.trim().is_empty();
-    if args.stale_threshold_secs > 0 && dsn_configured {
-        let threshold = Duration::from_secs(args.stale_threshold_secs);
-        // Tick faster than the threshold so we don't overshoot by a
-        // full tick. Floor at 1s for sanity.
-        let raw_tick = Duration::from_secs(args.watchdog_tick_secs.max(1));
-        let tick = raw_tick.min(threshold);
-        eprintln!(
-            "snapshot watchdog: tick={}s threshold={}s",
-            tick.as_secs(),
-            threshold.as_secs(),
-        );
-        watchdog::spawn(tick, threshold);
-    } else if args.stale_threshold_secs == 0 {
-        eprintln!("snapshot watchdog: disabled (stale_threshold_secs=0)");
-    } else {
-        // stale_threshold_secs > 0 but SENTRY_DSN is empty.
-        eprintln!(
-            "snapshot watchdog: disabled (no SENTRY_DSN configured; \
-             set SENTRY_DSN to enable alerting)"
-        );
-    }
-
-    tx.finish();
-    sentry::capture_message("nf-server started", sentry::Level::Info);
-
     let state = Arc::new(AppState {
-        phase: RwLock::new(ServerPhase::Serving),
-        serving: RwLock::new(Some(serving)),
+        phase: RwLock::new(ServerPhase::Starting {
+            progress: "initializing".to_string(),
+        }),
+        serving: RwLock::new(None),
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         data_dir: args.data_dir.clone(),
         pir_data_dir: args.pir_data_dir.clone(),
         lwd_urls,
-        chain_url: args.chain_url,
+        chain_url: args.chain_url.clone(),
         next_req_id: AtomicU64::new(0),
         inflight_requests: AtomicUsize::new(0),
     });
@@ -209,6 +133,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/snapshot/status", get(rebuild::get_snapshot_status))
         .route("/metrics", get(metrics::handle_metrics))
         .route("/health", get(handlers::get_health))
+        .route("/ready", get(handlers::get_ready))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .layer(cors)
         .layer(
@@ -216,11 +141,162 @@ pub async fn run(args: Args) -> Result<()> {
                 .layer(sentry_tower::NewSentryLayer::new_from_top())
                 .layer(sentry_tower::SentryHttpLayer::with_transaction()),
         )
-        .with_state(state);
+        .with_state(Arc::clone(&state));
 
     let addr = format!("0.0.0.0:{}", args.port);
-    eprintln!("Listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("Listening on {addr}");
+
+    let warm_state = Arc::clone(&state);
+    let warm_data_dir = args.data_dir.clone();
+    let warm_pir_dir = args.pir_data_dir.clone();
+    let warm_stale_threshold_secs = args.stale_threshold_secs;
+    let warm_watchdog_tick_secs = args.watchdog_tick_secs;
+    let warm_sentry_dsn = args.sentry_dsn.clone();
+    // Self-bootstrap from the published snapshot CDN before we try to
+    // load tier files. On a fresh host this populates `pir_data_dir/`
+    // from scratch; on an existing host this is a no-op when the local
+    // pir_root.json already matches voting-config.snapshot_height.
+    let warm_bootstrap_cfg = bootstrap::Config {
+        voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
+        precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
+        pir_data_dir: args.pir_data_dir.clone(),
+        http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
+    };
+    // Hold `rebuild_lock` for the entire duration of the startup
+    // pipeline (index rebuild → bootstrap → load). This serialises
+    // startup against `POST /snapshot/prepare`, which also acquires
+    // this lock before touching `data_dir` / `pir_data_dir`. Without
+    // it, a prepare call arriving in the Starting window would race
+    // with `rebuild_index`, `bootstrap::run`, and `load_serving_state`
+    // on the same on-disk stores and clobber `phase` / `serving`.
+    //
+    // The prepare handler separately refuses to run unless the phase
+    // is `Serving` or `Rebuilding`, so during Starting it returns 503
+    // with a clear error instead of spinning on lock contention.
+    let startup_guard = Arc::clone(&warm_state.rebuild_lock).lock_owned().await;
+    tokio::spawn(async move {
+        let _startup_guard = startup_guard;
+        let tx =
+            sentry::start_transaction(sentry::TransactionContext::new("server-startup", "startup"));
+        sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
+
+        {
+            let mut phase = warm_state.phase.write().await;
+            *phase = ServerPhase::Starting {
+                progress: "rebuilding nullifier index".to_string(),
+            };
+        }
+        let index_result =
+            tokio::task::spawn_blocking(move || file_store::rebuild_index(&warm_data_dir)).await;
+        match index_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let msg = format!("startup index rebuild failed: {e:#}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+                return;
+            }
+            Err(e) => {
+                let msg = format!("startup index rebuild task failed: {e}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+                return;
+            }
+        }
+
+        {
+            let mut phase = warm_state.phase.write().await;
+            *phase = ServerPhase::Starting {
+                progress: "snapshot bootstrap".to_string(),
+            };
+        }
+        match bootstrap::run(&warm_bootstrap_cfg).await {
+            Ok(outcome) => eprintln!("snapshot bootstrap: {outcome:?}"),
+            Err(e) => {
+                let msg = format!("snapshot bootstrap hard error: {e:#}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+                return;
+            }
+        }
+
+        {
+            let mut phase = warm_state.phase.write().await;
+            *phase = ServerPhase::Starting {
+                progress: "loading tier files".to_string(),
+            };
+        }
+        let load =
+            tokio::task::spawn_blocking(move || pir_server::load_serving_state(&warm_pir_dir))
+                .await;
+        match load {
+            Ok(Ok(serving)) => {
+                if let Some(h) = serving.metadata.height {
+                    metrics::served_height_set(h);
+                }
+                *warm_state.serving.write().await = Some(serving);
+                *warm_state.phase.write().await = ServerPhase::Serving;
+                // Spawn the snapshot-stale watchdog only after `served_height` is
+                // populated; otherwise the first tick would always observe
+                // `served=0` and start a false stale episode.
+                //
+                // We gate on BOTH a non-zero threshold (kill-switch for ops) AND a
+                // configured SENTRY_DSN. Without a DSN, `sentry::capture_message`
+                // is a no-op, so ticking forever would burn CPU and update the
+                // `nf_snapshot_stale_seconds` gauge without ever paging anyone.
+                let dsn_configured = !warm_sentry_dsn.trim().is_empty();
+                if warm_stale_threshold_secs > 0 && dsn_configured {
+                    let threshold = Duration::from_secs(warm_stale_threshold_secs);
+                    // Tick faster than the threshold so we don't overshoot by a
+                    // full tick. Floor at 1s for sanity.
+                    let raw_tick = Duration::from_secs(warm_watchdog_tick_secs.max(1));
+                    let tick = raw_tick.min(threshold);
+                    eprintln!(
+                        "snapshot watchdog: tick={}s threshold={}s",
+                        tick.as_secs(),
+                        threshold.as_secs(),
+                    );
+                    watchdog::spawn(tick, threshold);
+                } else if warm_stale_threshold_secs == 0 {
+                    eprintln!("snapshot watchdog: disabled (stale_threshold_secs=0)");
+                } else {
+                    eprintln!(
+                        "snapshot watchdog: disabled (no SENTRY_DSN configured; \
+                         set SENTRY_DSN to enable alerting)"
+                    );
+                }
+                tx.finish();
+                sentry::capture_message("nf-server ready", sentry::Level::Info);
+            }
+            Ok(Err(e)) => {
+                let msg = format!("initial load failed: {e:#}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+            }
+            Err(e) => {
+                let msg = format!("initial load task failed: {e}");
+                *warm_state.phase.write().await = ServerPhase::Error {
+                    message: msg.clone(),
+                };
+                sentry::capture_message(&msg, sentry::Level::Error);
+                tx.finish();
+            }
+        }
+    });
+
     axum::serve(listener, app).await?;
 
     Ok(())

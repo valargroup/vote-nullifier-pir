@@ -10,6 +10,8 @@ pub(crate) use pir_server::ServingState;
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "phase")]
 pub(crate) enum ServerPhase {
+    #[serde(rename = "starting")]
+    Starting { progress: String },
     #[serde(rename = "serving")]
     Serving,
     #[serde(rename = "rebuilding")]

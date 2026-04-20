@@ -65,27 +65,33 @@ jobs:
           # Cold-start budget: snapshot self-bootstrap (~30s for the
           # ~6 GB CDN download in-region) + load_serving_state (mmaps
           # and parses ~6 GB of tier files into memory, 60-90s on the
-          # production droplets). 6 minutes leaves headroom for a
+          # production droplets). 11 minutes leaves headroom for a
           # slow link without waiting forever on a real failure.
-          command_timeout: 6m
+          command_timeout: 11m
           script: |
             set -eu
 
             echo "==> Restarting nullifier-query-server on backup"
             sudo systemctl restart nullifier-query-server
 
-            echo "==> Waiting for /health to return 200"
-            for i in $(seq 1 60); do
-              if curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
-                echo "Health check passed (attempt $i)"
+            # Gate on /ready, not /health. /health returns 200 as soon
+            # as the listener binds (liveness); /ready returns 200 only
+            # once tier files are mmapped and queries can be served.
+            # Polling /health here would let primary restart while
+            # backup is still loading, violating the "never lose both
+            # replicas" invariant of this workflow.
+            echo "==> Waiting for /ready to return 200"
+            for i in $(seq 1 120); do
+              if curl -sf --max-time 4 http://localhost:3000/ready > /dev/null; then
+                echo "Readiness check passed (attempt $i)"
                 break
               fi
-              echo "Waiting for service... attempt $i/60"
+              echo "Waiting for readiness... attempt $i/120"
               sleep 5
             done
 
-            if ! curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
-              echo "Health check FAILED after 5m"
+            if ! curl -sf --max-time 4 http://localhost:3000/ready > /dev/null; then
+              echo "Readiness check FAILED after 10m"
               sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
               sudo journalctl -u nullifier-query-server --no-pager -n 80 2>/dev/null \
                 || tail -120 /var/log/syslog 2>/dev/null | grep -i nf-server \
@@ -139,25 +145,27 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           envs: VERIFY_HEIGHT
-          command_timeout: 6m
+          command_timeout: 11m
           script: |
             set -eu
 
             echo "==> Restarting nullifier-query-server on primary"
             sudo systemctl restart nullifier-query-server
 
-            echo "==> Waiting for /health to return 200"
-            for i in $(seq 1 60); do
-              if curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
-                echo "Health check passed (attempt $i)"
+            # Gate on /ready (not /health); see the backup step for
+            # rationale.
+            echo "==> Waiting for /ready to return 200"
+            for i in $(seq 1 120); do
+              if curl -sf --max-time 4 http://localhost:3000/ready > /dev/null; then
+                echo "Readiness check passed (attempt $i)"
                 break
               fi
-              echo "Waiting for service... attempt $i/60"
+              echo "Waiting for readiness... attempt $i/120"
               sleep 5
             done
 
-            if ! curl -sf --max-time 4 http://localhost:3000/health > /dev/null; then
-              echo "Health check FAILED after 5m"
+            if ! curl -sf --max-time 4 http://localhost:3000/ready > /dev/null; then
+              echo "Readiness check FAILED after 10m"
               sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
               sudo journalctl -u nullifier-query-server --no-pager -n 80 2>/dev/null \
                 || tail -120 /var/log/syslog 2>/dev/null | grep -i nf-server \

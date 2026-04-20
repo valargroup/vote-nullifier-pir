@@ -63,6 +63,31 @@ pub(crate) async fn post_snapshot_prepare(
             .into_response();
     }
 
+    // Refuse to start a rebuild unless we're in a steady Serving state.
+    // During Starting, the startup task holds `rebuild_lock` and the
+    // on-disk snapshot / index may still be changing; kicking off a
+    // concurrent rebuild would race with `file_store::rebuild_index`,
+    // `bootstrap::run`, and `load_serving_state` on the same
+    // directories. During Error the server is degraded and rebuild
+    // cannot assume a consistent baseline. Both cases map to 503 with
+    // the current phase so callers can back off and retry.
+    {
+        let phase = state.phase.read().await;
+        if !matches!(
+            *phase,
+            ServerPhase::Serving | ServerPhase::Rebuilding { .. }
+        ) {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "error": "server not ready for rebuild",
+                    "current": *phase,
+                })),
+            )
+                .into_response();
+        }
+    }
+
     let rebuild_guard = match Arc::clone(&state.rebuild_lock).try_lock_owned() {
         Ok(guard) => guard,
         Err(_) => {
