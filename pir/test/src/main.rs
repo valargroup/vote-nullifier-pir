@@ -4,9 +4,12 @@
 //!   small   — Synthetic 1000-nullifier tree, full round-trip (~5s)
 //!   local   — Full in-process test with real nullifiers (no HTTP, no YPIR crypto)
 //!   server  — Test against a running pir-server instance (HTTP + YPIR crypto)
+//!   load    — Drive concurrent PIR traffic for load testing
+
+mod load;
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -82,6 +85,57 @@ enum Command {
         #[arg(long)]
         config: Option<String>,
     },
+
+    /// Drive concurrent PIR traffic against a running server for load testing.
+    Load {
+        /// Server URL (e.g., http://localhost:3000).
+        #[arg(long)]
+        url: String,
+
+        /// Path to nullifiers.bin (to know which values to query).
+        #[arg(long)]
+        nullifiers: PathBuf,
+
+        /// Number of concurrent workers (closed-loop mode, default).
+        #[arg(long, default_value = "8")]
+        concurrency: usize,
+
+        /// Target requests per second (open-loop mode). If omitted, uses closed-loop.
+        #[arg(long)]
+        rps: Option<f64>,
+
+        /// Max in-flight requests for open-loop mode.
+        #[arg(long, default_value = "256")]
+        max_inflight: usize,
+
+        /// How long to sustain load.
+        #[arg(long, default_value = "60s", value_parser = parse_duration)]
+        duration: Duration,
+
+        /// Warmup period before timed measurement begins.
+        #[arg(long, default_value = "10s", value_parser = parse_duration)]
+        warmup: Duration,
+
+        /// Write JSON summary to this path.
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+
+        /// Skip proof verification (only measure transport + crypto latency).
+        #[arg(long, default_value_t = false)]
+        no_verify: bool,
+
+        /// Deterministic RNG seed for query selection.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Fail if error rate exceeds this fraction (0.0–1.0).
+        #[arg(long, default_value = "0.01")]
+        max_error_rate: f64,
+
+        /// Fail if end-to-end p99 exceeds this many milliseconds.
+        #[arg(long)]
+        slo_p99_ms: Option<f64>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -105,7 +159,41 @@ fn main() -> Result<()> {
         Command::VerifyYpir => run_verify_ypir(),
         Command::Bench { num_queries } => run_bench(num_queries),
         Command::BenchSplits { num_queries, config } => run_bench_splits(num_queries, config),
+        Command::Load {
+            url,
+            nullifiers,
+            concurrency,
+            rps,
+            max_inflight,
+            duration,
+            warmup,
+            json_out,
+            no_verify,
+            seed,
+            max_error_rate,
+            slo_p99_ms,
+        } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(load::run(load::LoadConfig {
+                url,
+                nullifiers_path: nullifiers,
+                concurrency,
+                rps,
+                max_inflight,
+                duration,
+                warmup,
+                json_out,
+                no_verify,
+                seed,
+                max_error_rate,
+                slo_p99_ms,
+            }))
+        }
     }
+}
+
+fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {
+    humantime::parse_duration(s)
 }
 
 // ── Small mode ───────────────────────────────────────────────────────────────

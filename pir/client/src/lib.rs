@@ -29,41 +29,41 @@ use ypir::client::YPIRClient;
 
 /// Per-tier timing breakdown for a single YPIR query, measuring each stage
 /// of the client-server round trip.
-struct TierTiming {
+pub struct TierTiming {
     /// Client-side YPIR query generation time.
-    gen_ms: f64,
+    pub gen_ms: f64,
     /// Size of the uploaded query payload.
-    upload_bytes: usize,
+    pub upload_bytes: usize,
     /// Size of the downloaded encrypted response.
-    download_bytes: usize,
+    pub download_bytes: usize,
     /// Wall-clock round-trip time (upload + server compute + download).
-    rtt_ms: f64,
+    pub rtt_ms: f64,
     /// Client-side YPIR response decryption time.
-    decode_ms: f64,
+    pub decode_ms: f64,
     /// Server-assigned request ID (from response header).
-    server_req_id: Option<u64>,
+    pub server_req_id: Option<u64>,
     /// Server-reported total processing time.
-    server_total_ms: Option<f64>,
+    pub server_total_ms: Option<f64>,
     /// Server-reported query validation time.
-    server_validate_ms: Option<f64>,
+    pub server_validate_ms: Option<f64>,
     /// Server-reported decode+copy time.
-    server_decode_copy_ms: Option<f64>,
+    pub server_decode_copy_ms: Option<f64>,
     /// Server-reported YPIR online computation time.
-    server_compute_ms: Option<f64>,
+    pub server_compute_ms: Option<f64>,
     /// Estimated network + queue latency (RTT minus server time).
-    net_queue_ms: Option<f64>,
+    pub net_queue_ms: Option<f64>,
     /// Estimated upload-to-server latency.
-    upload_to_server_ms: Option<f64>,
+    pub upload_to_server_ms: Option<f64>,
     /// Estimated download-from-server latency.
-    download_from_server_ms: f64,
+    pub download_from_server_ms: f64,
 }
 
 /// Per-note timing breakdown covering both tier 1 and tier 2 YPIR queries.
-struct NoteTiming {
-    tier1: TierTiming,
-    tier2: TierTiming,
+pub struct NoteTiming {
+    pub tier1: TierTiming,
+    pub tier2: TierTiming,
     /// Total wall-clock time for this note's proof retrieval.
-    total_ms: f64,
+    pub total_ms: f64,
 }
 
 // ── HTTP-based PIR client ────────────────────────────────────────────────────
@@ -242,6 +242,15 @@ impl PirClient {
     pub async fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
         let (proof, _timing) = self.fetch_proof_inner(nullifier).await?;
         Ok(proof)
+    }
+
+    /// Like [`fetch_proof`](Self::fetch_proof) but also returns the full
+    /// client+server timing breakdown for load-testing / observability.
+    pub async fn fetch_proof_with_timing(
+        &self,
+        nullifier: Fp,
+    ) -> Result<(ImtProofData, NoteTiming)> {
+        self.fetch_proof_inner(nullifier).await
     }
 
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
