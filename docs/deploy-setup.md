@@ -258,8 +258,8 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 
 | Secret | Used by | Description |
 |--------|---------|-------------|
-| `PIR_PRIMARY_HOST` | `deploy.yml` | Hostname or IP of the PIR primary server. |
-| `PIR_BACKUP_HOST` | `deploy.yml` | Hostname or IP of the PIR backup server. |
+| `PIR_PRIMARY_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR primary server. |
+| `PIR_BACKUP_HOST` | `deploy.yml`, `restart.yml`, `publish-snapshot.yml` | Hostname or IP of the PIR backup server. |
 | `DEPLOY_HOST` | `resync.yml` | Hostname or IP of the resync target (typically the primary). |
 | `DEPLOY_USER` | all | SSH username on the remote hosts. |
 | `SSH_KEY` | all | SSH private key for authentication. |
@@ -297,10 +297,15 @@ sudo systemctl start nullifier-query-server
 
 Edit `voting-config.json`'s `snapshot_height`, run
 [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/publish-snapshot.yml)
-for the new height, and rolling-restart the fleet. See the [operator
-runbook][runbook] for the full procedure. The old per-host
-`resync.yml` / `nf-resync.timer` flow is no longer required and was
-removed from `vote-infrastructure/cloud-init/pir.yaml`.
+for the new height, then trigger
+[`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/restart.yml)
+to roll the fleet (backup-then-primary, with per-host
+`served_height == expected_height` verification). See the
+[in-repo restart runbook](runbooks/restart-pir-fleet.md) for the
+restart step in detail, or the [end-to-end operator runbook][runbook]
+for the full bump procedure. The old per-host `resync.yml` /
+`nf-resync.timer` flow is no longer required and was removed from
+`vote-infrastructure/cloud-init/pir.yaml`.
 
 ### Changing deploy path or restart command
 
@@ -309,7 +314,9 @@ removed from `vote-infrastructure/cloud-init/pir.yaml`.
 
 ### Manual runs
 
-Both `deploy.yml` and `resync.yml` support `workflow_dispatch`, so you can trigger them from **Actions > Run workflow** without pushing to `main`.
+`deploy.yml`, `restart.yml`, `publish-snapshot.yml`, and `resync.yml`
+all support `workflow_dispatch`, so you can trigger them from
+**Actions > Run workflow** without pushing to `main`.
 
 ### Test locally
 
@@ -341,15 +348,19 @@ flowchart LR
     release --> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
     deploy --> health["health check\nlocalhost:3000/health"]
     manual["workflow_dispatch"] -.-> deploy
-    resync["resync.yml\ningest + export + restart"] -.-> pirHost["PIR host"]
+    publish["publish-snapshot.yml\ningest + export + upload\nto DO Spaces"] -.-> bucket["snapshots/<height>/"]
+    restart["restart.yml\nbackup → primary\nrolling restart"] -.-> pirHosts["PIR hosts\n(self-bootstrap from bucket)"]
+    bucket -.-> pirHosts
+    resync["resync.yml (legacy)\ningest + export + restart"] -.-> pirHost["single PIR host"]
 ```
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
-| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs health check. Supports deploying to primary, backup, or both. |
+| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs health check. Supports deploying to primary, backup, or both. Hosts run **in parallel** in the matrix. |
 | [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (with optional `height` input) | Runs ingest + export on `PIR_BACKUP_HOST`, builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
-| [`resync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/resync.yml) | Manual `workflow_dispatch` | **Legacy** ingest + export + restart on a single host. Superseded by `publish-snapshot.yml` plus `nf-server`'s startup self-bootstrap; kept for emergencies. |
+| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/health` and `nf_snapshot_served_height == nf_snapshot_expected_height`, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`runbooks/restart-pir-fleet.md`](runbooks/restart-pir-fleet.md). |
+| [`resync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/resync.yml) | Manual `workflow_dispatch` | **Legacy** ingest + export + restart on a single host. Superseded by `publish-snapshot.yml` + `restart.yml`; kept for emergencies. |
 
 ---
 
