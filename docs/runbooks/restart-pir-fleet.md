@@ -43,10 +43,12 @@ snapshot.
 For each host the SSH session:
 
 1. `sudo systemctl restart nullifier-query-server`
-2. polls `http://localhost:3000/health` every 5 s for up to 5 minutes
+2. polls `http://localhost:3000/ready` every 5 s for up to 10 minutes
    (the cold-start budget is ~30 s for the in-region snapshot
    download from DO Spaces, plus 60–90 s to mmap and parse the
-   ~6 GB of tier files into memory),
+   ~6 GB of tier files into memory; `/ready` only returns 200 once
+   tier files are mmapped and queries can be served, whereas
+   `/health` returns 200 as soon as the listener binds),
 3. reads `nf_snapshot_served_height` and `nf_snapshot_expected_height`
    from `/metrics`, and
 4. fails the job if convergence checks are enabled and `served < expected`.
@@ -98,7 +100,7 @@ Both should report identical heights and roots.
 
 | Symptom | Likely cause | Recovery |
 |---------|--------------|----------|
-| `restart_backup` job times out at the health-check loop | Snapshot bootstrap couldn't fetch from `vote.fra1.digitaloceanspaces.com` (network / 5xx), or sha256 mismatch on a tier file. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
+| `restart_backup` job times out at the readiness-check loop | Snapshot bootstrap couldn't fetch from `vote.fra1.digitaloceanspaces.com` (network / 5xx), sha256 mismatch on a tier file, or `load_serving_state` is still mmapping after 10 min. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
 | `restart_primary` job is skipped after `restart_backup` failed | By design — the workflow refuses to restart primary while backup is unhealthy. | Fix backup first (see row above). Once backup is healthy, run the workflow again with `targets=primary`. |
 | Job fails with `nf_snapshot_expected_height is 0` | `voting-config.json` couldn't be fetched, or the live config has no `snapshot_height` field. | `curl -s https://valargroup.github.io/token-holder-voting-config/voting-config.json \| jq .snapshot_height` from a laptop. If empty, fix the published config. If non-empty, ssh in and check `SVOTE_VOTING_CONFIG_URL` in `/etc/default/nf-server`. |
 | Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI https://vote.fra1.digitaloceanspaces.com/snapshots/<expected>/manifest.json`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
@@ -119,8 +121,11 @@ done
 # Backup first
 ssh root@pir-backup.valargroup.org sudo systemctl restart nullifier-query-server
 
-# Wait for backup to be healthy AND on the new height before touching primary
-until [ "$(curl -sf https://pir-backup.valargroup.org/health 2>/dev/null | jq -r .status 2>/dev/null)" = "ok" ]; do
+# Wait for backup to be ready (tier files mmapped) AND on the new
+# height before touching primary. /ready — not /health — is the
+# gate: /health returns 200 as soon as the listener binds, whereas
+# /ready only flips to 200 once queries can be served.
+until curl -sf --max-time 4 https://pir-backup.valargroup.org/ready > /dev/null; do
     echo "waiting for backup..."; sleep 5
 done
 ssh root@pir-backup.valargroup.org \
@@ -129,7 +134,7 @@ ssh root@pir-backup.valargroup.org \
 
 # Primary
 ssh root@pir-primary.valargroup.org sudo systemctl restart nullifier-query-server
-until [ "$(curl -sf https://pir-primary.valargroup.org/health 2>/dev/null | jq -r .status 2>/dev/null)" = "ok" ]; do
+until curl -sf --max-time 4 https://pir-primary.valargroup.org/ready > /dev/null; do
     echo "waiting for primary..."; sleep 5
 done
 ```
