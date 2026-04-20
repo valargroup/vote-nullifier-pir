@@ -47,32 +47,36 @@ sudo mv "nf-server-${PLATFORM}" nf-server
 sudo chmod +x nf-server
 ```
 
-### 2. Bootstrap nullifier data
+### 2. Configure the snapshot bootstrap
 
-Download the nullifier snapshot (first run only):
-
-```bash
-cd /opt/nf-ingest
-BOOTSTRAP_URL="https://vote.fra1.digitaloceanspaces.com"
-
-curl -fLO "${BOOTSTRAP_URL}/nullifiers.bin"
-curl -fLO "${BOOTSTRAP_URL}/nullifiers.checkpoint"
-curl -fLO "${BOOTSTRAP_URL}/nullifiers.tree"
-```
-
-### 3. Run the ingest + export pipeline
+Tell `nf-server` where to find the published voting-config and the
+pre-computed snapshot bucket. Both have production defaults baked into
+the binary; pinning them here keeps the deployment self-documenting and
+lets you redirect to a staging mirror without rebuilding.
 
 ```bash
-cd /opt/nf-ingest
-
-# Ingest latest nullifiers from lightwalletd
-./nf-server ingest --data-dir . --lwd-url https://zec.rocks:443
-
-# Export PIR tier files (creates pir-data/ directory)
-./nf-server export --data-dir . --output-dir ./pir-data
+sudo tee /etc/default/nf-server <<'EOF'
+SVOTE_VOTING_CONFIG_URL=https://valargroup.github.io/token-holder-voting-config/voting-config.json
+SVOTE_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
+EOF
 ```
 
-### 4. Install the systemd service
+That is the entire bootstrap step. On startup, `nf-server` reads
+`voting-config.snapshot_height` and downloads
+`<bucket>/snapshots/<height>/{manifest.json,tier*.bin,pir_root.json}`,
+verifies sha256 against the manifest, and atomically swaps into
+`/opt/nf-ingest/pir-data/`. There is no manual ingest, no manual
+export, and no separate cron-driven re-sync — the next bump is just a
+config PR plus a `systemctl restart` (see [the runbook][runbook]).
+
+> The legacy first-boot flow (`curl` the raw `nullifiers.{bin,checkpoint,tree}`,
+> run `nf-server ingest`, then `nf-server export`) still works on
+> offline / dev machines: set `SVOTE_VOTING_CONFIG_URL=` (empty string)
+> and the binary will skip the bootstrap and serve whatever is on disk.
+
+[runbook]: https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html
+
+### 3. Install the systemd service
 
 ```bash
 sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/
@@ -81,22 +85,13 @@ sudo systemctl enable nullifier-query-server
 sudo systemctl start nullifier-query-server
 ```
 
-Verify the service is running:
+Verify the service is running and serving the expected snapshot:
 
 ```bash
 sudo systemctl status nullifier-query-server
 curl http://localhost:3000/health
-```
-
-### 5. Periodic re-sync (cron)
-
-Set up a cron job or systemd timer to keep nullifiers up to date:
-
-```bash
-# Example: re-sync every 6 hours
-cat <<'EOF' | sudo tee /etc/cron.d/nf-resync
-0 */6 * * * root cd /opt/nf-ingest && ./nf-server ingest --data-dir . --lwd-url https://zec.rocks:443 --invalidate && ./nf-server export --data-dir . --output-dir ./pir-data && systemctl restart nullifier-query-server
-EOF
+curl -s http://localhost:3000/root | jq .
+curl -s http://localhost:3000/metrics | grep -E 'nf_snapshot_(served|expected)_height'
 ```
 
 ---
@@ -200,8 +195,9 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 
 The `nf-server serve` subcommand starts the PIR HTTP server. It needs:
 
-- **Nullifier data**: `nullifiers.bin` and `nullifiers.checkpoint` in the data directory.
-- **PIR data**: Exported tier files in `pir-data/` (produced by `nf-server export`).
+- **PIR data**: Exported tier files in `pir-data/`. Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server export`.
+- **Bootstrap config**: `SVOTE_VOTING_CONFIG_URL` and `SVOTE_PRECOMPUTED_BASE_URL` env vars (compiled-in defaults point at production). Set the former to an empty string to disable the bootstrap entirely.
+- **Nullifier data** (only on the publisher host that runs `publish-snapshot.yml`): `nullifiers.bin` and `nullifiers.checkpoint` in `--data-dir`. PIR-only replicas no longer need these.
 - **Port**: Configurable via `--port` (default 3000).
 
 A systemd unit file is provided at `docs/nullifier-query-server.service`. Copy to `/etc/systemd/system/`:
@@ -213,17 +209,14 @@ sudo systemctl enable nullifier-query-server
 sudo systemctl start nullifier-query-server
 ```
 
-**Ingest (periodic sync)**
+**Bumping to a new snapshot**
 
-Run `nf-server ingest` periodically (cron or systemd timer) to sync new nullifiers:
-
-```bash
-/opt/nf-ingest/nf-server ingest \
-    --data-dir /opt/nf-ingest \
-    --lwd-url https://zec.rocks:443
-```
-
-After ingest, re-export with `nf-server export` and restart the serve process, or use the `resync.yml` workflow to do all three steps remotely.
+Edit `voting-config.json`'s `snapshot_height`, run
+[`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/publish-snapshot.yml)
+for the new height, and rolling-restart the fleet. See the [operator
+runbook][runbook] for the full procedure. The old per-host
+`resync.yml` / `nf-resync.timer` flow is no longer required and was
+removed from `vote-infrastructure/cloud-init/pir.yaml`.
 
 ### Changing deploy path or restart command
 
@@ -271,7 +264,8 @@ flowchart LR
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs health check. Supports deploying to primary, backup, or both. |
-| [`resync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/resync.yml) | Manual `workflow_dispatch` | SSHes to the deploy host and runs the full ingest/export/restart pipeline. Optional `max_height` input to stop at a specific block. Also runs automatically on PIR hosts via `nf-resync.timer` (default: daily at 03:00 UTC). |
+| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (with optional `height` input) | Runs ingest + export on `PIR_BACKUP_HOST`, builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
+| [`resync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/resync.yml) | Manual `workflow_dispatch` | **Legacy** ingest + export + restart on a single host. Superseded by `publish-snapshot.yml` plus `nf-server`'s startup self-bootstrap; kept for emergencies. |
 
 ---
 
@@ -290,5 +284,11 @@ DNS records:
 
 Cloud-init templates in `vote-infrastructure/cloud-init/pir.yaml` handle first-boot
 provisioning: install Caddy, mount the block volume, download `nf-server` from a
-GitHub release, bootstrap snapshot data from DO Spaces, and start a systemd timer for
-periodic re-sync.
+GitHub release, write `/etc/default/nf-server` with the bootstrap config
+(`SVOTE_VOTING_CONFIG_URL`, `SVOTE_PRECOMPUTED_BASE_URL`), and start the service.
+First-boot snapshot population and subsequent height bumps both go through
+`nf-server`'s built-in self-bootstrap from the published bucket — there is no
+longer a curl-based pre-stage step or a periodic `nf-resync.timer`. See the
+[operator runbook][runbook] for the snapshot-bump procedure.
+
+[runbook]: https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html
