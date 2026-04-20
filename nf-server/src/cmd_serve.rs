@@ -152,6 +152,7 @@ pub async fn run(args: Args) -> Result<()> {
     let warm_pir_dir = args.pir_data_dir.clone();
     let warm_stale_threshold_secs = args.stale_threshold_secs;
     let warm_watchdog_tick_secs = args.watchdog_tick_secs;
+    let warm_sentry_dsn = args.sentry_dsn.clone();
     // Self-bootstrap from the published snapshot CDN before we try to
     // load tier files. On a fresh host this populates `pir_data_dir/`
     // from scratch; on an existing host this is a no-op when the local
@@ -234,9 +235,14 @@ pub async fn run(args: Args) -> Result<()> {
                 *warm_state.phase.write().await = ServerPhase::Serving;
                 // Spawn the snapshot-stale watchdog only after `served_height` is
                 // populated; otherwise the first tick would always observe
-                // `served=0` and start a false stale episode. A zero threshold
-                // disables the watchdog entirely (kill-switch for ops).
-                if warm_stale_threshold_secs > 0 {
+                // `served=0` and start a false stale episode.
+                //
+                // We gate on BOTH a non-zero threshold (kill-switch for ops) AND a
+                // configured SENTRY_DSN. Without a DSN, `sentry::capture_message`
+                // is a no-op, so ticking forever would burn CPU and update the
+                // `nf_snapshot_stale_seconds` gauge without ever paging anyone.
+                let dsn_configured = !warm_sentry_dsn.trim().is_empty();
+                if warm_stale_threshold_secs > 0 && dsn_configured {
                     let threshold = Duration::from_secs(warm_stale_threshold_secs);
                     // Tick faster than the threshold so we don't overshoot by a
                     // full tick. Floor at 1s for sanity.
@@ -248,8 +254,13 @@ pub async fn run(args: Args) -> Result<()> {
                         threshold.as_secs(),
                     );
                     watchdog::spawn(tick, threshold);
-                } else {
+                } else if warm_stale_threshold_secs == 0 {
                     eprintln!("snapshot watchdog: disabled (stale_threshold_secs=0)");
+                } else {
+                    eprintln!(
+                        "snapshot watchdog: disabled (no SENTRY_DSN configured; \
+                         set SENTRY_DSN to enable alerting)"
+                    );
                 }
                 tx.finish();
                 sentry::capture_message("nf-server ready", sentry::Level::Info);
