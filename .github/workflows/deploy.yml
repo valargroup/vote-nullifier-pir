@@ -104,16 +104,23 @@ jobs:
           host: ${{ secrets[matrix.host_secret] }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
+          # Cold-start budget: snapshot self-bootstrap (Phase 3, up to
+          # ~30s for a same-region 6 GB CDN download from a DO Spaces
+          # bucket) + load_serving_state which mmaps + parses ~6 GB of
+          # tier files into memory (60-90s on the production droplets).
+          # 5 minutes leaves plenty of headroom for a slow link without
+          # waiting forever on a real failure.
+          command_timeout: 6m
           script: |
-            for i in $(seq 1 12); do
+            for i in $(seq 1 60); do
               if curl -sf http://localhost:3000/health > /dev/null; then
                 echo "Health check passed on ${{ matrix.host_label }} (attempt $i)"
                 exit 0
               fi
-              echo "Waiting for service... attempt $i/12"
+              echo "Waiting for service... attempt $i/60"
               sleep 5
             done
-            echo "Health check FAILED on ${{ matrix.host_label }} after 60s"
+            echo "Health check FAILED on ${{ matrix.host_label }} after 5m"
             sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
             sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
               sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
