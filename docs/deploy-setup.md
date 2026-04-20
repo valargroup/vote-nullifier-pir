@@ -181,6 +181,21 @@ goes back to 0 the moment the host catches up.
 Both have production defaults baked in -- there is nothing to add to
 `/etc/default/nf-server` unless you want to override.
 
+**The watchdog self-disables when `SENTRY_DSN` is empty.** Without a
+DSN, `sentry::capture_message` is a no-op, so ticking forever would
+burn CPU and update `nf_snapshot_stale_seconds` without ever paging
+anyone. Local-dev and bench runs therefore get a quiet server; the
+production cloud-init flow always pins `SENTRY_DSN` in
+`/opt/nf-ingest/.env` via `deploy.yml`, so the watchdog is on by
+default there. Look for one of these lines in the startup log to
+confirm:
+
+```
+snapshot watchdog: tick=60s threshold=1800s
+snapshot watchdog: disabled (stale_threshold_secs=0)
+snapshot watchdog: disabled (no SENTRY_DSN configured; set SENTRY_DSN to enable alerting)
+```
+
 ### Sentry-side alert rule (one-time setup)
 
 The Sentry events are tagged for filtering:

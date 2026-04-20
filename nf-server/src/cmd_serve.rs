@@ -146,9 +146,18 @@ pub async fn run(args: Args) -> Result<()> {
 
     // Spawn the snapshot-stale watchdog only after `served_height` is
     // populated; otherwise the first tick would always observe
-    // `served=0` and start a false stale episode. A zero threshold
-    // disables the watchdog entirely (kill-switch for ops).
-    if args.stale_threshold_secs > 0 {
+    // `served=0` and start a false stale episode.
+    //
+    // We gate on BOTH a non-zero threshold (kill-switch for ops) AND a
+    // configured SENTRY_DSN. Without a DSN, `sentry::capture_message`
+    // is a no-op, so ticking forever would burn CPU and update the
+    // `nf_snapshot_stale_seconds` gauge without ever paging anyone —
+    // that's strictly worse than running cleanly and silently.
+    // Local-dev and bench runs (no DSN, no Sentry project) therefore
+    // get a quiet server; production hosts always have the DSN pinned
+    // in /opt/nf-ingest/.env so the watchdog is on by default there.
+    let dsn_configured = !args.sentry_dsn.trim().is_empty();
+    if args.stale_threshold_secs > 0 && dsn_configured {
         let threshold = Duration::from_secs(args.stale_threshold_secs);
         // Tick faster than the threshold so we don't overshoot by a
         // full tick. Floor at 1s for sanity.
@@ -160,8 +169,14 @@ pub async fn run(args: Args) -> Result<()> {
             threshold.as_secs(),
         );
         watchdog::spawn(tick, threshold);
-    } else {
+    } else if args.stale_threshold_secs == 0 {
         eprintln!("snapshot watchdog: disabled (stale_threshold_secs=0)");
+    } else {
+        // stale_threshold_secs > 0 but SENTRY_DSN is empty.
+        eprintln!(
+            "snapshot watchdog: disabled (no SENTRY_DSN configured; \
+             set SENTRY_DSN to enable alerting)"
+        );
     }
 
     tx.finish();
