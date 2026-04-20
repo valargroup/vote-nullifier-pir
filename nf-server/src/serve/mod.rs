@@ -11,3 +11,4 @@
 pub(crate) mod state;
 pub(crate) mod handlers;
 pub(crate) mod rebuild;
+pub(crate) mod watchdog;
