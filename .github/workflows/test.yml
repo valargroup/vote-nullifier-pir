@@ -35,3 +35,8 @@ jobs:
         run: |
           cargo test --lib -p imt-tree
           cargo test --lib -p nf-ingest
+          # nf-server is a binary crate; run its unit tests + the
+          # bootstrap_e2e integration suite under the `serve` feature
+          # (the only build configuration in which the bootstrap and
+          # /metrics modules are compiled in).
+          cargo test -p nf-server --features serve

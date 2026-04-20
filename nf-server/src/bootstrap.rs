@@ -454,8 +454,6 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    use std::collections::BTreeMap;
-
     use tempfile::TempDir;
 
     fn write_pir_root(dir: &Path, height: Option<u64>) {
@@ -563,24 +561,4 @@ mod tests {
         assert_eq!(keys, ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]);
     }
 
-    fn write_manifest(dir: &Path, height: u64, files: BTreeMap<String, ManifestFile>) {
-        let m = serde_json::json!({
-            "schema_version": 1,
-            "height": height,
-            "created_at": "x",
-            "files": files.into_iter().map(|(k, v)| (k, serde_json::json!({
-                "size": v.size,
-                "sha256": v.sha256,
-            }))).collect::<serde_json::Map<_, _>>(),
-        });
-        std::fs::write(dir.join("manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-    }
-
-    #[test]
-    fn write_manifest_helper_compiles() {
-        // Helper is exercised by the integration test below; this no-op
-        // avoids dead-code warnings if the integration test is gated.
-        let tmp = TempDir::new().unwrap();
-        write_manifest(tmp.path(), 0, BTreeMap::new());
-    }
 }

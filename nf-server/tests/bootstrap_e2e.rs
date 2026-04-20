@@ -251,11 +251,12 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
 }
 
 #[tokio::test]
-async fn wrong_height_manifest_falls_through() {
+async fn missing_remote_snapshot_falls_through() {
     let bucket = MockBucket::default();
     let h = 300u64;
     stage_snapshot(&bucket, h);
-    // Voting-config asks for h+10, but only h is published.
+    // Voting-config asks for h+10, but only h is published — the
+    // bootstrap will hit a 404 on `/snapshots/{h+10}/manifest.json`.
     stage_voting_config(&bucket, Some(h + 10));
     let (base, _shutdown) = spawn_mock(bucket).await;
 
@@ -268,7 +269,64 @@ async fn wrong_height_manifest_falls_through() {
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
-    matches!(outcome, Outcome::FellThrough { .. });
+    assert!(
+        matches!(outcome, Outcome::FellThrough { .. }),
+        "expected FellThrough when manifest at requested height is missing, got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn manifest_height_mismatch_falls_through() {
+    // A more subtle case than `missing_remote_snapshot_falls_through`:
+    // the manifest IS reachable at the requested URL but its embedded
+    // `height` field disagrees with the URL. This is the
+    // "publisher uploaded under the wrong prefix" failure mode that
+    // the manifest-vs-URL guard in `fetch_and_install` catches before
+    // we touch the local snapshot.
+    let bucket = MockBucket::default();
+    let h = 350u64;
+    stage_snapshot(&bucket, h);
+    stage_voting_config(&bucket, Some(h));
+
+    // Overwrite the manifest at /snapshots/h/manifest.json with one
+    // whose embedded height claims h+1.
+    let bogus_manifest = serde_json::json!({
+        "schema_version": 1,
+        "height": h + 1,
+        "created_at": "2026-01-01T00:00:00Z",
+        "files": {
+            "tier0.bin":     { "size": 1, "sha256": "00" },
+            "tier1.bin":     { "size": 1, "sha256": "00" },
+            "tier2.bin":     { "size": 1, "sha256": "00" },
+            "pir_root.json": { "size": 1, "sha256": "00" }
+        }
+    });
+    bucket.put(
+        &format!("/snapshots/{h}/manifest.json"),
+        "application/json",
+        serde_json::to_vec(&bogus_manifest).unwrap(),
+    );
+    let (base, _shutdown) = spawn_mock(bucket).await;
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = Config {
+        voting_config_url: format!("{base}/voting-config.json"),
+        precomputed_base_url: base,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    match outcome {
+        Outcome::FellThrough { reason } => assert!(
+            reason.contains("manifest height"),
+            "expected manifest-height failure, got: {reason}"
+        ),
+        other => panic!("expected FellThrough, got {other:?}"),
+    }
+    // No tier files should have been moved into pir-data.
+    assert!(!tmp.path().join("tier0.bin").exists());
+    assert!(!tmp.path().join("pir_root.json").exists());
 }
 
 #[tokio::test]
@@ -327,7 +385,10 @@ async fn voting_config_without_height_falls_through() {
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
-    matches!(outcome, Outcome::FellThrough { .. });
+    assert!(
+        matches!(outcome, Outcome::FellThrough { .. }),
+        "expected FellThrough when voting-config has no snapshot_height, got {outcome:?}"
+    );
 }
 
 #[tokio::test]
