@@ -34,17 +34,19 @@ jobs:
     name: Build and upload snapshot
     runs-on: ubuntu-latest
     steps:
-      - name: Round height down to nearest multiple of 10
+      - name: Round explicit height (if provided)
         id: round_height
         run: |
           set -euo pipefail
-          H="${{ github.event.inputs.height }}"
-          if [ -z "$H" ]; then
-            H=$(curl -sf "https://api.blockchair.com/zcash/stats" | jq -r '.data.best_block_height')
+          RAW="${{ github.event.inputs.height }}"
+          if [ -n "$RAW" ]; then
+            H=$(( (RAW / 10) * 10 ))
+            echo "value=$H" >> "$GITHUB_OUTPUT"
+            echo "Target height (explicit): $H"
+          else
+            echo "value=" >> "$GITHUB_OUTPUT"
+            echo "Target height: latest chain tip (determined after ingest)"
           fi
-          ROUNDED=$(( (H / 10) * 10 ))
-          echo "value=$ROUNDED" >> "$GITHUB_OUTPUT"
-          echo "Target height: $ROUNDED"
 
       - name: Build snapshot, upload to DO Spaces, verify
         uses: appleboy/ssh-action@v1.0.3
@@ -60,8 +62,8 @@ jobs:
           script: |
             set -euo pipefail
 
-            H=${{ steps.round_height.outputs.value }}
-            STAGE="/tmp/snap-$H"
+            REQUESTED_H="${{ steps.round_height.outputs.value }}"
+            STAGE="/tmp/snap-build-$$"
             BUCKET="${{ env.DO_BUCKET }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
@@ -85,25 +87,47 @@ jobs:
             use_https = True
             EOF
 
-            echo "==> Ingest nullifiers up to height $H (from chain tip)"
+            echo "==> Ingest nullifiers"
             cd "${{ env.DEPLOY_PATH }}"
-            ./nf-server ingest \
-              --data-dir "${{ env.DEPLOY_PATH }}" \
-              --lwd-url https://zec.rocks:443 \
-              --invalidate \
-              --max-height "$H"
+            if [ -n "$REQUESTED_H" ]; then
+              echo "    up to explicit height $REQUESTED_H"
+              ./nf-server ingest \
+                --data-dir "${{ env.DEPLOY_PATH }}" \
+                --lwd-url https://zec.rocks:443 \
+                --invalidate \
+                --max-height "$REQUESTED_H"
+            else
+              echo "    to latest chain tip"
+              ./nf-server ingest \
+                --data-dir "${{ env.DEPLOY_PATH }}" \
+                --lwd-url https://zec.rocks:443 \
+                --invalidate
+            fi
 
-            echo "==> Export tier files to staging dir $STAGE (does not touch live pir-data/)"
+            echo "==> Export tier files to staging dir $STAGE"
             rm -rf "$STAGE"
             mkdir -p "$STAGE"
-            ./nf-server export \
-              --data-dir "${{ env.DEPLOY_PATH }}" \
-              --output-dir "$STAGE"
+            if [ -n "$REQUESTED_H" ]; then
+              ./nf-server export \
+                --data-dir "${{ env.DEPLOY_PATH }}" \
+                --output-dir "$STAGE" \
+                --target-height "$REQUESTED_H"
+            else
+              ./nf-server export \
+                --data-dir "${{ env.DEPLOY_PATH }}" \
+                --output-dir "$STAGE"
+            fi
 
-            echo "==> Verify exported pir_root.json height matches input"
-            EXPORT_HEIGHT=$(jq -r '.height // empty' "$STAGE/pir_root.json")
-            if [ -z "$EXPORT_HEIGHT" ] || [ "$EXPORT_HEIGHT" != "$H" ]; then
-              echo "ERROR: pir_root.json height ($EXPORT_HEIGHT) != requested ($H)"
+            echo "==> Read height from exported pir_root.json"
+            H=$(jq -r '.height // empty' "$STAGE/pir_root.json")
+            if [ -z "$H" ]; then
+              echo "ERROR: pir_root.json is missing the height field"
+              exit 1
+            fi
+            echo "    Exported height: $H"
+
+            if [ -n "$REQUESTED_H" ] && [ "$H" != "$REQUESTED_H" ]; then
+              echo "ERROR: pir_root.json height ($H) != requested ($REQUESTED_H)"
               exit 1
             fi
 
