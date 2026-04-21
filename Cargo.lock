@@ -3718,9 +3718,8 @@ dependencies = [
 
 [[package]]
 name = "valar-spiral-rs"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce897de77f8b80c06e3457da2db3585333d2882f9e9f420ac8a79ab6e6a43f09"
+version = "0.5.1"
+source = "git+https://github.com/valargroup/spiral-rs?rev=3a5132f#3a5132f2d79b5fa1681cf66cf1d2683a0f187de6"
 dependencies = [
  "fastrand",
  "getrandom 0.2.17",
