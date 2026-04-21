@@ -13,6 +13,7 @@ members = [
 
 [patch.crates-io]
 valar-spiral-rs = { git = "https://github.com/valargroup/spiral-rs", rev = "3a5132f" }
+valar-ypir = { git = "https://github.com/valargroup/ypir", rev = "e47e6d1" }
 
 [profile.release]
 lto = "fat"
