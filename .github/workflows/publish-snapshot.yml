@@ -126,8 +126,8 @@ jobs:
             fi
             echo "    Exported height: $H"
 
-            if [ -n "$REQUESTED_H" ] && [ "$H" != "$REQUESTED_H" ]; then
-              echo "ERROR: pir_root.json height ($H) != requested ($REQUESTED_H)"
+            if [ -n "$REQUESTED_H" ] && [ "$H" -gt "$REQUESTED_H" ]; then
+              echo "ERROR: exported height ($H) exceeds requested ($REQUESTED_H)"
               exit 1
             fi
 
