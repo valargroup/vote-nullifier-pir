@@ -147,6 +147,11 @@ jobs:
               --acl-public --force --no-progress \
               --add-header="Cache-Control:no-cache, max-age=0"
 
+            echo "==> Enforce public-read ACL on all uploaded files"
+            for f in tier0.bin tier1.bin tier2.bin pir_root.json manifest.json; do
+              s3cmd -c "$S3CFG" setacl --acl-public "s3://$BUCKET/$PREFIX/$H/$f"
+            done
+
             echo "==> Verify round-trip: download manifest + tier0 over HTTPS, re-check sha256"
             VERIFY_DIR=$(mktemp -d)
             trap 'rm -f "$S3CFG"; rm -rf "$STAGE" "$VERIFY_DIR"' EXIT
