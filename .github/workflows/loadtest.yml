@@ -1,0 +1,78 @@
+# Manual load test against a running PIR server.
+# PIR endpoint URLs are resolved from the published voting-config.json.
+
+name: Load test PIR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which server to target"
+        type: choice
+        options:
+          - backup
+          - primary
+        default: backup
+      concurrency:
+        description: "Number of concurrent workers"
+        type: string
+        default: "8"
+      rps:
+        description: "Target requests/sec (open-loop). Leave empty for closed-loop."
+        type: string
+        default: ""
+      duration:
+        description: "Load phase duration (e.g. 60s, 5m)"
+        type: string
+        default: "60s"
+
+permissions:
+  contents: read
+
+env:
+  VOTING_CONFIG_URL: https://valargroup.github.io/token-holder-voting-config/voting-config.json
+
+jobs:
+  loadtest:
+    name: Load test (${{ inputs.target }}, c=${{ inputs.concurrency }}, ${{ inputs.duration }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: "true"
+
+      - name: Build pir-test
+        run: cargo build --release -p pir-test
+
+      - name: Resolve PIR endpoint from voting-config
+        run: |
+          curl -fsSL --retry 3 "$VOTING_CONFIG_URL" -o voting-config.json
+          if [ "${{ inputs.target }}" = "primary" ]; then
+            PIR_URL=$(jq -r '.pir_endpoints[0].url' voting-config.json)
+          else
+            PIR_URL=$(jq -r '.pir_endpoints[1].url' voting-config.json)
+          fi
+          echo "PIR_URL=$PIR_URL" >> "$GITHUB_ENV"
+          echo "Target: $PIR_URL"
+
+      - name: Fetch nullifiers snapshot
+        run: curl -fL --retry 3 -o nullifiers.bin https://vote.fra1.digitaloceanspaces.com/nullifiers.bin
+
+      - name: Run load test
+        run: |
+          ARGS="--url $PIR_URL --nullifiers nullifiers.bin --concurrency ${{ inputs.concurrency }} --duration ${{ inputs.duration }} --json-out summary.json"
+          if [ -n "${{ inputs.rps }}" ]; then
+            ARGS="$ARGS --rps ${{ inputs.rps }}"
+          fi
+          ./target/release/pir-test load $ARGS
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-summary
+          path: summary.json
