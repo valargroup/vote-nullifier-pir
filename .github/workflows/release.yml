@@ -141,7 +141,7 @@ jobs:
             BINARY="nf-server-${PLATFORM}/nf-server"
             if [ -f "$BINARY" ]; then
               s3cmd -c /tmp/do-spaces.s3cfg put "$BINARY" \
-                "s3://vote/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
+                "s3://vote/binaries/vote-pir/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
             fi
           done
 
