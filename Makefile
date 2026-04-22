@@ -24,7 +24,6 @@ NF_DIR      := nf-server
 DATA_DIR      ?= .
 LWD_URL       ?= https://zec.rocks:443
 PORT          ?= 3000
-BOOTSTRAP_URL ?= https://vote.fra1.digitaloceanspaces.com
 SYNC_HEIGHT   ?=
 PIR_DATA_DIR  ?= $(DATA_DIR)/pir-data
 
@@ -41,7 +40,7 @@ endif
 
 # ── Targets ──────────────────────────────────────────────────────────
 
-.PHONY: build-nf ingest ingest-resync export-nf serve bootstrap build test clean status help
+.PHONY: build-nf ingest ingest-resync export-nf serve build test clean status help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -52,18 +51,6 @@ build-nf: ## Build nf-server binary (release, nightly)
 
 build: ## Build nf-server and service library (release)
 	cd $(NF_DIR) && cargo build --release
-
-bootstrap: ## Download nullifier files from bootstrap URL if not present in DATA_DIR
-	@if [ ! -f "$(DATA_DIR)/nullifiers.checkpoint" ]; then \
-		echo "Bootstrap: nullifier files not found in $(DATA_DIR), downloading from $(BOOTSTRAP_URL)..."; \
-		mkdir -p "$(DATA_DIR)"; \
-		wget -q --show-progress -O "$(DATA_DIR)/nullifiers.bin"        "$(BOOTSTRAP_URL)/nullifiers.bin"; \
-		wget -q --show-progress -O "$(DATA_DIR)/nullifiers.checkpoint" "$(BOOTSTRAP_URL)/nullifiers.checkpoint"; \
-		wget -q --show-progress -O "$(DATA_DIR)/nullifiers.tree"       "$(BOOTSTRAP_URL)/nullifiers.tree"; \
-		echo "Bootstrap complete."; \
-	else \
-		echo "Bootstrap: nullifier files already present in $(DATA_DIR), skipping."; \
-	fi
 
 ingest: ## Ingest nullifiers incrementally up to SYNC_HEIGHT (or chain tip if unset)
 	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)

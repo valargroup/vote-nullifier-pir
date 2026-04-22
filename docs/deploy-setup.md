@@ -288,7 +288,7 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nf-ingest`.
 - Ensure the SSH user can write to that directory.
-- Either bootstrap the nullifier data (`make bootstrap`) or run an initial ingest.
+- Run an initial ingest.
 
 **Query server (PIR HTTP API)**
 
@@ -338,17 +338,14 @@ all support `workflow_dispatch`, so you can trigger them from
 From the workspace root:
 
 ```bash
-# Bootstrap nullifier data (first run only)
-make bootstrap
+# Start the server (auto-bootstrap from data in the cloud by-default)
+make serve
 
-# Or ingest from scratch
+# Ingest from scratch 
 make ingest
 
-# Export PIR tier files
+# Export PIR tier files to subsequently serve PIR queries from local data.
 make export-nf
-
-# Start the server
-make serve
 ```
 
 Then check `http://localhost:3000/health` and `http://localhost:3000/root`.

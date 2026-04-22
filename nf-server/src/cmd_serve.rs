@@ -27,26 +27,26 @@ use crate::serve::watchdog;
 #[derive(ClapArgs)]
 pub struct Args {
     /// Listen port.
-    #[arg(long, default_value = "3000")]
+    #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
 
     /// Directory containing tier0.bin, tier1.bin, tier2.bin, and pir_root.json.
-    #[arg(long, default_value = "./pir-data")]
+    #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
     pir_data_dir: PathBuf,
 
     /// Directory containing nullifiers.bin and nullifiers.checkpoint.
     /// Required for snapshot rebuilds via POST /snapshot/prepare.
-    #[arg(long, default_value = ".")]
+    #[arg(long, default_value = ".", env = "SVOTE_DATA_DIR")]
     data_dir: PathBuf,
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443")]
+    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_MAINNET_RPC_DIR")]
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
     /// If set, POST /snapshot/prepare will reject rebuilds when a round is active.
-    #[arg(long, env = "SVOTE_CHAIN_URL")]
+    #[arg(long, env = "SVOTE_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
     /// URL of the published `voting-config.json` whose `snapshot_height`
