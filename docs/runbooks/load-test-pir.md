@@ -101,9 +101,10 @@ The workflow builds `pir-test` in release mode, reads
 [`voting-config.json`](https://valargroup.github.io/token-holder-voting-config/voting-config.json),
 downloads `snapshots/<height>/manifest.json` plus `nullifiers.bin`, checks
 size and SHA-256 against the manifest, then runs the load test and uploads
-`summary.json` as a build artifact. If the snapshot was published without
-**`include_nullifier_artifacts`**, the job fails fast with an instructive
-error — re-publish that height with the flag enabled.
+`summary.json` as a build artifact. The snapshot must have been published
+with **`include_nullifier_artifacts`** so `nullifiers.bin` appears in the
+manifest; if not, the job fails fast with an instructive error — re-publish
+that height with the flag enabled.
 
 The workflow resolves the PIR base URL from the same config
 (`pir_endpoints[0]` for primary, `pir_endpoints[1]` for backup), so no
