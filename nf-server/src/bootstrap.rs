@@ -33,7 +33,8 @@
 //! rule:** whenever that URL is non-empty (the default, or any override you
 //! set), the published JSON must be fetchable over HTTP(S) and must include
 //! `snapshot_height`; otherwise [`run`] returns an error and startup stops.
-//! **Opt out:** set `--voting-config-url` / `SVOTE_VOTING_CONFIG_URL` to an
+//! **Opt out:** set `--voting-config-url` / `SVOTE_PIR_VOTING_CONFIG_URL` (or legacy
+//! `SVOTE_VOTING_CONFIG_URL`) to an
 //! **empty string** to disable bootstrap and serve only pre-staged `pir-data/`
 //! (offline dev, air-gapped hosts).
 //!
@@ -118,8 +119,8 @@ pub struct Config {
 
 impl Config {
     /// Production-default endpoints. Matches the admin UI's defaults
-    /// (`SVOTE_VOTING_CONFIG_URL` is implicit there) and svoted's
-    /// `SVOTE_PRECOMPUTED_BASE_URL` default.
+    /// (`SVOTE_PIR_VOTING_CONFIG_URL` / legacy `SVOTE_VOTING_CONFIG_URL` is implicit there) and svoted's
+    /// `SVOTE_PIR_PRECOMPUTED_BASE_URL` / legacy `SVOTE_PRECOMPUTED_BASE_URL` default.
     pub const DEFAULT_VOTING_CONFIG_URL: &'static str =
         "https://valargroup.github.io/token-holder-voting-config/voting-config.json";
     pub const DEFAULT_PRECOMPUTED_BASE_URL: &'static str =
@@ -177,7 +178,7 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
         Ok(None) => {
             metrics::bootstrap_outcome_inc("failed_voting_config");
             bail!(
-                "voting-config at {} has no snapshot_height; set SVOTE_VOTING_CONFIG_URL= or \
+                "voting-config at {} has no snapshot_height; set SVOTE_PIR_VOTING_CONFIG_URL= (or legacy SVOTE_VOTING_CONFIG_URL=) or \
                  --voting-config-url \"\" to disable bootstrap and serve pre-staged pir-data only",
                 cfg.voting_config_url
             );

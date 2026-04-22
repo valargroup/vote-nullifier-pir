@@ -7,7 +7,8 @@ Type=simple
 User=root
 WorkingDirectory=/opt/nf-ingest
 # Two env files by design: cloud-init owns /etc/default/nf-server (the
-# Phase 3 SVOTE_VOTING_CONFIG_URL / SVOTE_PRECOMPUTED_BASE_URL pins),
+# Phase 3 SVOTE_PIR_VOTING_CONFIG_URL / SVOTE_PIR_PRECOMPUTED_BASE_URL pins;
+# legacy SVOTE_VOTING_CONFIG_URL / SVOTE_PRECOMPUTED_BASE_URL still work),
 # while the deploy workflow owns /opt/nf-ingest/.env (SENTRY_DSN). The
 # leading `-` makes both optional so the unit still starts on hosts
 # that haven't been provisioned with one or the other.

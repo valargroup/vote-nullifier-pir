@@ -12,7 +12,7 @@
 # Pipeline: `make sync` → `make serve`
 # ──────────────────────────────────
 # `make sync` runs `nf-server sync` (nullifiers from lightwalletd → tree checkpoint → tiers).
-# Empty `SVOTE_VOTING_CONFIG_URL` skips voting height cap / prompts.
+# Empty `SVOTE_PIR_VOTING_CONFIG_URL` (or legacy `SVOTE_VOTING_CONFIG_URL`) skips voting height cap / prompts.
 # `SVOTE_PIR_SYNC_RESET=1` wipes nullifiers + tree + tiers before a run.
 # `make sync-invalidate` passes `--invalidate-after-blocks` (rebuild tree + tiers when new blocks were synced).
 

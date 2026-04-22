@@ -11,6 +11,7 @@ use nf_ingest::config;
 use nf_ingest::file_store;
 use nf_ingest::sync_nullifiers;
 
+use crate::pir_env;
 use crate::sync_pipeline;
 use crate::voting_config;
 
@@ -84,7 +85,9 @@ fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -
 pub struct Args {
     /// Directory for nullifiers.bin, nullifiers.checkpoint, nullifiers.index, and
     /// `nullifiers.tree` (same root passed to the tree export step).
-    #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
+    ///
+    /// Env: `SVOTE_PIR_DATA_DIR` (preferred) or legacy `SVOTE_DATA_DIR`.
+    #[arg(long, default_value = "./pir-data")]
     pir_data_dir: PathBuf,
 
     /// Directory for PIR tier files (tier0.bin, tier1.bin, tier2.bin, pir_root.json).
@@ -93,6 +96,8 @@ pub struct Args {
     output_dir: Option<PathBuf>,
 
     /// Lightwalletd endpoint URL. Overridden by LWD_URLS env (comma-separated).
+    ///
+    /// Env: `SVOTE_PIR_MAINNET_RPC_URL` (preferred) or legacy `SVOTE_MAINNET_RPC_DIR`.
     #[arg(long, default_value = "https://zec.rocks:443")]
     lwd_url: String,
 
@@ -103,7 +108,9 @@ pub struct Args {
 
     /// voting-config.json URL. When non-empty, `snapshot_height` is required
     /// and caps the sync target. Empty disables this check (offline / dev).
-    #[arg(long, env = "SVOTE_VOTING_CONFIG_URL", default_value = "")]
+    ///
+    /// Env: `SVOTE_PIR_VOTING_CONFIG_URL` (preferred) or legacy `SVOTE_VOTING_CONFIG_URL`.
+    #[arg(long, default_value = "")]
     voting_config_url: String,
 
     /// HTTP timeout for voting-config fetch.
@@ -120,7 +127,29 @@ pub struct Args {
     invalidate_after_blocks: bool,
 }
 
+impl Args {
+    fn resolve_pir_env(mut self) -> Self {
+        self.pir_data_dir = pir_env::pick_path(
+            "SVOTE_PIR_DATA_DIR",
+            "SVOTE_DATA_DIR",
+            self.pir_data_dir,
+        );
+        self.lwd_url = pir_env::pick_string_urlish(
+            "SVOTE_PIR_MAINNET_RPC_URL",
+            "SVOTE_MAINNET_RPC_DIR",
+            self.lwd_url,
+        );
+        self.voting_config_url = pir_env::pick_string_urlish(
+            "SVOTE_PIR_VOTING_CONFIG_URL",
+            "SVOTE_VOTING_CONFIG_URL",
+            self.voting_config_url,
+        );
+        self
+    }
+}
+
 pub async fn run(args: Args) -> Result<()> {
+    let args = args.resolve_pir_env();
     let nullifier_root = args.pir_data_dir.clone();
     let tier_dir = args
         .output_dir

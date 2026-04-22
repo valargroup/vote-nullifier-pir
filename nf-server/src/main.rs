@@ -7,6 +7,7 @@
 #[cfg(feature = "serve")]
 mod bootstrap;
 mod cmd_sync;
+mod pir_env;
 mod sync_pipeline;
 #[cfg(feature = "serve")]
 mod cmd_serve;
@@ -87,6 +88,8 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    let _ = tracing_subscriber::fmt().try_init();
 
     #[cfg(feature = "serve")]
     let _sentry_guard = init_sentry(&cli.command);

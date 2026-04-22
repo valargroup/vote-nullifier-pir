@@ -37,7 +37,7 @@ pub async fn fetch_required_snapshot_height(url: &str, timeout: Duration) -> Res
         .await?
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "voting-config at {url} has no snapshot_height; disable check with empty --voting-config-url / SVOTE_VOTING_CONFIG_URL"
+                "voting-config at {url} has no snapshot_height; disable check with empty --voting-config-url / SVOTE_PIR_VOTING_CONFIG_URL (or legacy SVOTE_VOTING_CONFIG_URL)"
             )
         })
 }
