@@ -22,6 +22,24 @@ There are two modes for starting up:
 
 We recommend a 4 Intel vCPU machine with AVX-512 support, 32 GB RAM, and at least 35 GB free disk.
 
+## Pre-flight check (`nf-server doctor`)
+
+Before provisioning or when debugging a host, run:
+
+```bash
+nf-server doctor
+```
+
+Use the same PIR data root as `serve` / `sync` (defaults to `./pir-data`; override with `--pir-data-dir` or `SVOTE_PIR_DATA_DIR`):
+
+```bash
+nf-server doctor --pir-data-dir /opt/nf-ingest/pir-data
+```
+
+The command prints logical CPU count, system RAM, free space on the volume backing the data directory, and (on x86_64) whether AVX-512F is visible at runtime. It compares these to the recommendations above and prints `WARN: …` lines to stderr when something is undersized or missing; **exit status is always 0** so automation and CI can run it as a smoke check without failing undersized dev machines.
+
+Production binaries should be built with `--features serve` (and `--features avx512` on capable hardware); `doctor` notes when those compile-time features are off.
+
 ## Startup time estimate
 
 Estimates assume the recommended hardware.
