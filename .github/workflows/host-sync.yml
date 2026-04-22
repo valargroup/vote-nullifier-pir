@@ -1,5 +1,6 @@
-# Run `nf-server sync` on a single deploy host, then restart the PIR service.
-# Requires repository secrets: DEPLOY_HOST, DEPLOY_USER, SSH_KEY.
+# Run `nf-server sync` on the PIR backup host, then restart the service.
+# Matches publish-snapshot.yml (backup stays the operator surface for heavy jobs).
+# Requires repository secrets: PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY.
 
 name: Host PIR data sync
 
@@ -35,7 +36,7 @@ jobs:
       - name: Sync and restart service
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
+          host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           command_timeout: 60m
