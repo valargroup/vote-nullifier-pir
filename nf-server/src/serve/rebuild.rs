@@ -69,8 +69,8 @@ pub(crate) async fn post_snapshot_prepare(
     // During Starting, the startup task holds `rebuild_lock` and the
     // on-disk snapshot / index may still be changing; kicking off a
     // concurrent rebuild would race with `file_store::rebuild_index`,
-    // `bootstrap::run`, and `load_serving_state` on the same
-    // directories. During Error the server is degraded and rebuild
+    // `bootstrap::run`, and `load_serving_state` on the same directory.
+    // During Error the server is degraded and rebuild
     // cannot assume a consistent baseline. Both cases map to 503 with
     // the current phase so callers can back off and retry.
     {
@@ -189,7 +189,6 @@ pub(crate) async fn post_snapshot_prepare(
 
 /// Run the full rebuild pipeline: nullifier sync (if needed) → tree + tiers → load.
 async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
-    let data_dir = state.data_dir.clone();
     let pir_data_dir = state.pir_data_dir.clone();
     let lwd_urls = state.lwd_urls.clone();
 
@@ -202,7 +201,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
         };
     }
 
-    let current_height = file_store::load_checkpoint(&data_dir)?
+    let current_height = file_store::load_checkpoint(&pir_data_dir)?
         .map(|(h, _)| h)
         .unwrap_or(0);
 
@@ -216,7 +215,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
             };
         }
 
-        let dd = data_dir.clone();
+        let dd = pir_data_dir.clone();
         let lwd = lwd_urls.clone();
         let state_ref = Arc::clone(&state);
         tokio::task::spawn_blocking(move || {
@@ -252,7 +251,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
         };
     }
 
-    let dd = data_dir.clone();
+    let dd = pir_data_dir.clone();
     let pd = pir_data_dir.clone();
     let state_ref = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {

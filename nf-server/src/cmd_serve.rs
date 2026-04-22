@@ -30,14 +30,11 @@ pub struct Args {
     #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
 
-    /// Directory containing tier0.bin, tier1.bin, tier2.bin, and pir_root.json.
+    /// Directory for all on-disk state: nullifiers.bin, nullifiers.checkpoint,
+    /// nullifiers.index, nullifiers.tree, tier0.bin, tier1.bin, tier2.bin, and
+    /// pir_root.json. Required for snapshot rebuilds via POST /snapshot/prepare.
     #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
     pir_data_dir: PathBuf,
-
-    /// Directory containing nullifiers.bin and nullifiers.checkpoint.
-    /// Required for snapshot rebuilds via POST /snapshot/prepare.
-    #[arg(long, default_value = ".", env = "SVOTE_DATA_DIR")]
-    data_dir: PathBuf,
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
@@ -53,7 +50,8 @@ pub struct Args {
     /// is treated as the canonical height every PIR replica should serve.
     /// Defaults to the production GitHub Pages URL; leave unset so operators
     /// pick up the baked-in default, or set `SVOTE_VOTING_CONFIG_URL=` (empty)
-    /// to disable startup self-bootstrap and serve only pre-staged `pir-data/`.
+    /// to disable startup self-bootstrap and serve only pre-staged files under
+    /// `pir_data_dir`.
     #[arg(
         long,
         env = "SVOTE_VOTING_CONFIG_URL",
@@ -111,7 +109,6 @@ pub async fn run(args: Args) -> Result<()> {
         }),
         serving: RwLock::new(None),
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
-        data_dir: args.data_dir.clone(),
         pir_data_dir: args.pir_data_dir.clone(),
         lwd_urls,
         chain_url: args.chain_url.clone(),
@@ -149,7 +146,6 @@ pub async fn run(args: Args) -> Result<()> {
     eprintln!("Listening on {addr}");
 
     let warm_state = Arc::clone(&state);
-    let warm_data_dir = args.data_dir.clone();
     let warm_pir_dir = args.pir_data_dir.clone();
     let warm_stale_threshold_secs = args.stale_threshold_secs;
     let warm_watchdog_tick_secs = args.watchdog_tick_secs;
@@ -167,7 +163,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Hold `rebuild_lock` for the entire duration of the startup
     // pipeline (index rebuild → bootstrap → load). This serialises
     // startup against `POST /snapshot/prepare`, which also acquires
-    // this lock before touching `data_dir` / `pir_data_dir`. Without
+    // this lock before touching `pir_data_dir`. Without
     // it, a prepare call arriving in the Starting window would race
     // with `rebuild_index`, `bootstrap::run`, and `load_serving_state`
     // on the same on-disk stores and clobber `phase` / `serving`.
@@ -188,8 +184,10 @@ pub async fn run(args: Args) -> Result<()> {
                 progress: "rebuilding nullifier index".to_string(),
             };
         }
+        let pir_dir_for_index = warm_pir_dir.clone();
         let index_result =
-            tokio::task::spawn_blocking(move || file_store::rebuild_index(&warm_data_dir)).await;
+            tokio::task::spawn_blocking(move || file_store::rebuild_index(&pir_dir_for_index))
+                .await;
         match index_result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -237,8 +235,9 @@ pub async fn run(args: Args) -> Result<()> {
                 progress: "loading tier files".to_string(),
             };
         }
+        let pir_dir_for_load = warm_pir_dir.clone();
         let load =
-            tokio::task::spawn_blocking(move || pir_server::load_serving_state(&warm_pir_dir))
+            tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pir_dir_for_load))
                 .await;
         match load {
             Ok(Ok(serving)) => {

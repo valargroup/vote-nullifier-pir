@@ -58,10 +58,10 @@ graph TD
 The system operates as a resumable pipeline:
 
 ```
-nf-server sync (nullifiers → nullifiers.tree → pir-data/) ──> serve ──> client query
+nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ──> client query
 ```
 
-1. **`nf-server sync`** — Streams Orchard nullifiers into `nullifiers.bin` (with checkpoint/index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json`. Reruns skip completed stages.
+1. **`nf-server sync`** — Streams Orchard nullifiers into `nullifiers.bin` (with checkpoint/index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default all under `--pir-data-dir`). Reruns skip completed stages.
 2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
 
 ## Build & Run
@@ -88,8 +88,7 @@ Override via environment variables or Make arguments:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATA_DIR` | `.` | Directory for `nullifiers.bin`, checkpoint, index, `nullifiers.tree` |
-| `PIR_DATA_DIR` | `$DATA_DIR/pir-data` | Directory for tier files |
+| `PIR_DATA_DIR` | `pir-data` | On-disk root: `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files (`SVOTE_PIR_DATA_DIR` for `nf-server`) |
 | `LWD_URL` | `https://zec.rocks:443` | Lightwalletd gRPC endpoint |
 | `PORT` | `3000` | HTTP server port |
 | `SYNC_HEIGHT` | chain tip | Sync up to this block height (must be a multiple of 10) |
@@ -102,13 +101,13 @@ See [docs/deploy-setup.md](docs/deploy-setup.md) for production deployment instr
 
 ## Storage Format
 
-All data is stored as flat binary files:
+All data is stored as flat binary files under one directory (by default `./pir-data`, overridable via `PIR_DATA_DIR` / `SVOTE_PIR_DATA_DIR`):
 
 - `nullifiers.bin` — Append-only raw 32-byte nullifier blobs
 - `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
 - `nullifiers.index` — Height-to-offset index for subset loading
 - `nullifiers.tree` — Versioned PIR Merkle checkpoint (magic `SVOTEPT1`; see `pir-export`)
-- `pir-data/` — Tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`)
+- `tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json` — PIR tier payload and root metadata
 
 ## PIR Write Ups
 

@@ -2,11 +2,12 @@
 #
 # Storage: flat binary files (no SQLite).
 #
+# Under PIR_DATA_DIR (default `pir-data/` at repo root when using Make):
 #   nullifiers.bin         – append-only raw 32-byte nullifier blobs
 #   nullifiers.checkpoint  – 16-byte (height LE, offset LE) crash-recovery marker
 #   nullifiers.index       – height → byte offset index
 #   nullifiers.tree        – v1 bincode PIR Merkle checkpoint (SVOTEPT1 magic)
-#   pir-data/              – PIR tier files (tier0.bin, tier1.bin, tier2.bin, pir_root.json)
+#   tier0/1/2.bin, pir_root.json – PIR tier payload + metadata
 #
 # Pipeline: `make sync` → `make serve`
 # ──────────────────────────────────
@@ -20,11 +21,11 @@ SERVICE_DIR := nf-ingest
 NF_DIR      := nf-server
 
 # ── Configuration (override with env vars) ───────────────────────────
-DATA_DIR      ?= .
+# Single on-disk root for nullifiers, tree checkpoint, and tier files (`SVOTE_PIR_DATA_DIR`).
+PIR_DATA_DIR ?= pir-data
 LWD_URL       ?= https://zec.rocks:443
 PORT          ?= 3000
 SYNC_HEIGHT   ?=
-PIR_DATA_DIR  ?= $(DATA_DIR)/pir-data
 
 # Validate SYNC_HEIGHT and build --max-height for `nf-server sync`.
 ifdef SYNC_HEIGHT
@@ -36,7 +37,7 @@ else
   _MAX_HEIGHT_FLAG :=
 endif
 
-_SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
+_SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
 
 # ── Targets ──────────────────────────────────────────────────────────
 
@@ -56,19 +57,19 @@ sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
 	$(_SYNC_CMD)
 
 sync-invalidate: ## Same as sync with `--invalidate-after-blocks` (rebuild tree/tiers when new blocks synced)
-	cd $(NF_DIR) && cargo run --release -- sync --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
+	cd $(NF_DIR) && cargo run --release -- sync --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
 
 serve: ## Start the PIR HTTP server
-	cd $(NF_DIR) && cargo run --release --features serve -- serve --pir-data-dir ../$(PIR_DATA_DIR) --data-dir ../$(DATA_DIR) --port $(PORT)
+	cd $(NF_DIR) && cargo run --release --features serve -- serve --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT)
 
 test: ## Run unit tests for all subcrates
 	cd $(IMT_DIR) && cargo test --lib
 	cd $(SERVICE_DIR) && cargo test --lib
 
 status: ## Show nullifier sync progress (count + checkpoint + tree file)
-	@NF="$(DATA_DIR)/nullifiers.bin"; CP="$(DATA_DIR)/nullifiers.checkpoint"; \
-	TREE="$(DATA_DIR)/nullifiers.tree"; \
-	echo "Data directory: $(DATA_DIR)"; \
+	@NF="$(PIR_DATA_DIR)/nullifiers.bin"; CP="$(PIR_DATA_DIR)/nullifiers.checkpoint"; \
+	TREE="$(PIR_DATA_DIR)/nullifiers.tree"; \
+	echo "PIR data directory: $(PIR_DATA_DIR)"; \
 	if [ -f "$$NF" ]; then \
 		SIZE=$$(ls -lh "$$NF" | awk '{print $$5}'); \
 		BYTES=$$(wc -c < "$$NF" | tr -d ' '); \
@@ -95,4 +96,6 @@ clean: ## Remove built artifacts and data files
 	cd $(IMT_DIR) && cargo clean
 	cd $(SERVICE_DIR) && cargo clean
 	cd $(NF_DIR) && cargo clean
-	rm -f $(DATA_DIR)/nullifiers.bin $(DATA_DIR)/nullifiers.checkpoint $(DATA_DIR)/nullifiers.index $(DATA_DIR)/nullifiers.tree $(DATA_DIR)/nullifiers.tree.tmp
+	rm -f $(PIR_DATA_DIR)/nullifiers.bin $(PIR_DATA_DIR)/nullifiers.checkpoint $(PIR_DATA_DIR)/nullifiers.index \
+		$(PIR_DATA_DIR)/nullifiers.tree $(PIR_DATA_DIR)/nullifiers.tree.tmp \
+		$(PIR_DATA_DIR)/tier0.bin $(PIR_DATA_DIR)/tier1.bin $(PIR_DATA_DIR)/tier2.bin $(PIR_DATA_DIR)/pir_root.json

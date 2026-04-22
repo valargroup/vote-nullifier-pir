@@ -43,8 +43,7 @@ jobs:
             cd /opt/nf-ingest && \
               export SVOTE_VOTING_CONFIG_URL= && \
               ./nf-server sync \
-                --data-dir /opt/nf-ingest \
-                --output-dir /opt/nf-ingest/pir-data \
+                --pir-data-dir /opt/nf-ingest/pir-data \
                 --lwd-url https://zec.rocks:443 \
                 --non-interactive \
                 --invalidate-after-blocks \

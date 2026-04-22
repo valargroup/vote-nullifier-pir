@@ -6,7 +6,7 @@
 //!
 //! # Modules
 //!
-//! - [`config`] — Default lightwalletd URLs and stale-file detection.
+//! - [`config`] — Default lightwalletd URLs and invalidate-after-blocks file lists.
 //! - [`download`] — gRPC connection to lightwalletd via tonic.
 //! - [`file_store`] — Flat-file nullifier storage (`nullifiers.bin`, checkpoint, index).
 //! - [`sync_nullifiers`] — Incremental chain sync engine.

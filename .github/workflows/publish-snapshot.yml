@@ -95,7 +95,7 @@ jobs:
             if [ -n "$REQUESTED_H" ]; then
               echo "    up to explicit height $REQUESTED_H"
               ./nf-server sync \
-                --data-dir "${{ env.DEPLOY_PATH }}" \
+                --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
                 --lwd-url https://zec.rocks:443 \
                 --non-interactive \
@@ -104,7 +104,7 @@ jobs:
             else
               echo "    to latest chain tip"
               ./nf-server sync \
-                --data-dir "${{ env.DEPLOY_PATH }}" \
+                --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
                 --lwd-url https://zec.rocks:443 \
                 --non-interactive \

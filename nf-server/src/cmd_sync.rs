@@ -26,7 +26,7 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn delete_sync_artifacts(data_dir: &Path, pir_data_dir: &Path) -> Result<()> {
+fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
     for name in [
         "nullifiers.bin",
         "nullifiers.checkpoint",
@@ -34,14 +34,14 @@ fn delete_sync_artifacts(data_dir: &Path, pir_data_dir: &Path) -> Result<()> {
         "nullifiers.tree",
         "nullifiers.tree.tmp",
     ] {
-        let p = data_dir.join(name);
+        let p = nullifier_root.join(name);
         if p.exists() {
             std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
         }
     }
-    std::fs::create_dir_all(pir_data_dir)?;
+    std::fs::create_dir_all(tier_dir)?;
     for name in ["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"] {
-        let p = pir_data_dir.join(name);
+        let p = tier_dir.join(name);
         if p.exists() {
             std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
         }
@@ -82,13 +82,15 @@ fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Directory containing nullifiers.bin and nullifiers.checkpoint.
-    #[arg(long, default_value = ".")]
-    data_dir: PathBuf,
+    /// Directory for nullifiers.bin, nullifiers.checkpoint, nullifiers.index, and
+    /// `nullifiers.tree` (same root passed to the tree export step).
+    #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
+    pir_data_dir: PathBuf,
 
-    /// Output directory for PIR tier files (tier0.bin, tier1.bin, tier2.bin, pir_root.json).
-    #[arg(long, default_value = "./pir-data")]
-    output_dir: PathBuf,
+    /// Directory for PIR tier files (tier0.bin, tier1.bin, tier2.bin, pir_root.json).
+    /// When omitted, defaults to `--pir-data-dir`.
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
 
     /// Lightwalletd endpoint URL. Overridden by LWD_URLS env (comma-separated).
     #[arg(long, default_value = "https://zec.rocks:443")]
@@ -119,12 +121,23 @@ pub struct Args {
 }
 
 pub async fn run(args: Args) -> Result<()> {
+    let nullifier_root = args.pir_data_dir.clone();
+    let tier_dir = args
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| nullifier_root.clone());
+
+    std::fs::create_dir_all(&nullifier_root)
+        .with_context(|| format!("create {}", nullifier_root.display()))?;
+    std::fs::create_dir_all(&tier_dir)
+        .with_context(|| format!("create {}", tier_dir.display()))?;
+
     if env_truthy(ENV_SYNC_RESET) {
         println!(
             "{} is set: clearing nullifiers + PIR tier files before sync",
             ENV_SYNC_RESET
         );
-        delete_sync_artifacts(&args.data_dir, &args.output_dir)?;
+        delete_sync_artifacts(&nullifier_root, &tier_dir)?;
     }
 
     let voting_url = args.voting_config_url.trim();
@@ -157,8 +170,8 @@ pub async fn run(args: Args) -> Result<()> {
         target = target.min(s);
     }
 
-    let data_dir = &args.data_dir;
-    let pir_dir = &args.output_dir;
+    let data_dir = &nullifier_root;
+    let pir_dir = &tier_dir;
 
     loop {
         file_store::rebuild_index(data_dir)?;
@@ -180,8 +193,8 @@ pub async fn run(args: Args) -> Result<()> {
             Some(h) => h < target,
         };
 
-        println!("Data directory: {}", data_dir.display());
-        println!("PIR output directory: {}", pir_dir.display());
+        println!("Nullifier / tree directory: {}", data_dir.display());
+        println!("Tier output directory: {}", pir_dir.display());
         println!("Target block height: {target} (chain_tip={chain_tip})");
         if needs_nullifier_sync {
             println!(
@@ -204,12 +217,16 @@ pub async fn run(args: Args) -> Result<()> {
             })
             .await?;
             if args.invalidate_after_blocks && nullifier_sync.blocks_synced > 0 {
-                for name in config::STALE_FILES {
-                    let path = if name.starts_with("pir-data/") {
-                        pir_dir.join(name.trim_start_matches("pir-data/"))
-                    } else {
-                        data_dir.join(name)
-                    };
+                for name in config::INVALIDATE_AFTER_BLOCKS_TREE_FILES {
+                    let path = data_dir.join(name);
+                    if path.exists() {
+                        std::fs::remove_file(&path)
+                            .with_context(|| format!("invalidate: remove {}", path.display()))?;
+                        println!("Deleted stale artifact: {}", path.display());
+                    }
+                }
+                for name in config::INVALIDATE_AFTER_BLOCKS_TIER_FILES {
+                    let path = pir_dir.join(name);
                     if path.exists() {
                         std::fs::remove_file(&path)
                             .with_context(|| format!("invalidate: remove {}", path.display()))?;

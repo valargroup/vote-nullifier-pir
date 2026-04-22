@@ -12,15 +12,17 @@ pub const DEFAULT_LWD_URLS: &[&str] = &[
 /// override was set), the full `DEFAULT_LWD_URLS` list is used instead.
 const DEFAULT_SINGLE_LWD_URL: &str = "https://zec.rocks:443";
 
-/// Sidecar and PIR tier paths to remove when forcing a rebuild after new blocks
-/// were synced from lightwalletd (`--invalidate-after-blocks`).
-pub const STALE_FILES: &[&str] = &[
-    "nullifiers.tree",
-    "nullifiers.tree.tmp",
-    "pir-data/tier0.bin",
-    "pir-data/tier1.bin",
-    "pir-data/tier2.bin",
-    "pir-data/pir_root.json",
+/// Tree checkpoint files under the nullifier root to remove when forcing a rebuild
+/// after new blocks were synced from lightwalletd (`--invalidate-after-blocks`).
+pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] =
+    &["nullifiers.tree", "nullifiers.tree.tmp"];
+
+/// PIR tier files under the tier output directory for the same invalidation pass.
+pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] = &[
+    "tier0.bin",
+    "tier1.bin",
+    "tier2.bin",
+    "pir_root.json",
 ];
 
 /// Validate that `height` is a legal export target: at or above NU5 activation
