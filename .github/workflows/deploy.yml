@@ -2,6 +2,10 @@
 # Triggered automatically after a release build, or manually via workflow_dispatch.
 # Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY, NF_SENTRY_DSN.
 # See docs/deploy-setup.md for one-time remote setup.
+#
+# Ordering: when targets=both, backup is deployed and readiness-checked first,
+# then primary. Matches restart.yml so release automation does not restart
+# primary while backup still runs an old binary or fails readiness.
 
 name: Deploy nf-server
 
@@ -38,29 +42,15 @@ env:
   DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
-  deploy:
-    name: Deploy ${{ inputs.release_tag }} to ${{ matrix.host_label }}
+  deploy_backup:
+    name: Deploy ${{ inputs.release_tag }} to backup
+    if: inputs.targets == 'both' || inputs.targets == 'backup'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - host_label: primary
-            host_secret: PIR_PRIMARY_HOST
-          - host_label: backup
-            host_secret: PIR_BACKUP_HOST
     steps:
-      - name: Skip if not targeted
-        if: inputs.targets != 'both' && inputs.targets != matrix.host_label
-        run: echo "Skipping ${{ matrix.host_label }}" && exit 0
-
       - name: Checkout (for service file)
-        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: actions/checkout@v4
 
       - name: Stage deploy artifacts
-        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         run: |
           cp docs/nullifier-query-server.service .
           rm -rf nf-server/
@@ -69,20 +59,18 @@ jobs:
           chmod +x nf-server
 
       - name: Deploy via SSH
-        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets[matrix.host_secret] }}
+          host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           source: "nf-server,nullifier-query-server.service"
           target: ${{ env.DEPLOY_PATH }}
 
       - name: Install and restart
-        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets[matrix.host_secret] }}
+          host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           envs: SENTRY_DSN
@@ -94,15 +82,14 @@ jobs:
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
             sudo systemctl restart nullifier-query-server
-            echo "Deployed ${{ inputs.release_tag }} to ${{ matrix.host_label }}"
+            echo "Deployed ${{ inputs.release_tag }} to backup"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
 
       - name: Readiness check
-        if: inputs.targets == 'both' || inputs.targets == matrix.host_label
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets[matrix.host_secret] }}
+          host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           # Cold-start budget: snapshot self-bootstrap (Phase 3, up to
@@ -115,13 +102,84 @@ jobs:
           script: |
             for i in $(seq 1 120); do
               if curl -sf http://localhost:3000/ready > /dev/null; then
-                echo "Readiness check passed on ${{ matrix.host_label }} (attempt $i)"
+                echo "Readiness check passed on backup (attempt $i)"
                 exit 0
               fi
               echo "Waiting for readiness... attempt $i/120"
               sleep 5
             done
-            echo "Readiness check FAILED on ${{ matrix.host_label }} after 10m"
+            echo "Readiness check FAILED on backup after 10m"
+            sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+            sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
+              sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
+              echo "No logs available"
+            exit 1
+
+  deploy_primary:
+    name: Deploy ${{ inputs.release_tag }} to primary
+    needs: deploy_backup
+    if: |
+      always() &&
+      (inputs.targets == 'both' || inputs.targets == 'primary') &&
+      (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for service file)
+        uses: actions/checkout@v4
+
+      - name: Stage deploy artifacts
+        run: |
+          cp docs/nullifier-query-server.service .
+          rm -rf nf-server/
+          curl -fL --retry 5 -o nf-server \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+          chmod +x nf-server
+
+      - name: Deploy via SSH
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PIR_PRIMARY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "nf-server,nullifier-query-server.service"
+          target: ${{ env.DEPLOY_PATH }}
+
+      - name: Install and restart
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PIR_PRIMARY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: SENTRY_DSN
+          script: |
+            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
+            sudo chmod 600 /opt/nf-ingest/.env
+            sudo chmod +x /opt/nf-ingest/nf-server
+            sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable nullifier-query-server
+            sudo systemctl restart nullifier-query-server
+            echo "Deployed ${{ inputs.release_tag }} to primary"
+        env:
+          SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
+
+      - name: Readiness check
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PIR_PRIMARY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          command_timeout: 11m
+          script: |
+            for i in $(seq 1 120); do
+              if curl -sf http://localhost:3000/ready > /dev/null; then
+                echo "Readiness check passed on primary (attempt $i)"
+                exit 0
+              fi
+              echo "Waiting for readiness... attempt $i/120"
+              sleep 5
+            done
+            echo "Readiness check FAILED on primary after 10m"
             sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
             sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
               sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
@@ -131,7 +189,7 @@ jobs:
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [deploy]
+    needs: [deploy_backup, deploy_primary]
     runs-on: ubuntu-latest
     steps:
       - name: Notify Slack on failure
@@ -154,6 +212,10 @@ jobs:
                     { "type": "mrkdwn", "text": "*Tag:*\n`${{ inputs.release_tag }}`" },
                     { "type": "mrkdwn", "text": "*Targets:*\n`${{ inputs.targets }}`" }
                   ]
+                },
+                {
+                  "type": "section",
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBackup: `${{ needs.deploy_backup.result }}` | Primary: `${{ needs.deploy_primary.result }}`" }
                 }
               ]
             }
