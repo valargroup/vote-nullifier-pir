@@ -43,9 +43,9 @@ make serve
 
 **What happens in the background?**
 
-Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then [bootstrap](../deploy-setup.md#2-configure-the-snapshot-bootstrap) (voting-config + optional CDN tier fetch), then loading mmap’d tier files. When the voting-config URL is **non-empty**, its fetch and `snapshot_height` field are **required**—startup fails otherwise. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing `pir-data/` on disk; the process **errors** if tier files ultimately cannot be loaded. For exact metrics and watchdog behavior, see [Deploy setup](../deploy-setup.md).
+Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then snapshot bootstrap (voting-config + optional CDN tier fetch), then loading mmap’d tier files. When the voting-config URL is **non-empty**, its fetch and `snapshot_height` field are **required**—startup fails otherwise. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing `pir-data/` on disk; the process **errors** if tier files ultimately cannot be loaded. Prometheus metrics are exposed at `GET /metrics` on the serve port; optional Sentry reporting uses `SENTRY_DSN`, and snapshot staleness alerting uses `SVOTE_STALE_THRESHOLD_SECS` / `SVOTE_WATCHDOG_TICK_SECS` when Sentry is configured.
 
-1. Fetch `voting-config.json` (default URL in [Deploy setup](../deploy-setup.md)).
+1. Fetch `voting-config.json` (default URL unless overridden: `https://valargroup.github.io/token-holder-voting-config/voting-config.json`).
    - Require `snapshot_height` in the JSON when the URL is enabled.
 2. Compare canonical height to local `pir_root.json` height.
    - If equal, continue to load and serve.
@@ -55,7 +55,7 @@ Behavior matches `nf-server serve` startup: index maintenance on the nullifier `
 **Fatal errors (typical):**
 
 - Tier load fails after bootstrap (missing or corrupt `tier0.bin` / `pir_root.json`, etc.).
-- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while `SVOTE_VOTING_CONFIG_URL` is non-empty (set it empty for offline-only disks; see [Deploy setup](../deploy-setup.md)).
+- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while `SVOTE_VOTING_CONFIG_URL` is non-empty (for offline-only disks, set that variable to an empty string so bootstrap is skipped and pre-staged `pir-data/` is served).
 
 Resolution hints:
 
@@ -75,21 +75,21 @@ make export-nf
 
 1. **Ingest** (`make ingest` → `nf-server ingest`): sync Orchard nullifiers from NU5 activation up through `SYNC_HEIGHT`, or up to **mainnet chain tip** when `SYNC_HEIGHT` is unset (see the [Makefile](../../Makefile) — there is no “round down to latest multiple of 10” behavior when height is unset). Writes `nullifiers.bin` and `nullifiers.checkpoint`; index sidecar behavior is described in the `nf-ingest` crate docs.
 2. **Export** (`make export-nf` → `nf-server export`): builds the Merkle tree sidecar where applicable and writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `pir-data/` (paths depend on `DATA_DIR` / `PIR_DATA_DIR` in the Makefile).
-3. **Serve** (`make serve`): with tiers present, the same HTTP server starts; if voting-config and precomputed URLs remain at defaults, startup bootstrap may still refresh tiers from the CDN when the published height moves—operators doing fully local workflows often clear or override those env vars (see [Deploy setup](../deploy-setup.md)).
+3. **Serve** (`make serve`): with tiers present, the same HTTP server starts; if voting-config and precomputed URLs remain at defaults, startup bootstrap may still refresh tiers from the CDN when the published height moves. For a fully local disk, unset or clear `SVOTE_VOTING_CONFIG_URL` / `SVOTE_PRECOMPUTED_BASE_URL` in the environment your unit uses (or pass empty `--voting-config-url`).
 
 ```bash
 # After manual ingest + export, tier files are local; CDN bootstrap may
-# still run unless you disable it—see deploy-setup.md.
+# still run unless you disable it in the environment as above.
 make serve
 ```
 
 ## Configuring the service
 
-Use the systemd and `/etc/default/nf-server` (or `.env`) steps in [Deploy setup](../deploy-setup.md#binary-setup-operators). Caddy TLS and fleet restart ordering (backup then primary) are documented there and in [restart-pir-fleet.md](restart-pir-fleet.md) where applicable.
+Ship a **systemd** unit (the release artifact includes `nullifier-query-server.service`) under `/etc/systemd/system/`, point `ExecStart` at `nf-server serve`, and pass configuration via the environment—commonly `/etc/default/nf-server`, `EnvironmentFile=` in the unit, or an `.env` next to the binary. Run `systemctl daemon-reload`, then `enable` and `start` the unit. For HTTPS in front of the listen port, run a reverse proxy (for example Caddy or nginx) on the host. Rolling restarts across replicas are described in [restart-pir-fleet.md](restart-pir-fleet.md).
 
 ## Observability
 
-The server can emit errors and traces to Sentry. Create a project at [sentry.io](https://sentry.io), copy the DSN, and set `SENTRY_DSN` (see [Deploy setup](../deploy-setup.md#snapshot-stale-alerting) for watchdog interaction).
+The server can emit errors and traces to Sentry. Create a project at [sentry.io](https://sentry.io), copy the DSN, and set `SENTRY_DSN`. The in-process snapshot watchdog emits stale-snapshot events through Sentry when `SVOTE_STALE_THRESHOLD_SECS` is non-zero and a DSN is present; tune `SVOTE_WATCHDOG_TICK_SECS` for how often it checks gauges versus the threshold.
 
 ## Rationale
 
@@ -118,7 +118,7 @@ Planned names (see tracking issues / PRs): `SVOTE_PIR_MAX_HEIGHT`, `SVOTE_PIR_IN
 
 ### Serve (CLI / env)
 
-Planned names include `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, lightwalletd URL, `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`. **Today** the binary and [Deploy setup](../deploy-setup.md) document `SVOTE_VOTING_CONFIG_URL`, `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_DATA_DIR`, `SVOTE_PIR_DATA_DIR`, `SVOTE_MAINNET_RPC_DIR`, watchdog and bootstrap timeouts, etc.
+Planned names include `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, lightwalletd URL, `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`. **Today** the `nf-server serve` CLI (see `nf-server serve --help`) reads `SVOTE_VOTING_CONFIG_URL`, `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_DATA_DIR`, `SVOTE_PIR_DATA_DIR`, `SVOTE_MAINNET_RPC_DIR`, `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, and `SVOTE_VOTE_CHAIN_URL`, among others.
 
 ## Tagging and releases
 
@@ -128,7 +128,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 | Topic | Decision |
 |-------|----------|
-| Voting-config unavailable when its URL is set | Non-empty URL requires a successful fetch and a `snapshot_height` field; otherwise startup fails. **Offline / manual disks:** set voting-config URL to empty and stage `pir-data/` yourself ([Deploy setup](../deploy-setup.md)). |
+| Voting-config unavailable when its URL is set | Non-empty URL requires a successful fetch and a `snapshot_height` field; otherwise startup fails. **Offline / manual disks:** set `SVOTE_VOTING_CONFIG_URL` to empty and stage `pir-data/` yourself. |
 | `nullifiers.checkpoint` vs `nullifiers.index` | **Checkpoint** is the durable commit point (height + byte offset into `nullifiers.bin`). **Index** records per-batch offsets for export at specific aligned heights. Both are kept. |
 | Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
 | CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |
@@ -137,6 +137,6 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 - Merge or unify `data_dir` (nullifier flat files) and `pir_data_dir` (tier blobs) so `make serve` can start from nullifiers alone when tiers are missing (auto-export path).
 - `export-nf` as a separate step vs integrated ingest stages with resume.
-- Optional: Terraform / DigitalOcean droplet setup pointer to [vote-infrastructure](https://github.com/valargroup/vote-infrastructure) (see [Deploy setup](../deploy-setup.md#infrastructure)).
-- Document `SVOTE_VOTE_CHAIN_URL` (optional; active-round guard for `POST /snapshot/prepare`) in deploy-setup when stable.
+- Optional: Terraform / DigitalOcean droplet setup in [vote-infrastructure](https://github.com/valargroup/vote-infrastructure).
+- Document `SVOTE_VOTE_CHAIN_URL` (optional; active-round guard for `POST /snapshot/prepare`) in operator-facing docs when stable.
 - Prefer installing release binaries + systemd for operators; Makefile remains the developer shortcut.
