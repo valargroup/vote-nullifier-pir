@@ -14,7 +14,7 @@ when GitHub Actions is unavailable.
 |----------|--------|
 | You bumped `voting-config.snapshot_height` and need replicas to pick up the new snapshot. | Run `Restart PIR fleet` with `targets=both`. |
 | Sentry fired `alert:snapshot_stale` for one host and the underlying issue is resolved. | Run `Restart PIR fleet` with `targets=primary` or `targets=backup`. |
-| You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_VOTING_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
+| You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_PIR_VOTING_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
 | You're deploying a new `nf-server` binary. | Use `Deploy nf-server` instead — it does the binary swap *and* the restart. |
 | You need a new snapshot from chain (nothing published at the new height yet). | Run `Publish nullifier snapshot` first, then this workflow. |
 
@@ -102,7 +102,7 @@ Both should report identical heights and roots.
 |---------|--------------|----------|
 | `restart_backup` job times out at the readiness-check loop | Snapshot bootstrap couldn't fetch from `vote.fra1.digitaloceanspaces.com` (network / 5xx), sha256 mismatch on a tier file, or `load_serving_state` is still mmapping after 10 min. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
 | `restart_primary` job is skipped after `restart_backup` failed | By design — the workflow refuses to restart primary while backup is unhealthy. | Fix backup first (see row above). Once backup is healthy, run the workflow again with `targets=primary`. |
-| Job fails with `nf_snapshot_expected_height is 0` | `voting-config.json` couldn't be fetched, or the live config has no `snapshot_height` field. | `curl -s https://valargroup.github.io/token-holder-voting-config/voting-config.json \| jq .snapshot_height` from a laptop. If empty, fix the published config. If non-empty, ssh in and check `SVOTE_VOTING_CONFIG_URL` in `/etc/default/nf-server`. |
+| Job fails with `nf_snapshot_expected_height is 0` | `voting-config.json` couldn't be fetched, or the live config has no `snapshot_height` field. | `curl -s https://valargroup.github.io/token-holder-voting-config/voting-config.json \| jq .snapshot_height` from a laptop. If empty, fix the published config. If non-empty, ssh in and check `SVOTE_PIR_VOTING_CONFIG_URL` in `/etc/default/nf-server`. |
 | Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI https://vote.fra1.digitaloceanspaces.com/snapshots/<expected>/manifest.json`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
 | Job fails with `tier1.bin size mismatch` (or similar) | Locally cached `pir-data/` is from a partial bootstrap or a different `nf-server` build. | SSH in: `sudo rm -rf /opt/nf-ingest/pir-data/* && sudo systemctl restart nullifier-query-server`. The next bootstrap repopulates from the bucket. |
 | Sentry fires `alert:snapshot_stale` for the host you just restarted | Same as the row above — bootstrap fell through and `served < expected` for >30 minutes. | Same recovery. The watchdog emits a follow-up info event ("snapshot height converged") once the gap closes. |

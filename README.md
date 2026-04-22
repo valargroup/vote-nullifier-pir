@@ -93,7 +93,7 @@ Override via environment variables or Make arguments:
 | `PORT` | `3000` | HTTP server port |
 | `SYNC_HEIGHT` | chain tip | Sync up to this block height (must be a multiple of 10) |
 | `SVOTE_PIR_SYNC_RESET` | unset | Set to `1` to wipe nullifiers + tree + tiers before `sync` |
-| `SVOTE_VOTING_CONFIG_URL` | (see `nf-server sync --help`) | Empty string skips voting-config fetch during `sync` |
+| `SVOTE_PIR_VOTING_CONFIG_URL` | (see `nf-server sync --help`) | Empty string skips voting-config fetch during `sync` |
 
 ## Deployment
 

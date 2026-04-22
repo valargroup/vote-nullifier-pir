@@ -38,36 +38,36 @@ pub struct Args {
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_MAINNET_RPC_DIR")]
+    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
     /// If set, POST /snapshot/prepare will reject rebuilds when a round is active.
-    #[arg(long, env = "SVOTE_VOTE_CHAIN_URL")]
+    #[arg(long, env = "SVOTE_PIR_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
     /// URL of the published `voting-config.json` whose `snapshot_height`
     /// is treated as the canonical height every PIR replica should serve.
     /// Defaults to the production GitHub Pages URL; leave unset so operators
-    /// pick up the baked-in default, or set `SVOTE_VOTING_CONFIG_URL=` (empty)
+    /// pick up the baked-in default, or set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty)
     /// to disable startup self-bootstrap and serve only pre-staged files under
     /// `pir_data_dir`.
     #[arg(
         long,
-        env = "SVOTE_VOTING_CONFIG_URL",
+        env = "SVOTE_PIR_VOTING_CONFIG_URL",
         default_value = bootstrap::Config::DEFAULT_VOTING_CONFIG_URL
     )]
     voting_config_url: String,
 
     /// Bucket origin for pre-computed PIR snapshots (matches the
-    /// admin UI's `SVOTE_PRECOMPUTED_BASE_URL`). The bootstrap fetches
+    /// admin UI). The bootstrap fetches
     /// `<base>/snapshots/<height>/{manifest.json,tier0.bin,...}`.
     /// Trailing slashes are trimmed. Empty disables the download
     /// portion of the bootstrap (operators relying on out-of-band
     /// staging can keep the voting-config height check enabled).
     #[arg(
         long,
-        env = "SVOTE_PRECOMPUTED_BASE_URL",
+        env = "SVOTE_PIR_PRECOMPUTED_BASE_URL",
         default_value = bootstrap::Config::DEFAULT_PRECOMPUTED_BASE_URL
     )]
     precomputed_base_url: String,
@@ -76,7 +76,7 @@ pub struct Args {
     /// Defaults to 30 minutes — a slow tier0 fetch from the wrong
     /// region can sit close to that, so we err on the side of
     /// patience rather than spurious failures on a fresh host.
-    #[arg(long, env = "SVOTE_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
+    #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
     bootstrap_timeout_secs: u64,
 
     /// How long the host must continuously serve a snapshot older
@@ -84,7 +84,7 @@ pub struct Args {
     /// emits a Sentry error event (which Sentry's Slack integration
     /// then routes to the on-call channel). Default 30 minutes.
     /// Set to 0 to disable the watchdog entirely.
-    #[arg(long, env = "SVOTE_STALE_THRESHOLD_SECS", default_value = "1800")]
+    #[arg(long, env = "SVOTE_PIR_STALE_THRESHOLD_SECS", default_value = "1800")]
     stale_threshold_secs: u64,
 
     /// How often the watchdog checks `served` vs `expected`. The tick
@@ -92,7 +92,7 @@ pub struct Args {
     /// and the `stale_threshold_secs` deadline, so the default of 60s
     /// gives ±1m precision on a 30m threshold. Capped below the
     /// threshold at runtime.
-    #[arg(long, env = "SVOTE_WATCHDOG_TICK_SECS", default_value = "60")]
+    #[arg(long, env = "SVOTE_PIR_WATCHDOG_TICK_SECS", default_value = "60")]
     watchdog_tick_secs: u64,
 
     /// Sentry DSN for error tracking. When empty, Sentry is disabled.
@@ -101,7 +101,12 @@ pub struct Args {
 }
 
 pub async fn run(args: Args) -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let chain_url = args
+        .chain_url
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     let lwd_urls = config::resolve_lwd_urls(&args.lwd_url);
     let state = Arc::new(AppState {
         phase: RwLock::new(ServerPhase::Starting {
@@ -111,7 +116,7 @@ pub async fn run(args: Args) -> Result<()> {
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         pir_data_dir: args.pir_data_dir.clone(),
         lwd_urls,
-        chain_url: args.chain_url.clone(),
+        chain_url,
         next_req_id: AtomicU64::new(0),
         inflight_requests: AtomicUsize::new(0),
     });

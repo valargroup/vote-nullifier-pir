@@ -89,7 +89,7 @@ jobs:
 
             echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
             cd "${{ env.DEPLOY_PATH }}"
-            export SVOTE_VOTING_CONFIG_URL=
+            export SVOTE_PIR_VOTING_CONFIG_URL=
             rm -rf "$STAGE"
             mkdir -p "$STAGE"
             if [ -n "$REQUESTED_H" ]; then

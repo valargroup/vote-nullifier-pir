@@ -92,6 +92,8 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    let _ = tracing_subscriber::fmt().try_init();
+
     #[cfg(feature = "serve")]
     let _sentry_guard = init_sentry(&cli.command);
 
