@@ -1,9 +1,7 @@
-# Manually trigger a nullifier resync on the deploy host.
-# Runs the full ingest → export → restart pipeline so the PIR server
-# picks up the new data.
+# Run `nf-server sync` on a single deploy host, then restart the PIR service.
 # Requires repository secrets: DEPLOY_HOST, DEPLOY_USER, SSH_KEY.
 
-name: Resync nullifier snapshot
+name: Host PIR data sync
 
 on:
   workflow_dispatch:
@@ -20,8 +18,8 @@ env:
   DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
-  resync:
-    name: Ingest, export, restart
+  host_sync:
+    name: Sync and restart
     runs-on: ubuntu-latest
     steps:
       - name: Round max_height down to nearest multiple of 10
@@ -34,7 +32,7 @@ jobs:
           ROUNDED=$(( (MAX_HEIGHT / 10) * 10 ))
           echo "value=$ROUNDED" >> "$GITHUB_OUTPUT"
 
-      - name: Ingest, export, and restart service
+      - name: Sync and restart service
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -43,12 +41,12 @@ jobs:
           command_timeout: 60m
           script: |
             cd /opt/nf-ingest && \
-              ./nf-server ingest \
+              export SVOTE_VOTING_CONFIG_URL= && \
+              ./nf-server sync \
                 --data-dir /opt/nf-ingest \
+                --output-dir /opt/nf-ingest/pir-data \
                 --lwd-url https://zec.rocks:443 \
-                --invalidate \
+                --non-interactive \
+                --invalidate-after-blocks \
                 --max-height ${{ steps.round_height.outputs.value }} && \
-              ./nf-server export \
-                --data-dir /opt/nf-ingest \
-                --output-dir /opt/nf-ingest/pir-data && \
               sudo systemctl restart nullifier-query-server

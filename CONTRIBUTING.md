@@ -74,7 +74,7 @@ The `nf-server` crate uses feature flags to keep the default build lightweight:
 
 | Feature | Effect |
 |---------|--------|
-| `serve` | Enables the `serve` subcommand (pulls in `pir-server`, `axum`, etc.) |
+| `serve` | Enables the `serve` subcommand (`pir-server`, `axum`, …). The default binary always includes `sync` and `reqwest` (voting-config fetch). |
 | `avx512` | Implies `serve`; compiles YPIR with AVX-512 intrinsics for ~2x query throughput |
 
 The `avx512` feature requires nightly Rust and a CPU with AVX-512 support. CI builds use it for the deploy target but not for tests.

@@ -174,7 +174,7 @@ constraint count contributor for the IMT check.
 ```
                       OFF-CHAIN (imt-tree + pir crates)
                       ─────────────────────────────────
-Zcash chain --> nf-server ingest --> nullifiers.bin (51M nullifiers)
+Zcash chain --> nf-server sync --> nullifiers.bin (51M nullifiers)
                                           |
                                   prepare_nullifiers()
                                   (sort, sentinels, K=2 ranges)

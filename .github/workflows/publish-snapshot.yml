@@ -45,7 +45,7 @@ jobs:
             echo "Target height (explicit): $H"
           else
             echo "value=" >> "$GITHUB_OUTPUT"
-            echo "Target height: latest chain tip (determined after ingest)"
+            echo "Target height: latest chain tip (resolved on backup host)"
           fi
 
       - name: Build snapshot, upload to DO Spaces, verify
@@ -87,35 +87,28 @@ jobs:
             use_https = True
             EOF
 
-            echo "==> Ingest nullifiers"
+            echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
             cd "${{ env.DEPLOY_PATH }}"
-            if [ -n "$REQUESTED_H" ]; then
-              echo "    up to explicit height $REQUESTED_H"
-              ./nf-server ingest \
-                --data-dir "${{ env.DEPLOY_PATH }}" \
-                --lwd-url https://zec.rocks:443 \
-                --invalidate \
-                --max-height "$REQUESTED_H"
-            else
-              echo "    to latest chain tip"
-              ./nf-server ingest \
-                --data-dir "${{ env.DEPLOY_PATH }}" \
-                --lwd-url https://zec.rocks:443 \
-                --invalidate
-            fi
-
-            echo "==> Export tier files to staging dir $STAGE"
+            export SVOTE_VOTING_CONFIG_URL=
             rm -rf "$STAGE"
             mkdir -p "$STAGE"
             if [ -n "$REQUESTED_H" ]; then
-              ./nf-server export \
+              echo "    up to explicit height $REQUESTED_H"
+              ./nf-server sync \
                 --data-dir "${{ env.DEPLOY_PATH }}" \
                 --output-dir "$STAGE" \
-                --target-height "$REQUESTED_H"
+                --lwd-url https://zec.rocks:443 \
+                --non-interactive \
+                --invalidate-after-blocks \
+                --max-height "$REQUESTED_H"
             else
-              ./nf-server export \
+              echo "    to latest chain tip"
+              ./nf-server sync \
                 --data-dir "${{ env.DEPLOY_PATH }}" \
-                --output-dir "$STAGE"
+                --output-dir "$STAGE" \
+                --lwd-url https://zec.rocks:443 \
+                --non-interactive \
+                --invalidate-after-blocks
             fi
 
             echo "==> Read height from exported pir_root.json"

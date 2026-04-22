@@ -9,6 +9,8 @@ use tracing::{info, warn};
 use nf_ingest::file_store;
 use nf_ingest::sync_nullifiers;
 
+use crate::sync_pipeline;
+
 use super::state::{AppState, ServerPhase};
 
 // ── Snapshot management endpoints ─────────────────────────────────────────────
@@ -185,7 +187,7 @@ pub(crate) async fn post_snapshot_prepare(
         .into_response()
 }
 
-/// Run the full rebuild pipeline: ingest (if needed) → export → load.
+/// Run the full rebuild pipeline: nullifier sync (if needed) → tree + tiers → load.
 async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     let data_dir = state.data_dir.clone();
     let pir_data_dir = state.pir_data_dir.clone();
@@ -209,7 +211,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
             let mut phase = state.phase.write().await;
             *phase = ServerPhase::Rebuilding {
                 target_height,
-                progress: format!("ingesting blocks {current_height}..{target_height}"),
+                progress: format!("syncing blocks {current_height}..{target_height}"),
                 progress_pct: 2,
             };
         }
@@ -222,7 +224,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
                 .enable_all()
                 .build()?;
             rt.block_on(sync_nullifiers::sync(&dd, &lwd, Some(target_height), |h, t, _, _| {
-                info!(height = h, target = t, "ingest progress");
+                info!(height = h, target = t, "nullifier sync progress");
                 let pct = if t > 0 {
                     2 + ((h as f64 / t as f64) * 8.0) as u8
                 } else {
@@ -231,7 +233,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
                 if let Ok(mut phase) = state_ref.phase.try_write() {
                     *phase = ServerPhase::Rebuilding {
                         target_height,
-                        progress: format!("ingesting {h}/{t}"),
+                        progress: format!("syncing {h}/{t}"),
                         progress_pct: pct,
                     };
                 }
@@ -262,16 +264,24 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
         let nfs = file_store::load_nullifiers_up_to(&dd, byte_offset)?;
         info!(count = nfs.len(), "Nullifiers loaded");
 
-        pir_export::build_and_export_with_progress(nfs, &pd, Some(idx_height), |msg, pct| {
-            let overall_pct = 10 + (pct as u16 * 45 / 55).min(45) as u8;
-            if let Ok(mut phase) = state_ref.phase.try_write() {
-                *phase = ServerPhase::Rebuilding {
-                    target_height,
-                    progress: msg.to_string(),
-                    progress_pct: overall_pct,
-                };
-            }
-        })?;
+        if !pir_export::tiers_complete_for_height(&pd, idx_height)? {
+            sync_pipeline::export_tree_and_tiers_from_nullifiers(
+                nfs,
+                &dd,
+                &pd,
+                idx_height,
+                |msg, pct| {
+                    let overall_pct = 10 + (pct as u16 * 45 / 55).min(45) as u8;
+                    if let Ok(mut phase) = state_ref.phase.try_write() {
+                        *phase = ServerPhase::Rebuilding {
+                            target_height,
+                            progress: msg.to_string(),
+                            progress_pct: overall_pct,
+                        };
+                    }
+                },
+            )?;
+        }
         Ok::<_, anyhow::Error>(())
     })
     .await??;

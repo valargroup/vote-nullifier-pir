@@ -15,10 +15,18 @@ pub mod tier0;
 pub mod tier1;
 pub mod tier2;
 
+mod tree_checkpoint;
+
+pub use tree_checkpoint::{
+    load_tree_checkpoint, read_tree_checkpoint_header, save_tree_checkpoint, TREE_HEADER_LEN,
+    TREE_MAGIC,
+};
+
 use std::io::Write;
+use std::path::Path;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
 use tracing::info;
@@ -215,11 +223,86 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
     build_punctured_ranges(&nfs)
 }
 
+/// Sort / sentinel-inject nullifiers and build the depth-25 PIR Merkle structure.
+pub fn build_pir_tree_from_nullifiers(nfs: Vec<Fp>) -> Result<PirTree> {
+    let ranges = prepare_nullifiers(nfs);
+    build_pir_tree(ranges)
+}
+
+/// Build the tree from nullifiers and write [`save_tree_checkpoint`] to `tree_path`.
+pub fn materialize_tree_checkpoint_with_progress(
+    nfs: Vec<Fp>,
+    tree_path: &Path,
+    chain_height: u64,
+    on_progress: impl Fn(&str, u8),
+) -> Result<PirTree> {
+    on_progress("sorting nullifiers", 0);
+    let t1 = std::time::Instant::now();
+    let ranges = prepare_nullifiers(nfs);
+    info!(
+        count = ranges.len(),
+        elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
+        "ranges built"
+    );
+
+    on_progress("building Merkle tree", 15);
+    info!(depth = PIR_DEPTH, "building PIR tree");
+    let tree = build_pir_tree(ranges)?;
+    info!(depth = PIR_DEPTH, root = hex::encode(tree.root25.to_repr()), "root-25");
+    info!(
+        depth = FULL_DEPTH,
+        root = hex::encode(tree.root29.to_repr()),
+        "root-29"
+    );
+
+    on_progress("writing tree checkpoint", 35);
+    save_tree_checkpoint(tree_path, &tree, chain_height)?;
+    Ok(tree)
+}
+
+/// Write `tier*.bin` and `pir_root.json` from an in-memory [`PirTree`].
+pub fn export_tiers_from_tree(tree: &PirTree, output_dir: &Path, height: Option<u64>) -> Result<()> {
+    export_all(tree, output_dir, height)
+}
+
+/// Returns `true` when `pir_root.json` lists `expected_height` and tier files
+/// on disk match the expected sizes from layout constants and metadata.
+pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Result<bool> {
+    let root_path = output_dir.join("pir_root.json");
+    if !root_path.exists() {
+        return Ok(false);
+    }
+    let meta: PirMetadata =
+        serde_json::from_str(&std::fs::read_to_string(&root_path).context("read pir_root.json")?)
+            .context("decode pir_root.json")?;
+    if meta.height != Some(expected_height) {
+        return Ok(false);
+    }
+    let t0 = output_dir.join("tier0.bin");
+    let t1 = output_dir.join("tier1.bin");
+    let t2 = output_dir.join("tier2.bin");
+    if !t0.exists() || !t1.exists() || !t2.exists() {
+        return Ok(false);
+    }
+    let s0 = std::fs::metadata(&t0)?.len() as usize;
+    if s0 != meta.tier0_bytes {
+        return Ok(false);
+    }
+    let exp1 = TIER1_YPIR_ROWS * TIER1_ROW_BYTES;
+    if std::fs::metadata(&t1)?.len() as usize != exp1 {
+        return Ok(false);
+    }
+    let exp2 = TIER2_ROWS * TIER2_ROW_BYTES;
+    if std::fs::metadata(&t2)?.len() as usize != exp2 {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 /// Build a PIR tree from raw nullifiers (sort, sentinel injection, tree build)
 /// and export all tier files.
 ///
-/// This is the high-level entry point used by both the export CLI and the
-/// serve command's rebuild logic.
+/// High-level entry point for tests and callers that want one-shot build+export.
 pub fn build_and_export(
     nfs: Vec<Fp>,
     output_dir: &std::path::Path,
@@ -238,22 +321,24 @@ pub fn build_and_export_with_progress(
 ) -> Result<PirTree> {
     on_progress("sorting nullifiers", 0);
     let t1 = std::time::Instant::now();
-    let ranges = prepare_nullifiers(nfs);
+    let tree = build_pir_tree_from_nullifiers(nfs)?;
     info!(
-        count = ranges.len(),
+        count = tree.ranges.len(),
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
-        "ranges built"
+        "PIR tree built"
     );
 
     on_progress("building Merkle tree", 15);
-    info!(depth = PIR_DEPTH, "building PIR tree");
-    let tree = build_pir_tree(ranges)?;
     info!(depth = PIR_DEPTH, root = hex::encode(tree.root25.to_repr()), "root-25");
-    info!(depth = FULL_DEPTH, root = hex::encode(tree.root29.to_repr()), "root-29");
+    info!(
+        depth = FULL_DEPTH,
+        root = hex::encode(tree.root29.to_repr()),
+        "root-29"
+    );
 
     on_progress("writing tier files", 40);
     info!(?output_dir, "exporting tier files");
-    export_all(&tree, output_dir, height)?;
+    export_tiers_from_tree(&tree, output_dir, height)?;
 
     on_progress("tier files written", 55);
     Ok(tree)

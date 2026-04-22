@@ -16,7 +16,7 @@ when GitHub Actions is unavailable.
 | Sentry fired `alert:snapshot_stale` for one host and the underlying issue is resolved. | Run `Restart PIR fleet` with `targets=primary` or `targets=backup`. |
 | You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_VOTING_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
 | You're deploying a new `nf-server` binary. | Use `Deploy nf-server` instead — it does the binary swap *and* the restart. |
-| You need to ingest from chain (no published snapshot at the new height). | Run `Publish nullifier snapshot` first, then this workflow. |
+| You need a new snapshot from chain (nothing published at the new height yet). | Run `Publish nullifier snapshot` first, then this workflow. |
 
 The workflow is **idempotent**: if a replica is already on the
 expected height, it just gets a fresh process with the same loaded
