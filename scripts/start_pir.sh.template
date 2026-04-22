@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Installs nf-server to /opt/nf-ingest with systemd (nullifier-query-server).
+# Placeholders __RELEASE_TAG__, __GITHUB_REPO__, __BINARY_BASE_URL__,
+# __VOTING_CONFIG_URL__, and __PRECOMPUTED_BASE_URL__ are substituted at
+# publish time — do not edit the published script by hand.
+set -euo pipefail
+
+readonly START_RELEASE_TAG='__RELEASE_TAG__'
+readonly START_GITHUB_REPO='__GITHUB_REPO__'
+readonly START_BINARY_BASE_URL='__BINARY_BASE_URL__'
+readonly START_VOTING_CONFIG_URL='__VOTING_CONFIG_URL__'
+readonly START_PRECOMPUTED_BASE_URL='__PRECOMPUTED_BASE_URL__'
+
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "This installer targets Linux hosts with systemd." >&2
+  echo "macOS and other platforms publish binaries on GitHub releases; use manual setup from the operator docs." >&2
+  exit 1
+fi
+
+if [ "${EUID:-0}" -ne 0 ]; then
+  echo "This installer must run as root (it writes under /opt and /etc)." >&2
+  echo "Example: curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash" >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64) PLATFORM=linux-amd64 ;;
+  aarch64|arm64) PLATFORM=linux-arm64 ;;
+  *)
+    echo "Unsupported CPU architecture: $(uname -m) (need x86_64 or aarch64)." >&2
+    exit 1
+    ;;
+esac
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl was not found. Use a systemd-based image (Ubuntu Server, Debian, etc.)." >&2
+  exit 1
+fi
+
+# Minimal cloud images often omit curl; HTTPS needs a CA bundle on Debian/Ubuntu.
+ensure_curl_and_ca_certificates() {
+  local need=false
+
+  if ! command -v curl >/dev/null 2>&1; then
+    need=true
+  fi
+
+  if command -v dpkg-query >/dev/null 2>&1; then
+    if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then
+      need=true
+    fi
+  fi
+
+  if [ "$need" = false ]; then
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "Install curl and CA certificates for HTTPS, then re-run this installer." >&2
+    echo "On Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y curl ca-certificates" >&2
+    exit 1
+  fi
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y --no-install-recommends curl ca-certificates
+}
+
+ensure_curl_and_ca_certificates
+
+tmp="$(mktemp -d)"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+SPACES_URL="${START_BINARY_BASE_URL}/nf-server-${START_RELEASE_TAG}-${PLATFORM}"
+GH_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/nf-server-${PLATFORM}"
+BINARY_PATH="${tmp}/nf-server"
+
+if curl -fL --retry 3 --retry-delay 2 -o "$BINARY_PATH" "$SPACES_URL"; then
+  :
+elif curl -fL --retry 3 --retry-delay 2 -o "$BINARY_PATH" "$GH_URL"; then
+  echo "Note: downloaded nf-server from GitHub releases (DigitalOcean Spaces fetch failed or object missing)." >&2
+else
+  echo "Failed to download nf-server for ${PLATFORM} (tag ${START_RELEASE_TAG}) from Spaces and from GitHub." >&2
+  exit 1
+fi
+
+chmod +x "$BINARY_PATH"
+
+SERVICE_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/nullifier-query-server.service"
+SERVICE_PATH="${tmp}/nullifier-query-server.service"
+curl -fL --retry 3 --retry-delay 2 -o "$SERVICE_PATH" "$SERVICE_URL"
+
+mkdir -p /opt/nf-ingest/pir-data
+install -m 755 "$BINARY_PATH" /opt/nf-ingest/nf-server
+install -m 644 "$SERVICE_PATH" /etc/systemd/system/nullifier-query-server.service
+
+umask 022
+cat >/etc/default/nf-server <<EOF
+SVOTE_PIR_VOTING_CONFIG_URL=${START_VOTING_CONFIG_URL}
+SVOTE_PIR_PRECOMPUTED_BASE_URL=${START_PRECOMPUTED_BASE_URL}
+EOF
+chmod 644 /etc/default/nf-server
+
+if [ -n "${SENTRY_DSN:-}" ]; then
+  umask 077
+  # Single %s so a DSN containing "%" is not interpreted by printf.
+  printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" >/opt/nf-ingest/.env
+  chmod 600 /opt/nf-ingest/.env
+fi
+
+systemctl daemon-reload
+systemctl enable --now nullifier-query-server.service
+
+echo
+echo "Installed nf-server ${START_RELEASE_TAG} (${PLATFORM}) under /opt/nf-ingest."
+echo "Service: systemctl status nullifier-query-server"
+echo "Ready check: curl -fsS http://127.0.0.1:3000/ready"
