@@ -5,15 +5,15 @@ edition = "2021"
 
 [features]
 default = []
-serve = ["dep:pir-server", "dep:axum", "dep:tracing", "dep:tracing-subscriber", "dep:tower-http", "dep:sentry", "dep:tower", "dep:sha2", "dep:prometheus"]
+serve = ["dep:pir-server", "dep:axum", "dep:tower-http", "dep:sentry", "dep:tower", "dep:sha2", "dep:prometheus"]
 avx512 = ["serve", "pir-server/avx512"]
 
 [dependencies]
 # Serve-only (YPIR PIR server)
 pir-server         = { path = "../pir/server", optional = true }
 axum               = { version = "0.7", optional = true }
-tracing            = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", optional = true }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 tower-http         = { version = "0.5", features = ["cors"], optional = true }
 reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 sentry             = { version = "0.35", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tower-axum-matched-path"], optional = true }

@@ -41,7 +41,7 @@ jobs:
           command_timeout: 60m
           script: |
             cd /opt/nf-ingest && \
-              export SVOTE_VOTING_CONFIG_URL= && \
+              export SVOTE_PIR_VOTING_CONFIG_URL= && \
               ./nf-server sync \
                 --pir-data-dir /opt/nf-ingest/pir-data \
                 --lwd-url https://zec.rocks:443 \

@@ -93,7 +93,7 @@ pub struct Args {
     output_dir: Option<PathBuf>,
 
     /// Lightwalletd endpoint URL. Overridden by LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443")]
+    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
     lwd_url: String,
 
     /// Stop syncing at this block height (must be a multiple of 10). Capped by
@@ -103,7 +103,7 @@ pub struct Args {
 
     /// voting-config.json URL. When non-empty, `snapshot_height` is required
     /// and caps the sync target. Empty disables this check (offline / dev).
-    #[arg(long, env = "SVOTE_VOTING_CONFIG_URL", default_value = "")]
+    #[arg(long, env = "SVOTE_PIR_VOTING_CONFIG_URL", default_value = "")]
     voting_config_url: String,
 
     /// HTTP timeout for voting-config fetch.
