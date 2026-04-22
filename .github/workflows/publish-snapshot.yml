@@ -3,8 +3,9 @@
 # and the admin UI. Runs on PIR_BACKUP_HOST so the primary stays focused
 # on serving; backup keeps serving its current snapshot throughout.
 #
-# Pure publish operation: writes to /tmp on the host, never touches the
-# live /opt/nf-ingest/pir-data/ tree, never restarts the service.
+# Pure publish operation: writes tier blobs under /tmp on the host, reads
+# nullifiers from the live /opt/nf-ingest/pir-data/ tree (never mutates it),
+# never restarts the service.
 #
 # Requires repository secrets:
 #   PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY,
@@ -19,6 +20,11 @@ on:
         description: "Target block height (rounded down to nearest multiple of 10). If empty, uses the latest chain tip."
         required: false
         type: string
+      include_nullifier_artifacts:
+        description: "If true, also upload nullifiers.bin, nullifiers.checkpoint, and nullifiers.tree under snapshots/<height>/ (large). Default false keeps uploads tier-only."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -127,7 +133,7 @@ jobs:
             echo "==> Building manifest.json"
             BIN_SHA=$(sha256sum "${{ env.DEPLOY_PATH }}/nf-server" | awk '{print $1}')
             CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            FILES_JSON=$(
+            TIER_JSON=$(
               cd "$STAGE"
               for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
                 size=$(stat -c%s "$f")
@@ -136,6 +142,26 @@ jobs:
                   '{($name): {size: $size, sha256: $sha}}'
               done | jq -s 'add'
             )
+            NF_JSON='{}'
+            if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
+              echo "    include_nullifier_artifacts=true (adding on-chain + tree blobs to manifest)"
+              NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
+              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+                if [ ! -f "$NF_DIR/$f" ]; then
+                  echo "ERROR: missing $NF_DIR/$f — run sync on this host first or disable the flag"
+                  exit 1
+                fi
+              done
+              NF_JSON=$(
+                for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+                  size=$(stat -c%s "$NF_DIR/$f")
+                  sha=$(sha256sum "$NF_DIR/$f" | awk '{print $1}')
+                  jq -n --arg name "$f" --argjson size "$size" --arg sha "$sha" \
+                    '{($name): {size: $size, sha256: $sha}}'
+                done | jq -s 'add'
+              )
+            fi
+            FILES_JSON=$(jq -n --argjson tier "$TIER_JSON" --argjson nf "$NF_JSON" '$tier + $nf')
             jq -n \
               --argjson height "$H" \
               --arg created_at "$CREATED_AT" \
@@ -159,13 +185,25 @@ jobs:
               s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
                 --acl-public --force --no-progress
             done
+            if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
+              NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
+              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+                echo "  - $f (nullifier / tree bundle)"
+                s3cmd -c "$S3CFG" put "$NF_DIR/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
+                  --acl-public --force --no-progress
+              done
+            fi
             echo "  - manifest.json (last, so partial uploads stay invisible)"
             s3cmd -c "$S3CFG" put "$STAGE/manifest.json" "s3://$BUCKET/$PREFIX/$H/manifest.json" \
               --acl-public --force --no-progress \
               --add-header="Cache-Control:no-cache, max-age=0"
 
             echo "==> Enforce public-read ACL on all uploaded files"
-            for f in tier0.bin tier1.bin tier2.bin pir_root.json manifest.json; do
+            ACL_FILES="tier0.bin tier1.bin tier2.bin pir_root.json"
+            if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
+              ACL_FILES="$ACL_FILES nullifiers.bin nullifiers.checkpoint nullifiers.tree"
+            fi
+            for f in $ACL_FILES manifest.json; do
               s3cmd -c "$S3CFG" setacl --acl-public "s3://$BUCKET/$PREFIX/$H/$f"
             done
 
@@ -186,6 +224,24 @@ jobs:
               echo "  expected: $REMOTE_TIER0_SHA"
               echo "  actual:   $ACTUAL_TIER0_SHA"
               exit 1
+            fi
+            if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
+              NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
+              echo "==> Verify nullifier/tree entries: local disk matches published manifest (no multi-GB re-download)"
+              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+                EXPECT=$(jq -r --arg n "$f" '.files[$n].sha256 // empty' "$VERIFY_DIR/manifest.json")
+                if [ -z "$EXPECT" ]; then
+                  echo "ERROR: manifest missing files[$f] after upload"
+                  exit 1
+                fi
+                ACTUAL=$(sha256sum "$NF_DIR/$f" | awk '{print $1}')
+                if [ "$EXPECT" != "$ACTUAL" ]; then
+                  echo "ERROR: local $f sha256 does not match manifest (upload integrity)"
+                  echo "  manifest: $EXPECT"
+                  echo "  local:    $ACTUAL"
+                  exit 1
+                fi
+              done
             fi
             echo "==> Snapshot $H published and verified at $PUBLIC_BASE/$H/"
 
@@ -212,7 +268,8 @@ jobs:
                   "type": "section",
                   "fields": [
                     { "type": "mrkdwn", "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Publish nullifier snapshot>" },
-                    { "type": "mrkdwn", "text": "*Height:*\n`${{ inputs.height || 'latest' }}`" }
+                    { "type": "mrkdwn", "text": "*Height:*\n`${{ github.event.inputs.height || 'latest' }}`" },
+                    { "type": "mrkdwn", "text": "*Include nullifier artifacts:*\n`${{ inputs.include_nullifier_artifacts }}`" }
                   ]
                 }
               ]
