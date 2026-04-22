@@ -2,8 +2,6 @@
 
 This runbook explains how to set up a vote nullifier private information retrieval (PIR) server.
 
-For **production** systemd layout, GitHub Actions deploy to primary/backup, Sentry, and hardware guidance, see [Deploy setup](../deploy-setup.md). This runbook focuses on concepts and local/Makefile workflows.
-
 We recommend a fully automated one-CLI-command solution that:
 
 - Downloads the latest binaries
