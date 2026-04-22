@@ -51,7 +51,7 @@ Each step below is a soft-check. For example, if we do not have local data for s
    * If equal, we are done and are ready to start.
    * If not equal, attempt to automatically sync up to the expected height. Compare the downloaded data hashes against a manifest file. If success, the server is ready to start.
       * If syncing fails but we have raw nullifier data (`nullifiers.bin`, `nullifiers.checkpoint`, `nullifiers.tree`, `nullifiers.index`) present locally with the correct expected height, automatically export the tiers `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json`
-      and proceed to starting. Note: this workload is the same as running `make ingest`
+      and proceed to starting. Note: this workload matches `nf-server export` (or `make export-nf`); `make ingest` runs sync then export.
       * If the local height is above the expected voting height, prompt the user if they want to
       download the correct pre-computed data to be able to serve from an earlier height. 
 
@@ -66,24 +66,18 @@ Possible fatal errors:
 Run
 
 ```bash
-# Ingest nullifier data
+# Sync nullifiers from lightwalletd, then export PIR tier files (one command)
 make ingest
 ```
 
 **What happens in the background?**
 
-1. Ingest nullifiers from Genesis up until `SYNC_HEIGHT`
-   * If `SYNC_HEIGHT` is unset, sync up until the most recent multiple of 10 height. 
-   * Produces `nullifiers.bin` file (~2 GB) and `nullifiers.checkpoint` - the snapshot height
-2. Construt the Merkle tree of nullifiers
-  * From nullifiers in step 1, produces a Merkle tree `nullifiers.tree`, saving it to disk.
-3. Create 3 tiers of the nullifier Merkle tree per per specification [here](../pir-tree-spec.md). Encode tiers 1 and 2 into a PIR matrix, export each tier's raw bytes and the tree root to disk (`tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json`).
+1. **Sync** (`nf-server ingest` inside `make ingest`): Orchard nullifiers from NU5 activation up until `SYNC_HEIGHT`, or chain tip when `SYNC_HEIGHT` is unset (see the [Makefile](../../Makefile)). Produces `nullifiers.bin` and `nullifiers.checkpoint`.
+2. **Export** (same `make ingest`, after a successful sync): runs `nf-server export`, builds the Merkle tree sidecar where applicable, and writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `pir-data/`. Use `make export-nf` alone when nullifiers are already synced and only tiers need rebuilding.
+3. **Serve**: start the HTTP server (for example `make serve`).
 
 ```bash
-# Serve ingested data. Since we ingested data manually,
-# the automated bootstrap phase from snaphost is skipped.
-# The rest: fetching config file and comparing heights between snapshot and config, 
-# catching to snapshot height in case we are behind are all the same.
+# After `make ingest`, tier files exist under `pir-data/`; then serve locally.
 make serve
 ```
 
@@ -175,7 +169,7 @@ We follow semantic versioning (sem-ver) policy.
 
    * We should also make it such that if there is no `pir_data_dir`, we can still leverage `data_dir` to start using `make serve`. Just fails at the moment.
    * At the moment, the flow seems to be to run `make export-nf` manually to export these. Instead, it should be auto exported in the case of failure and started from.
-- export-nf looks unnecessary. `ingest` should export data as it progresses. If aborted, continue from the last successful stage.
+- `make ingest` now runs export after a successful sync; resume-from-partial-run behavior is not implemented yet.
 - Add optional step for setting up a DO instance from Terraform.
 - Confirm if `SVOTE_VOTE_CHAIN_URL` is needed. Remove if not or added to useful configurations.
 - Instead of having users run Makefile commands, can we just have them install the binaries and then interact with the binaries directly instead?

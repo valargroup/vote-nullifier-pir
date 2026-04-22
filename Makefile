@@ -9,12 +9,13 @@
 #
 # Pipeline: ingest → export → serve
 # ──────────────────────────────────
-# `make ingest` syncs nullifiers from lightwalletd into nullifiers.bin.
-# `make export-nf` builds the PIR tree and exports tier files.
+# `make ingest` syncs nullifiers from lightwalletd into nullifiers.bin,
+# then runs export so `pir-data/` tier files match (same as ingest + export-nf).
+# `make export-nf` exports tier files only (reuse when nullifiers already synced).
 # `make serve` starts the PIR HTTP server.
 #
-# `make ingest-resync` ingests and deletes stale sidecar/tier files
-# (--invalidate) so the next export rebuilds from the updated data.
+# `make ingest-resync` runs ingest with --invalidate (drops stale tree/tiers)
+# then export, so sidecars rebuild from the updated nullifier data.
 
 IMT_DIR     := imt-tree
 SERVICE_DIR := nf-ingest
@@ -52,13 +53,15 @@ build-nf: ## Build nf-server binary (release, nightly)
 build: ## Build nf-server and service library (release)
 	cd $(NF_DIR) && cargo build --release
 
-ingest: ## Ingest nullifiers incrementally up to SYNC_HEIGHT (or chain tip if unset)
-	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
+ingest: ## Sync nullifiers then export PIR tiers (up to SYNC_HEIGHT or chain tip)
+	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG) && \
+	cargo run --release -- export --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR)
 
-ingest-resync: ## Ingest nullifiers up to SYNC_HEIGHT and invalidate stale sidecar/tier files
-	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) --invalidate $(_MAX_HEIGHT_FLAG)
+ingest-resync: ## Ingest with --invalidate then export (rebuild tree and tiers from nullifiers)
+	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) --invalidate $(_MAX_HEIGHT_FLAG) && \
+	cargo run --release -- export --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR)
 
-export-nf: ## Build PIR tree and export tier files from nullifiers.bin
+export-nf: ## Export tier files only (nullifiers already synced; skips ingest)
 	cd $(NF_DIR) && cargo run --release -- export --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR)
 
 serve: ## Start the PIR HTTP server

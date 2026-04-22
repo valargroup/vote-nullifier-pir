@@ -66,6 +66,8 @@ ingest ──> export ──> serve ──> client query
 2. **Export** — Builds the PIR tree from the nullifier set and writes three binary tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`) plus metadata (`pir_root.json`).
 3. **Serve** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
 
+`make ingest` runs steps 1 and 2 in sequence; `make export-nf` runs step 2 only.
+
 ## Build & Run
 
 Requires Rust (stable for most crates; nightly for `pir-server` with AVX-512 support).
@@ -76,9 +78,8 @@ cargo build --release
 
 # Or use the Makefile for the standard pipeline:
 make build          # Build nf-server binary
-make bootstrap      # Download nullifier snapshot (first run)
-make ingest         # Sync nullifiers from lightwalletd
-make export-nf      # Build PIR tree and export tier files
+make ingest         # Sync nullifiers from lightwalletd, then export tier files
+make export-nf      # Re-export tiers only (nullifiers already up to date)
 make serve          # Start PIR HTTP server on port 3000
 
 # Run tests

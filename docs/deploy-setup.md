@@ -341,11 +341,8 @@ From the workspace root:
 # Start the server (auto-bootstrap from data in the cloud by-default)
 make serve
 
-# Ingest from scratch 
+# Sync nullifiers and export PIR tier files (full local pipeline before serve)
 make ingest
-
-# Export PIR tier files to subsequently serve PIR queries from local data.
-make export-nf
 ```
 
 Then check `http://localhost:3000/health` and `http://localhost:3000/root`.
