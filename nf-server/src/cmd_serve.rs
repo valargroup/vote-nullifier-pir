@@ -19,7 +19,6 @@ use nf_ingest::file_store;
 
 use crate::bootstrap;
 use crate::metrics;
-use crate::pir_env;
 use crate::serve::handlers;
 use crate::serve::rebuild;
 use crate::serve::state::{AppState, ServerPhase};
@@ -34,32 +33,30 @@ pub struct Args {
     /// Directory for all on-disk state: nullifiers.bin, nullifiers.checkpoint,
     /// nullifiers.index, nullifiers.tree, tier0.bin, tier1.bin, tier2.bin, and
     /// pir_root.json. Required for snapshot rebuilds via POST /snapshot/prepare.
-    ///
-    /// Env: `SVOTE_PIR_DATA_DIR` (preferred) or legacy `SVOTE_DATA_DIR`.
-    #[arg(long, default_value = "./pir-data")]
+    #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
     pir_data_dir: PathBuf,
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
-    ///
-    /// Env: `SVOTE_PIR_MAINNET_RPC_URL` (preferred) or legacy `SVOTE_MAINNET_RPC_DIR`.
-    #[arg(long, default_value = "https://zec.rocks:443")]
+    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
     /// If set, POST /snapshot/prepare will reject rebuilds when a round is active.
-    ///
-    /// Env: `SVOTE_PIR_VOTE_CHAIN_URL` (preferred) or legacy `SVOTE_VOTE_CHAIN_URL`.
-    #[arg(long)]
+    #[arg(long, env = "SVOTE_PIR_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
     /// URL of the published `voting-config.json` whose `snapshot_height`
     /// is treated as the canonical height every PIR replica should serve.
     /// Defaults to the production GitHub Pages URL; leave unset so operators
-    /// pick up the baked-in default, or set `SVOTE_PIR_VOTING_CONFIG_URL=` / legacy
-    /// `SVOTE_VOTING_CONFIG_URL=` (empty) to disable startup self-bootstrap and serve
-    /// only pre-staged files under `pir_data_dir`.
-    #[arg(long, default_value = bootstrap::Config::DEFAULT_VOTING_CONFIG_URL)]
+    /// pick up the baked-in default, or set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty)
+    /// to disable startup self-bootstrap and serve only pre-staged files under
+    /// `pir_data_dir`.
+    #[arg(
+        long,
+        env = "SVOTE_PIR_VOTING_CONFIG_URL",
+        default_value = bootstrap::Config::DEFAULT_VOTING_CONFIG_URL
+    )]
     voting_config_url: String,
 
     /// Bucket origin for pre-computed PIR snapshots (matches the
@@ -68,18 +65,18 @@ pub struct Args {
     /// Trailing slashes are trimmed. Empty disables the download
     /// portion of the bootstrap (operators relying on out-of-band
     /// staging can keep the voting-config height check enabled).
-    ///
-    /// Env: `SVOTE_PIR_PRECOMPUTED_BASE_URL` (preferred) or legacy `SVOTE_PRECOMPUTED_BASE_URL`.
-    #[arg(long, default_value = bootstrap::Config::DEFAULT_PRECOMPUTED_BASE_URL)]
+    #[arg(
+        long,
+        env = "SVOTE_PIR_PRECOMPUTED_BASE_URL",
+        default_value = bootstrap::Config::DEFAULT_PRECOMPUTED_BASE_URL
+    )]
     precomputed_base_url: String,
 
     /// Per-request timeout for the snapshot bootstrap in seconds.
     /// Defaults to 30 minutes — a slow tier0 fetch from the wrong
     /// region can sit close to that, so we err on the side of
     /// patience rather than spurious failures on a fresh host.
-    ///
-    /// Env: `SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS` (preferred) or legacy `SVOTE_BOOTSTRAP_TIMEOUT_SECS`.
-    #[arg(long, default_value = "1800")]
+    #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
     bootstrap_timeout_secs: u64,
 
     /// How long the host must continuously serve a snapshot older
@@ -87,9 +84,7 @@ pub struct Args {
     /// emits a Sentry error event (which Sentry's Slack integration
     /// then routes to the on-call channel). Default 30 minutes.
     /// Set to 0 to disable the watchdog entirely.
-    ///
-    /// Env: `SVOTE_PIR_STALE_THRESHOLD_SECS` (preferred) or legacy `SVOTE_STALE_THRESHOLD_SECS`.
-    #[arg(long, default_value = "1800")]
+    #[arg(long, env = "SVOTE_PIR_STALE_THRESHOLD_SECS", default_value = "1800")]
     stale_threshold_secs: u64,
 
     /// How often the watchdog checks `served` vs `expected`. The tick
@@ -97,9 +92,7 @@ pub struct Args {
     /// and the `stale_threshold_secs` deadline, so the default of 60s
     /// gives ±1m precision on a 30m threshold. Capped below the
     /// threshold at runtime.
-    ///
-    /// Env: `SVOTE_PIR_WATCHDOG_TICK_SECS` (preferred) or legacy `SVOTE_WATCHDOG_TICK_SECS`.
-    #[arg(long, default_value = "60")]
+    #[arg(long, env = "SVOTE_PIR_WATCHDOG_TICK_SECS", default_value = "60")]
     watchdog_tick_secs: u64,
 
     /// Sentry DSN for error tracking. When empty, Sentry is disabled.
@@ -107,54 +100,13 @@ pub struct Args {
     pub(crate) sentry_dsn: String,
 }
 
-impl Args {
-    fn resolve_pir_env(mut self) -> Self {
-        self.pir_data_dir = pir_env::pick_path(
-            "SVOTE_PIR_DATA_DIR",
-            "SVOTE_DATA_DIR",
-            self.pir_data_dir,
-        );
-        self.lwd_url = pir_env::pick_string_urlish(
-            "SVOTE_PIR_MAINNET_RPC_URL",
-            "SVOTE_MAINNET_RPC_DIR",
-            self.lwd_url,
-        );
-        self.chain_url = pir_env::pick_optional_string(
-            "SVOTE_PIR_VOTE_CHAIN_URL",
-            "SVOTE_VOTE_CHAIN_URL",
-            self.chain_url,
-        );
-        self.voting_config_url = pir_env::pick_string_urlish(
-            "SVOTE_PIR_VOTING_CONFIG_URL",
-            "SVOTE_VOTING_CONFIG_URL",
-            self.voting_config_url,
-        );
-        self.precomputed_base_url = pir_env::pick_string_urlish(
-            "SVOTE_PIR_PRECOMPUTED_BASE_URL",
-            "SVOTE_PRECOMPUTED_BASE_URL",
-            self.precomputed_base_url,
-        );
-        self.bootstrap_timeout_secs = pir_env::pick_u64(
-            "SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS",
-            "SVOTE_BOOTSTRAP_TIMEOUT_SECS",
-            self.bootstrap_timeout_secs,
-        );
-        self.stale_threshold_secs = pir_env::pick_u64(
-            "SVOTE_PIR_STALE_THRESHOLD_SECS",
-            "SVOTE_STALE_THRESHOLD_SECS",
-            self.stale_threshold_secs,
-        );
-        self.watchdog_tick_secs = pir_env::pick_u64(
-            "SVOTE_PIR_WATCHDOG_TICK_SECS",
-            "SVOTE_WATCHDOG_TICK_SECS",
-            self.watchdog_tick_secs,
-        );
-        self
-    }
-}
-
 pub async fn run(args: Args) -> Result<()> {
-    let args = args.resolve_pir_env();
+    let chain_url = args
+        .chain_url
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     let lwd_urls = config::resolve_lwd_urls(&args.lwd_url);
     let state = Arc::new(AppState {
         phase: RwLock::new(ServerPhase::Starting {
@@ -164,7 +116,7 @@ pub async fn run(args: Args) -> Result<()> {
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         pir_data_dir: args.pir_data_dir.clone(),
         lwd_urls,
-        chain_url: args.chain_url.clone(),
+        chain_url,
         next_req_id: AtomicU64::new(0),
         inflight_requests: AtomicUsize::new(0),
     });

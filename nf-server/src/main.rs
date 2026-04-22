@@ -7,7 +7,6 @@
 #[cfg(feature = "serve")]
 mod bootstrap;
 mod cmd_sync;
-mod pir_env;
 mod sync_pipeline;
 #[cfg(feature = "serve")]
 mod cmd_serve;

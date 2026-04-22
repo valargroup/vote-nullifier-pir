@@ -61,11 +61,6 @@ SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
 EOF
 ```
 
-`nf-server` also accepts the legacy names `SVOTE_VOTING_CONFIG_URL` and
-`SVOTE_PRECOMPUTED_BASE_URL` with the same meaning. If only a legacy name is
-set, startup logs a deprecation warning. When both primary and legacy are set
-to different values, the `SVOTE_PIR_*` value wins.
-
 That is the entire bootstrap step. On startup, `nf-server` reads
 `voting-config.snapshot_height` and downloads
 `<bucket>/snapshots/<height>/{manifest.json,tier*.bin,pir_root.json}`,
@@ -85,9 +80,8 @@ still fall back to whatever tier files are already on disk.
 > **Offline / dev:** stage `nullifiers.{bin,checkpoint}` (and optionally
 > `nullifiers.tree` + tier files) under the same directory as `--pir-data-dir`
 > (default `./pir-data`), run `nf-server sync` with `SVOTE_PIR_VOTING_CONFIG_URL=`
-> (or legacy `SVOTE_VOTING_CONFIG_URL=`) to skip voting height checks, or set the
-> same empty env for `nf-server serve` so bootstrap is skipped and on-disk tier
-> files are served from `SVOTE_PIR_DATA_DIR` (legacy `SVOTE_DATA_DIR` is still read as an alias for the data directory).
+> to skip voting height checks, or set the same empty env for `nf-server serve`
+> so bootstrap is skipped and on-disk tier files are served from `SVOTE_PIR_DATA_DIR`.
 
 [runbook]: https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html
 
@@ -190,8 +184,8 @@ goes back to 0 the moment the host catches up.
 
 | Env var | CLI flag | Default | Effect |
 |---------|----------|---------|--------|
-| `SVOTE_PIR_STALE_THRESHOLD_SECS` (legacy `SVOTE_STALE_THRESHOLD_SECS`) | `--stale-threshold-secs` | `1800` (30 min) | How long staleness must persist before Sentry fires. `0` disables the watchdog entirely. |
-| `SVOTE_PIR_WATCHDOG_TICK_SECS` (legacy `SVOTE_WATCHDOG_TICK_SECS`) | `--watchdog-tick-secs` | `60` | Polling cadence. Capped below the threshold at runtime. |
+| `SVOTE_PIR_STALE_THRESHOLD_SECS` | `--stale-threshold-secs` | `1800` (30 min) | How long staleness must persist before Sentry fires. `0` disables the watchdog entirely. |
+| `SVOTE_PIR_WATCHDOG_TICK_SECS` | `--watchdog-tick-secs` | `60` | Polling cadence. Capped below the threshold at runtime. |
 
 Both have production defaults baked in -- there is nothing to add to
 `/etc/default/nf-server` unless you want to override.
@@ -316,7 +310,7 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 The `nf-server serve` subcommand starts the PIR HTTP server. It needs:
 
 - **PIR data**: Tier files and `pir_root.json` under `SVOTE_PIR_DATA_DIR` (default `…/pir-data`). Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server sync` (or copied from another host).
-- **Bootstrap config**: `SVOTE_PIR_VOTING_CONFIG_URL` and `SVOTE_PIR_PRECOMPUTED_BASE_URL` (defaults are baked into the binary for production; legacy `SVOTE_VOTING_CONFIG_URL` / `SVOTE_PRECOMPUTED_BASE_URL` still work). Pin them in `/etc/default/nf-server` if you want the deploy to be self-describing or to point at a mirror. Set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty) to disable bootstrap entirely. While the URL is non-empty (including the default), startup requires a successful fetch and a `snapshot_height` field (strict).
+- **Bootstrap config**: `SVOTE_PIR_VOTING_CONFIG_URL` and `SVOTE_PIR_PRECOMPUTED_BASE_URL` (defaults are baked into the binary for production). Pin them in `/etc/default/nf-server` if you want the deploy to be self-describing or to point at a mirror. Set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty) to disable bootstrap entirely. While the URL is non-empty (including the default), startup requires a successful fetch and a `snapshot_height` field (strict).
 - **Nullifier data** (only on the publisher host that runs `publish-snapshot.yml`): `nullifiers.bin` and `nullifiers.checkpoint` in the same `SVOTE_PIR_DATA_DIR` tree. PIR-only replicas do not need nullifier files.
 - **Port**: Configurable via `--port` (default 3000).
 
@@ -412,7 +406,7 @@ DNS records:
 Cloud-init templates in `vote-infrastructure/cloud-init/pir.yaml` handle first-boot
 provisioning: install Caddy, mount the block volume, download `nf-server` from a
 GitHub release, write `/etc/default/nf-server` with the bootstrap config
-(`SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`; legacy names still accepted), and start the service.
+(`SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`), and start the service.
 First-boot snapshot population and subsequent height bumps both go through
 `nf-server`'s built-in self-bootstrap from the published bucket — there is no
 longer a curl-based pre-stage step or a periodic `nf-resync.timer`. See the
