@@ -15,12 +15,12 @@ For operators who prefer manual setup, or for debugging, manual approaches are o
 
 There are two modes for starting up:
 
-1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage (see [Deploy setup](../deploy-setup.md) for URLs and layout).
+1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage.
 2. **Synced** — the PIR server ingests Zcash mainnet Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), then exports a 3-tier representation per [PIR tree spec](../pir-tree-spec.md), writing flat files to disk so expensive work is not repeated on every restart.
 
 ## Recommended hardware
 
-We recommend a 4 Intel vCPU machine with AVX-512 support, 32 GB RAM, and at least 35 GB free disk (see [Deploy setup](../deploy-setup.md) for a fuller table, including recommended 40 GB disk headroom for production).
+We recommend a 4 Intel vCPU machine with AVX-512 support, 32 GB RAM, and at least 35 GB free disk.
 
 ## Startup time estimate
 
@@ -55,7 +55,7 @@ Behavior matches `nf-server serve` startup: index maintenance on the nullifier `
 **Fatal errors (typical):**
 
 - Tier load fails after bootstrap (missing or corrupt `tier0.bin` / `pir_root.json`, etc.).
-- `voting-config.json` cannot be fetched **and** there is no usable local snapshot when the server requires one (see [Deploy setup](../deploy-setup.md) for disabling bootstrap with an empty voting-config URL for fully offline disks).
+- `voting-config.json` cannot be fetched **and** there is no usable local snapshot when the server requires one.
 
 Resolution hints:
 
@@ -96,12 +96,11 @@ The server can emit errors and traces to Sentry. Create a project at [sentry.io]
 ### Recommended hardware
 
 - AVX-512 meaningfully accelerates PIR packing and query-side linear algebra.
-- Roughly 35 GB disk is enough for ~2 GB nullifier data, ~7 GB tier files, and working space; production guidance may recommend more headroom (see [Deploy setup](../deploy-setup.md)).
+- Roughly 35 GB disk is enough for ~2 GB nullifier data, ~7 GB tier files, and working space. The rest is headroom.
 - 4 vCPUs help parallelize large matrix–vector steps during queries.
 
 ## Useful configuration
 
-Canonical **production** environment variable names today are listed in [Deploy setup](../deploy-setup.md). The project is moving toward a consistent `SVOTE_PIR_*` prefix for PIR-specific settings; until names are migrated in code and workflows, prefer the tables in deploy-setup for copy-paste.
 
 Makefile-oriented development variables (see [Makefile](../../Makefile)):
 
@@ -123,7 +122,7 @@ Planned names include `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, lightwalletd URL, 
 
 ## Tagging and releases
 
-Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifacts). Integrators should pin **binary version** and the **voting snapshot height** they expect. A project `CHANGELOG.md` is recommended so breaking changes are visible.
+Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifacts). Integrators should pin **binary version** and the **voting snapshot height** they expect.
 
 ## Decisions (formerly open questions)
 
