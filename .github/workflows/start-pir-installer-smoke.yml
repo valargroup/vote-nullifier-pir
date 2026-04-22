@@ -1,0 +1,50 @@
+# Smoke-test the published-style start_pir.sh on a fresh Ubuntu container
+# (curl missing by default; systemd mocked). Does not replace hardware QA.
+
+name: start_pir installer smoke
+
+on:
+  pull_request:
+    paths:
+      - "scripts/start_pir.sh.template"
+      - "scripts/ci_smoke_start_pir.sh"
+      - "scripts/ci_smoke_start_pir_inner.sh"
+      - ".github/workflows/start-pir-installer-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve latest release tag
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
+            | jq -er .tag_name)"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Render installer (same substitution as release.yml)
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.rel.outputs.tag }}"
+          sed \
+            -e "s|__RELEASE_TAG__|${TAG}|g" \
+            -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
+            -e "s|__BINARY_BASE_URL__|https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir|g" \
+            -e "s|__VOTING_CONFIG_URL__|https://valargroup.github.io/token-holder-voting-config/voting-config.json|g" \
+            -e "s|__PRECOMPUTED_BASE_URL__|https://vote.fra1.digitaloceanspaces.com|g" \
+            scripts/start_pir.sh.template > /tmp/start_pir.sh
+          chmod +x /tmp/start_pir.sh
+
+      - name: Fresh Ubuntu container smoke
+        run: scripts/ci_smoke_start_pir.sh /tmp/start_pir.sh

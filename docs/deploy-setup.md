@@ -27,6 +27,16 @@ The `serve` feature works on any x86-64 CPU. AVX-512 is an optional optimization
 
 This path is for operators who want to run `nf-server` without cloning the repository or installing the Rust toolchain.
 
+### Quick install (Linux / systemd)
+
+```bash
+curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
+```
+
+The script at that URL is regenerated on each `v*` tag release; it installs `nf-server` for that tag under `/opt/nf-ingest`, downloads `nullifier-query-server.service` from the matching GitHub release, writes `/etc/default/nf-server` with the same bootstrap pins as the binary defaults, and enables the unit. On Debian/Ubuntu it runs `apt-get update` and installs **`curl`** and **`ca-certificates`** when either is missing so a minimal cloud image can fetch the binary and unit over HTTPS. The same rendered script is also uploaded to `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh`, where `<snapshot_height>` is `snapshot_height` from the production voting-config at publish time (useful to pin an installer URL to an on-chain snapshot era; multiple tag releases that share the same height overwrite that object). CI runs a Docker smoke test on pull requests that touch the installer (see [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml)). To register Sentry without baking a DSN into the script, export `SENTRY_DSN` in the same shell before running the command so the installer can write `/opt/nf-ingest/.env`.
+
+For a step-by-step manual install (GitHub asset URLs, editing files by hand), continue below.
+
 ### 1. Download the binary
 
 Grab the latest release from GitHub:
@@ -387,6 +397,7 @@ flowchart LR
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and `nf_snapshot_served_height == nf_snapshot_expected_height`, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`runbooks/restart-pir-fleet.md`](runbooks/restart-pir-fleet.md). |
 | [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml) | Manual `workflow_dispatch` | Runs `nf-server sync` + `systemctl restart` on the host in `DEPLOY_HOST`. For fleet-wide snapshot bumps, prefer `publish-snapshot.yml` then `restart.yml`. |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin`, resolves the target PIR endpoint from the published `voting-config.json`, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. |
+| [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
 
 ---
 
