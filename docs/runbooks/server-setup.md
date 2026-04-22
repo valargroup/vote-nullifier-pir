@@ -118,7 +118,7 @@ Planned names (see tracking issues / PRs): `SVOTE_PIR_MAX_HEIGHT`, `SVOTE_PIR_IN
 
 ### Serve (CLI / env)
 
-Planned names include `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, lightwalletd URL, `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`. **Today** the `nf-server serve` CLI (see `nf-server serve --help`) reads `SVOTE_VOTING_CONFIG_URL`, `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_DATA_DIR`, `SVOTE_PIR_DATA_DIR`, `SVOTE_MAINNET_RPC_DIR`, `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, and `SVOTE_VOTE_CHAIN_URL`, among others.
+The `nf-server serve` CLI (see `nf-server serve --help`) reads environment variables including: `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, `SVOTE_DATA_DIR`, `SVOTE_VOTING_CONFIG_URL` (defaults to the production voting-config URL when unset), `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_MAINNET_RPC_DIR` (lightwalletd URL for rebuilds), `LWD_URLS` (comma-separated override for the same), `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, `SVOTE_VOTE_CHAIN_URL`, and `SENTRY_DSN`. A future rename may introduce `SVOTE_PIR_*` aliases for the voting-config and precomputed URLs only.
 
 ## Tagging and releases
 

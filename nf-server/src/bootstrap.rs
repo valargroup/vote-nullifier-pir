@@ -185,8 +185,8 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
         Ok(None) => {
             metrics::bootstrap_outcome_inc("failed_voting_config");
             bail!(
-                "voting-config at {} has no snapshot_height; set voting-config-url to empty \
-                 to disable bootstrap and serve pre-staged pir-data only",
+                "voting-config at {} has no snapshot_height; set SVOTE_VOTING_CONFIG_URL= or \
+                 --voting-config-url \"\" to disable bootstrap and serve pre-staged pir-data only",
                 cfg.voting_config_url
             );
         }
