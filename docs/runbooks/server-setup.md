@@ -43,10 +43,10 @@ make serve
 
 **What happens in the background?**
 
-Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then [bootstrap](../deploy-setup.md#2-configure-the-snapshot-bootstrap) (voting-config + optional CDN tier fetch), then loading mmap’d tier files. Network steps log warnings and may fall through to local disk; the process still **errors** if tier files cannot be loaded. For exact metrics and watchdog behavior, see [Deploy setup](../deploy-setup.md).
+Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then [bootstrap](../deploy-setup.md#2-configure-the-snapshot-bootstrap) (voting-config + optional CDN tier fetch), then loading mmap’d tier files. When the voting-config URL is **non-empty**, its fetch and `snapshot_height` field are **required**—startup fails otherwise. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing `pir-data/` on disk; the process **errors** if tier files ultimately cannot be loaded. For exact metrics and watchdog behavior, see [Deploy setup](../deploy-setup.md).
 
 1. Fetch `voting-config.json` (default URL in [Deploy setup](../deploy-setup.md)).
-   - Read `snapshot_height` when present.
+   - Require `snapshot_height` in the JSON when the URL is enabled.
 2. Compare canonical height to local `pir_root.json` height.
    - If equal, continue to load and serve.
    - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `pir-data/`.
@@ -55,7 +55,7 @@ Behavior matches `nf-server serve` startup: index maintenance on the nullifier `
 **Fatal errors (typical):**
 
 - Tier load fails after bootstrap (missing or corrupt `tier0.bin` / `pir_root.json`, etc.).
-- `voting-config.json` cannot be fetched **and** there is no usable local snapshot when the server requires one.
+- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while `SVOTE_VOTING_CONFIG_URL` is non-empty (set it empty for offline-only disks; see [Deploy setup](../deploy-setup.md)).
 
 Resolution hints:
 
@@ -128,7 +128,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 | Topic | Decision |
 |-------|----------|
-| Voting-config unavailable when its URL is set | **Target policy:** non-empty URL implies a required canonical `snapshot_height`; fetch/parse failure should fail startup (enforcement may land after this doc update; see repository PRs). **Offline / manual disks:** set voting-config URL to empty and stage `pir-data/` yourself ([Deploy setup](../deploy-setup.md)). |
+| Voting-config unavailable when its URL is set | Non-empty URL requires a successful fetch and a `snapshot_height` field; otherwise startup fails. **Offline / manual disks:** set voting-config URL to empty and stage `pir-data/` yourself ([Deploy setup](../deploy-setup.md)). |
 | `nullifiers.checkpoint` vs `nullifiers.index` | **Checkpoint** is the durable commit point (height + byte offset into `nullifiers.bin`). **Index** records per-batch offsets for export at specific aligned heights. Both are kept. |
 | Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
 | CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |

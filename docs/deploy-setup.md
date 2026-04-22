@@ -69,6 +69,12 @@ verifies sha256 against the manifest, and atomically swaps into
 export, and no separate cron-driven re-sync — the next bump is just a
 config PR plus a `systemctl restart` (see [the runbook][runbook]).
 
+When `SVOTE_VOTING_CONFIG_URL` is **non-empty**, the URL must respond with
+valid JSON that includes `snapshot_height`, and the fetch must succeed.
+Otherwise `nf-server serve` exits during startup (strict voting-config).
+CDN download issues after the height is known may still fall back to
+whatever tier files are already on disk.
+
 > The legacy first-boot flow (`curl` the raw `nullifiers.{bin,checkpoint,tree}`,
 > run `nf-server ingest`, then `nf-server export`) still works on
 > offline / dev machines: set `SVOTE_VOTING_CONFIG_URL=` (empty string)
@@ -295,7 +301,7 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 The `nf-server serve` subcommand starts the PIR HTTP server. It needs:
 
 - **PIR data**: Exported tier files in `pir-data/`. Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server export`.
-- **Bootstrap config**: `SVOTE_VOTING_CONFIG_URL` and `SVOTE_PRECOMPUTED_BASE_URL` env vars (compiled-in defaults point at production). Set the former to an empty string to disable the bootstrap entirely.
+- **Bootstrap config**: `SVOTE_VOTING_CONFIG_URL` and `SVOTE_PRECOMPUTED_BASE_URL` env vars (compiled-in defaults point at production). Set the former to an empty string to disable the bootstrap entirely. With a non-empty URL, startup requires a successful fetch and a `snapshot_height` field (strict).
 - **Nullifier data** (only on the publisher host that runs `publish-snapshot.yml`): `nullifiers.bin` and `nullifiers.checkpoint` in `--data-dir`. PIR-only replicas no longer need these.
 - **Port**: Configurable via `--port` (default 3000).
 
