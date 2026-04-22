@@ -16,9 +16,12 @@
 # `SVOTE_PIR_SYNC_RESET=1` wipes nullifiers + tree + tiers before a run.
 # `make sync-invalidate` passes `--invalidate-after-blocks` (rebuild tree + tiers when new blocks were synced).
 
+ROOT        := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 IMT_DIR     := imt-tree
 SERVICE_DIR := nf-ingest
 NF_DIR      := nf-server
+# Workspace builds emit binaries under the repo-root `target/`, not `nf-server/target/`.
+NF_RELEASE_BIN := $(ROOT)/target/release/nf-server
 
 # ── Configuration (override with env vars) ───────────────────────────
 # Single on-disk root for nullifiers, tree checkpoint, and tier files (`SVOTE_PIR_DATA_DIR`).
@@ -26,6 +29,12 @@ PIR_DATA_DIR ?= pir-data
 LWD_URL       ?= https://zec.rocks:443
 PORT          ?= 3000
 SYNC_HEIGHT   ?=
+
+# `make install`: DESTDIR for packaging. PREFIX defaults to ~/.local (no sudo); system-wide:
+# `sudo make install PREFIX=/usr/local`. Cargo features: INSTALL_FEATURES (default serve).
+PREFIX           ?= $(HOME)/.local
+DESTDIR          ?=
+INSTALL_FEATURES ?= serve
 
 # Validate SYNC_HEIGHT and build --max-height for `nf-server sync`.
 ifdef SYNC_HEIGHT
@@ -41,7 +50,7 @@ _SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --pir-data-dir ../$(PIR
 
 # ── Targets ──────────────────────────────────────────────────────────
 
-.PHONY: build-nf sync sync-invalidate serve build test clean status help
+.PHONY: build-nf sync sync-invalidate serve build install test clean status help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -52,6 +61,11 @@ build-nf: ## Build nf-server binary (release, nightly)
 
 build: ## Build nf-server and service library (release)
 	cd $(NF_DIR) && cargo build --release
+
+install: ## Install nf-server (INSTALL_FEATURES; PREFIX defaults to ~/.local, use sudo for /usr/local)
+	cd $(ROOT) && cargo build -p nf-server --release --features "$(INSTALL_FEATURES)"
+	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
+	install -m 0755 "$(NF_RELEASE_BIN)" "$(DESTDIR)$(PREFIX)/bin/nf-server"
 
 sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
 	$(_SYNC_CMD)
