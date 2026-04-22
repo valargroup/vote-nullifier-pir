@@ -78,10 +78,11 @@ the fetch must succeed—otherwise `nf-server serve` exits during startup
 still fall back to whatever tier files are already on disk.
 
 > **Offline / dev:** stage `nullifiers.{bin,checkpoint}` (and optionally
-> `nullifiers.tree` + `pir-data/`), run `nf-server sync` with
-> `SVOTE_VOTING_CONFIG_URL=` to skip voting height checks, or set
-> `SVOTE_VOTING_CONFIG_URL=` so `nf-server serve` skips bootstrap and serves
-> on-disk `pir-data/`.
+> `nullifiers.tree` + tier files) under the same directory as `--pir-data-dir`
+> (default `./pir-data`), run `nf-server sync` with `SVOTE_VOTING_CONFIG_URL=`
+> to skip voting height checks, or set `SVOTE_VOTING_CONFIG_URL=` so
+> `nf-server serve` skips bootstrap and serves on-disk tier files from
+> `SVOTE_PIR_DATA_DIR`.
 
 [runbook]: https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html
 
@@ -257,24 +258,30 @@ This path is for contributors and operators who want to build from source with C
 
 ### Moving cached data to the deploy directory
 
-The service uses flat binary files for nullifier storage. To move them into the deploy directory (default `/opt/nf-ingest`):
+The service uses flat binary files under a single on-disk root (`SVOTE_PIR_DATA_DIR`, default `/opt/nf-ingest/pir-data` in the shipped unit). To move them into the deploy directory:
 
 ```bash
-sudo mkdir -p /opt/nf-ingest
+sudo mkdir -p /opt/nf-ingest/pir-data
 
 # Stop the service first if it is running
 sudo systemctl stop nullifier-query-server || true
 
-# Move data files
-sudo mv /path/to/nullifiers.bin        /opt/nf-ingest/
-sudo mv /path/to/nullifiers.checkpoint /opt/nf-ingest/
-sudo mv /path/to/nullifiers.tree       /opt/nf-ingest/
+# Move data files (nullifiers + optional tree live next to tier files)
+sudo mv /path/to/nullifiers.bin        /opt/nf-ingest/pir-data/
+sudo mv /path/to/nullifiers.checkpoint /opt/nf-ingest/pir-data/
+sudo mv /path/to/nullifiers.index      /opt/nf-ingest/pir-data/ 2>/dev/null || true
+sudo mv /path/to/nullifiers.tree       /opt/nf-ingest/pir-data/ 2>/dev/null || true
+
+# If upgrading from a layout with nullifiers in /opt/nf-ingest and tiers in pir-data/,
+# consolidate any stragglers from the parent directory:
+# sudo mv /opt/nf-ingest/nullifiers.bin /opt/nf-ingest/pir-data/ 2>/dev/null || true
+# (repeat for checkpoint / index / tree as needed)
 
 # Ensure the deploy user can write (if deploy runs as a different user)
 # sudo chown -R DEPLOY_USER:DEPLOY_USER /opt/nf-ingest
 ```
 
-The unit file in `docs/nullifier-query-server.service` uses `/opt/nf-ingest` as the data directory by default.
+The unit file in `docs/nullifier-query-server.service` uses `/opt/nf-ingest/pir-data` as `SVOTE_PIR_DATA_DIR` by default.
 
 ### GitHub repository secrets
 
@@ -303,9 +310,9 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 
 The `nf-server serve` subcommand starts the PIR HTTP server. It needs:
 
-- **PIR data**: Exported tier files in `pir-data/`. Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server sync` (or copied from another host).
+- **PIR data**: Tier files and `pir_root.json` under `SVOTE_PIR_DATA_DIR` (default `…/pir-data`). Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server sync` (or copied from another host).
 - **Bootstrap config**: `SVOTE_VOTING_CONFIG_URL` and `SVOTE_PRECOMPUTED_BASE_URL` (defaults are baked into the binary for production). Pin them in `/etc/default/nf-server` if you want the deploy to be self-describing or to point at a mirror. Set `SVOTE_VOTING_CONFIG_URL` to an empty string to disable bootstrap entirely. While the URL is non-empty (including the default), startup requires a successful fetch and a `snapshot_height` field (strict).
-- **Nullifier data** (only on the publisher host that runs `publish-snapshot.yml`): `nullifiers.bin` and `nullifiers.checkpoint` in `--data-dir`. PIR-only replicas no longer need these.
+- **Nullifier data** (only on the publisher host that runs `publish-snapshot.yml`): `nullifiers.bin` and `nullifiers.checkpoint` in the same `SVOTE_PIR_DATA_DIR` tree. PIR-only replicas do not need nullifier files.
 - **Port**: Configurable via `--port` (default 3000).
 
 A systemd unit file is provided at `docs/nullifier-query-server.service`. Copy to `/etc/systemd/system/`:
@@ -377,7 +384,7 @@ flowchart LR
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Hosts are rolled **serially** (`max-parallel: 1`) so the readiness gate on one host completes before the next is touched. |
-| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (with optional `height` input) | Runs `nf-server sync` on `PIR_BACKUP_HOST`, builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
+| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (with optional `height` input) | Runs `nf-server sync` on `PIR_BACKUP_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and `nf_snapshot_served_height == nf_snapshot_expected_height`, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`runbooks/restart-pir-fleet.md`](runbooks/restart-pir-fleet.md). |
 | [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml) | Manual `workflow_dispatch` | Runs `nf-server sync` + `systemctl restart` on the host in `DEPLOY_HOST`. For fleet-wide snapshot bumps, prefer `publish-snapshot.yml` then `restart.yml`. |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin`, resolves the target PIR endpoint from the published `voting-config.json`, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. |
@@ -405,5 +412,11 @@ First-boot snapshot population and subsequent height bumps both go through
 `nf-server`'s built-in self-bootstrap from the published bucket — there is no
 longer a curl-based pre-stage step or a periodic `nf-resync.timer`. See the
 [operator runbook][runbook] for the snapshot-bump procedure.
+
+If that cloud-init template (or any hand-rolled unit) still passes a separate
+nullifier path to `nf-server serve`, update it to a single `--pir-data-dir` (and
+`SVOTE_PIR_DATA_DIR` if set) so it matches this repository’s shipped
+`nullifier-query-server.service`, and move any `nullifiers.*` files under that
+directory as described in [Moving cached data to the deploy directory](#moving-cached-data-to-the-deploy-directory).
 
 [runbook]: https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html

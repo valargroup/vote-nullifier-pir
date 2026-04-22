@@ -39,23 +39,23 @@ Run:
 make serve
 ```
 
-**Policy:** If local PIR tier state is unusable and bootstrap cannot fix it (for example nothing valid under `pir-data/` and CDN fetch failed), startup fails after bootstrap. Fix bootstrap configuration, network, or use **Synced** mode / pre-staged files.
+**Policy:** If local PIR tier state is unusable and bootstrap cannot fix it (for example nothing valid under `SVOTE_PIR_DATA_DIR` and CDN fetch failed), startup fails after bootstrap. Fix bootstrap configuration, network, or use **Synced** mode / pre-staged files.
 
 **What happens in the background?**
 
-Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then snapshot bootstrap (voting-config + optional CDN tier fetch), then loading mmap’d tier files. The binary **defaults** to a non-empty voting-config URL (`https://valargroup.github.io/token-holder-voting-config/voting-config.json`), so operators normally configure nothing. While that URL stays non-empty (default or your override), its fetch and the `snapshot_height` field are **required**—startup fails otherwise. **Offline / pre-staged tiers only:** set `SVOTE_VOTING_CONFIG_URL` (or `--voting-config-url`) to an empty string to turn bootstrap off. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing `pir-data/` on disk; the process **errors** if tier files ultimately cannot be loaded. Prometheus metrics are exposed at `GET /metrics` on the serve port; optional Sentry reporting uses `SENTRY_DSN`, and snapshot staleness alerting uses `SVOTE_STALE_THRESHOLD_SECS` / `SVOTE_WATCHDOG_TICK_SECS` when Sentry is configured.
+Behavior matches `nf-server serve` startup: index maintenance under `SVOTE_PIR_DATA_DIR`, then snapshot bootstrap (voting-config + optional CDN tier fetch), then loading mmap’d tier files. The binary **defaults** to a non-empty voting-config URL (`https://valargroup.github.io/token-holder-voting-config/voting-config.json`), so operators normally configure nothing. While that URL stays non-empty (default or your override), its fetch and the `snapshot_height` field are **required**—startup fails otherwise. **Offline / pre-staged tiers only:** set `SVOTE_VOTING_CONFIG_URL` (or `--voting-config-url`) to an empty string to turn bootstrap off. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing files on disk under `SVOTE_PIR_DATA_DIR`; the process **errors** if tier files ultimately cannot be loaded. Prometheus metrics are exposed at `GET /metrics` on the serve port; optional Sentry reporting uses `SENTRY_DSN`, and snapshot staleness alerting uses `SVOTE_STALE_THRESHOLD_SECS` / `SVOTE_WATCHDOG_TICK_SECS` when Sentry is configured.
 
 1. Fetch `voting-config.json` from the configured URL (same default as above unless you override it).
    - Require `snapshot_height` in the JSON whenever bootstrap is enabled (non-empty URL).
 2. Compare canonical height to local `pir_root.json` height.
    - If equal, continue to load and serve.
-   - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `pir-data/`.
+   - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `SVOTE_PIR_DATA_DIR`.
 3. If CDN sync fails but raw nullifier files exist at the expected height, an operator may run `make sync` (or `nf-server sync`) to rebuild `nullifiers.tree` and tiers locally. If local **nullifier checkpoint** is above `snapshot_height` while the voting-config URL is enabled, `nf-server sync` prompts to type **`RESYNC`** (or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`) to wipe and realign.
 
 **Fatal errors (typical):**
 
 - Tier load fails after bootstrap (missing or corrupt `tier0.bin` / `pir_root.json`, etc.).
-- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while bootstrap is still enabled (default: non-empty `SVOTE_VOTING_CONFIG_URL`). For offline-only disks, set that variable to an empty string so bootstrap is skipped and pre-staged `pir-data/` is served.
+- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while bootstrap is still enabled (default: non-empty `SVOTE_VOTING_CONFIG_URL`). For offline-only disks, set that variable to an empty string so bootstrap is skipped and pre-staged files under `SVOTE_PIR_DATA_DIR` are served.
 
 Resolution hints:
 
@@ -77,11 +77,11 @@ make serve
 
 1. **Stage 1 — Nullifiers** (`nf-server sync`): stream Orchard nullifiers from NU5 activation up through `SYNC_HEIGHT`, or up to **mainnet chain tip** when `SYNC_HEIGHT` is unset (see the [Makefile](../../Makefile)). When `SVOTE_VOTING_CONFIG_URL` is **non-empty**, `snapshot_height` is fetched and caps the target height; if your local checkpoint is **above** that height, the CLI stops until you confirm **`RESYNC`** (wipe) or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`. Writes `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.index` (see `nf-ingest` crate docs).
 2. **Stage 2 — Tree checkpoint**: builds the PIR Merkle structure and writes **`nullifiers.tree`** (magic `SVOTEPT1`, temp + rename). If this file already matches the checkpoint height, the stage is skipped.
-3. **Stage 3 — Tiers**: writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `PIR_DATA_DIR`. If those files already match the expected height and sizes, the stage is skipped.
+3. **Stage 3 — Tiers**: writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default under the same `PIR_DATA_DIR` as nullifiers; use `--output-dir` to split for staging uploads). If those files already match the expected height and sizes, the stage is skipped.
 
 **Resume:** rerunning `make sync` continues after partial failure (e.g. if `nullifiers.bin` exists, nullifier sync resumes from checkpoint; if `nullifiers.tree` exists for the target height, tier export resumes; if tiers are complete, nothing heavy runs).
 
-**Fresh start:** set `SVOTE_PIR_SYNC_RESET=1` (or `true`) before `nf-server sync` to delete `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files under `PIR_DATA_DIR`, then run a full pipeline.
+**Fresh start:** set `SVOTE_PIR_SYNC_RESET=1` (or `true`) before `nf-server sync` to delete `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files under the nullifier root and tier output directory (`PIR_DATA_DIR` / `--pir-data-dir` by default), then run a full pipeline.
 
 **Unknown `nullifiers.tree` format:** files without the `SVOTEPT1` header are rejected; remove them or set `SVOTE_PIR_SYNC_RESET=1` so sync can rebuild.
 
@@ -113,8 +113,7 @@ Makefile-oriented development variables (see [Makefile](../../Makefile)):
 
 | Variable | Role |
 |----------|------|
-| `DATA_DIR` | Directory for `nullifiers.bin`, checkpoint, index, `nullifiers.tree` |
-| `PIR_DATA_DIR` | Output directory for tier blobs (default `$(DATA_DIR)/pir-data`) |
+| `PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files (same as `SVOTE_PIR_DATA_DIR` for `nf-server`; default `pir-data` in the Makefile) |
 | `LWD_URL` | First lightwalletd gRPC URL passed to sync/serve |
 | `SYNC_HEIGHT` | Optional; if set, must be a multiple of 10; caps sync target (with chain tip and voting snapshot) |
 | `PORT` | HTTP listen port for `make serve` |
@@ -123,6 +122,8 @@ Makefile-oriented development variables (see [Makefile](../../Makefile)):
 
 | Variable / flag | Role |
 |-----------------|------|
+| `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`) |
+| `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`) |
 | `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run |
 | `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height` |
 | `SVOTE_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height` |
@@ -131,7 +132,7 @@ Makefile-oriented development variables (see [Makefile](../../Makefile)):
 
 ### Serve (CLI / env)
 
-The `nf-server serve` CLI (see `nf-server serve --help`) reads environment variables including: `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, `SVOTE_DATA_DIR`, `SVOTE_VOTING_CONFIG_URL` (defaults to the production voting-config URL when unset), `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_MAINNET_RPC_DIR` (lightwalletd URL for rebuilds), `LWD_URLS` (comma-separated override for the same), `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, `SVOTE_VOTE_CHAIN_URL`, and `SENTRY_DSN`.
+The `nf-server serve` CLI (see `nf-server serve --help`) reads environment variables including: `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, `SVOTE_VOTING_CONFIG_URL` (defaults to the production voting-config URL when unset), `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_MAINNET_RPC_DIR` (lightwalletd URL for rebuilds), `LWD_URLS` (comma-separated override for the same), `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, `SVOTE_VOTE_CHAIN_URL`, and `SENTRY_DSN`.
 
 ## Tagging and releases
 
@@ -141,14 +142,13 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 | Topic | Decision |
 |-------|----------|
-| Voting-config unavailable when its URL is set | With the default non-empty URL (or any non-empty override), fetch and `snapshot_height` are required or startup fails. **Offline / manual disks:** explicitly clear `SVOTE_VOTING_CONFIG_URL` and stage `pir-data/` yourself. |
+| Voting-config unavailable when its URL is set | With the default non-empty URL (or any non-empty override), fetch and `snapshot_height` are required or startup fails. **Offline / manual disks:** explicitly clear `SVOTE_VOTING_CONFIG_URL` and stage tier files under `SVOTE_PIR_DATA_DIR` yourself. |
 | `nullifiers.checkpoint` vs `nullifiers.index` | **Checkpoint** is the durable commit point (height + byte offset into `nullifiers.bin`). **Index** records per-batch offsets for export at specific aligned heights. Both are kept. |
 | Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
 | CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |
 
 ## TODO (product / engineering backlog)
 
-- Merge or unify `data_dir` (nullifier flat files) and `pir_data_dir` (tier blobs) for simpler single-directory ops.
 - Optional: Terraform / DigitalOcean droplet setup in [vote-infrastructure](https://github.com/valargroup/vote-infrastructure).
 - Document `SVOTE_VOTE_CHAIN_URL` (optional; active-round guard for `POST /snapshot/prepare`) in operator-facing docs when stable.
 - Prefer installing release binaries + systemd for operators; Makefile remains the developer shortcut.

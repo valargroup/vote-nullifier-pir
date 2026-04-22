@@ -31,7 +31,6 @@ pub(crate) struct AppState {
     /// Prevents concurrent rebuilds. Held for the entire duration of a rebuild task.
     /// Wrapped in Arc so we can obtain an OwnedMutexGuard that is 'static.
     pub rebuild_lock: Arc<tokio::sync::Mutex<()>>,
-    pub data_dir: PathBuf,
     pub pir_data_dir: PathBuf,
     pub lwd_urls: Vec<String>,
     pub chain_url: Option<String>,
