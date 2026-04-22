@@ -43,10 +43,10 @@ make serve
 
 **What happens in the background?**
 
-Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then snapshot bootstrap (voting-config + optional CDN tier fetch), then loading mmap’d tier files. When the voting-config URL is **non-empty**, its fetch and `snapshot_height` field are **required**—startup fails otherwise. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing `pir-data/` on disk; the process **errors** if tier files ultimately cannot be loaded. Prometheus metrics are exposed at `GET /metrics` on the serve port; optional Sentry reporting uses `SENTRY_DSN`, and snapshot staleness alerting uses `SVOTE_STALE_THRESHOLD_SECS` / `SVOTE_WATCHDOG_TICK_SECS` when Sentry is configured.
+Behavior matches `nf-server serve` startup: index maintenance on the nullifier `data_dir`, then snapshot bootstrap (voting-config + optional CDN tier fetch), then loading mmap’d tier files. The binary **defaults** to a non-empty voting-config URL (`https://valargroup.github.io/token-holder-voting-config/voting-config.json`), so operators normally configure nothing. While that URL stays non-empty (default or your override), its fetch and the `snapshot_height` field are **required**—startup fails otherwise. **Offline / pre-staged tiers only:** set `SVOTE_VOTING_CONFIG_URL` (or `--voting-config-url`) to an empty string to turn bootstrap off. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing `pir-data/` on disk; the process **errors** if tier files ultimately cannot be loaded. Prometheus metrics are exposed at `GET /metrics` on the serve port; optional Sentry reporting uses `SENTRY_DSN`, and snapshot staleness alerting uses `SVOTE_STALE_THRESHOLD_SECS` / `SVOTE_WATCHDOG_TICK_SECS` when Sentry is configured.
 
-1. Fetch `voting-config.json` (default URL unless overridden: `https://valargroup.github.io/token-holder-voting-config/voting-config.json`).
-   - Require `snapshot_height` in the JSON when the URL is enabled.
+1. Fetch `voting-config.json` from the configured URL (same default as above unless you override it).
+   - Require `snapshot_height` in the JSON whenever bootstrap is enabled (non-empty URL).
 2. Compare canonical height to local `pir_root.json` height.
    - If equal, continue to load and serve.
    - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `pir-data/`.
@@ -55,12 +55,12 @@ Behavior matches `nf-server serve` startup: index maintenance on the nullifier `
 **Fatal errors (typical):**
 
 - Tier load fails after bootstrap (missing or corrupt `tier0.bin` / `pir_root.json`, etc.).
-- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while `SVOTE_VOTING_CONFIG_URL` is non-empty (for offline-only disks, set that variable to an empty string so bootstrap is skipped and pre-staged `pir-data/` is served).
+- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while bootstrap is still enabled (default: non-empty `SVOTE_VOTING_CONFIG_URL`). For offline-only disks, set that variable to an empty string so bootstrap is skipped and pre-staged `pir-data/` is served.
 
 Resolution hints:
 
-- Confirm `SVOTE_VOTING_CONFIG_URL` (or the name your release documents) points at the intended config.
-- Confirm `SVOTE_PRECOMPUTED_BASE_URL` when using CDN bootstrap.
+- Production: defaults are usually correct; override `SVOTE_VOTING_CONFIG_URL` only for a mirror or staging config. For fully local tiers, set `SVOTE_VOTING_CONFIG_URL=` to disable bootstrap.
+- Confirm `SVOTE_PRECOMPUTED_BASE_URL` when relying on CDN tier download (default points at production object storage).
 
 ## Synced mode
 
@@ -128,7 +128,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 | Topic | Decision |
 |-------|----------|
-| Voting-config unavailable when its URL is set | Non-empty URL requires a successful fetch and a `snapshot_height` field; otherwise startup fails. **Offline / manual disks:** set `SVOTE_VOTING_CONFIG_URL` to empty and stage `pir-data/` yourself. |
+| Voting-config unavailable when its URL is set | With the default non-empty URL (or any non-empty override), fetch and `snapshot_height` are required or startup fails. **Offline / manual disks:** explicitly clear `SVOTE_VOTING_CONFIG_URL` and stage `pir-data/` yourself. |
 | `nullifiers.checkpoint` vs `nullifiers.index` | **Checkpoint** is the durable commit point (height + byte offset into `nullifiers.bin`). **Index** records per-batch offsets for export at specific aligned heights. Both are kept. |
 | Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
 | CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |

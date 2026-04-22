@@ -27,11 +27,15 @@
 //!
 //! ## Failure policy
 //!
-//! When `--voting-config-url` is **non-empty**, the published config must be
-//! fetchable over HTTP(S) and must include `snapshot_height`. Otherwise
-//! [`run`] returns an error and `nf-server serve` refuses to start. Operators
-//! who manage snapshots entirely on disk (offline dev, air-gapped hosts) set
-//! the URL to an **empty string** to disable bootstrap entirely.
+//! **`nf-server serve` ships with a non-empty default** for
+//! `--voting-config-url` (see [`Config::DEFAULT_VOTING_CONFIG_URL`]), so normal
+//! operators do nothing: bootstrap runs against the published URL. **Strict
+//! rule:** whenever that URL is non-empty (the default, or any override you
+//! set), the published JSON must be fetchable over HTTP(S) and must include
+//! `snapshot_height`; otherwise [`run`] returns an error and startup stops.
+//! **Opt out:** set `--voting-config-url` / `SVOTE_VOTING_CONFIG_URL` to an
+//! **empty string** to disable bootstrap and serve only pre-staged `pir-data/`
+//! (offline dev, air-gapped hosts).
 //!
 //! After a canonical height is known, manifest and tier blob fetches from the
 //! pre-computed base URL may still fail transiently: those steps log warnings
@@ -65,8 +69,9 @@ const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_ro
 #[derive(Debug, Deserialize)]
 struct VotingConfig {
     /// Canonical Orchard nullifier-tree snapshot height for the current
-    /// voting round. Required whenever bootstrap is enabled (non-empty
-    /// voting-config URL); an absent field fails startup.
+    /// voting round. Required whenever bootstrap is enabled (the default:
+    /// non-empty voting-config URL from CLI defaults); an absent field fails
+    /// startup.
     #[serde(default)]
     snapshot_height: Option<u64>,
 }
@@ -106,8 +111,9 @@ struct PublishedManifest {
 /// composes paths without doubled slashes.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Where to fetch `voting-config.json` from. Empty string disables
-    /// the entire bootstrap (operator manages snapshots manually).
+    /// Where to fetch `voting-config.json` from. The CLI default is
+    /// [`DEFAULT_VOTING_CONFIG_URL`]; set to an empty string to disable
+    /// bootstrap (operator manages `pir-data/` entirely on disk).
     pub voting_config_url: String,
     /// Bucket origin for pre-computed snapshots. Empty disables download
     /// even if the voting-config height differs from local state — we
@@ -149,9 +155,10 @@ pub enum Outcome {
 ///
 /// Returns [`Outcome::FellThrough`] when the voting-config height is known
 /// but the CDN path cannot refresh local tiers (empty precomputed URL,
-/// download failure, etc.). Returns `Err` when the voting-config URL is
-/// non-empty but the config cannot be read or has no `snapshot_height`, or
-/// for I/O errors while installing from the CDN.
+/// download failure, etc.). Returns `Err` when bootstrap is enabled (URL
+/// non-empty, including the baked-in default) but the config cannot be read
+/// or has no `snapshot_height`, or for I/O errors while installing from the
+/// CDN.
 pub async fn run(cfg: &Config) -> Result<Outcome> {
     let started = Instant::now();
     metrics::bootstrap_attempts_inc();
