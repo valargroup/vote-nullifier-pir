@@ -371,7 +371,7 @@ async fn already_at_height_is_a_no_op() {
 }
 
 #[tokio::test]
-async fn voting_config_without_height_falls_through() {
+async fn voting_config_without_height_errors() {
     let bucket = MockBucket::default();
     stage_voting_config(&bucket, None);
     let (base, _shutdown) = spawn_mock(bucket).await;
@@ -384,15 +384,16 @@ async fn voting_config_without_height_falls_through() {
         http_timeout: Duration::from_secs(5),
     };
 
-    let outcome = bootstrap::run(&cfg).await.unwrap();
+    let err = bootstrap::run(&cfg).await.err().expect("expected error");
+    let s = format!("{err:#}");
     assert!(
-        matches!(outcome, Outcome::FellThrough { .. }),
-        "expected FellThrough when voting-config has no snapshot_height, got {outcome:?}"
+        s.contains("snapshot_height"),
+        "unexpected error: {s}"
     );
 }
 
 #[tokio::test]
-async fn unreachable_voting_config_falls_through() {
+async fn unreachable_voting_config_errors() {
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
         // Localhost on a port we don't bind: connection refused.
@@ -402,9 +403,10 @@ async fn unreachable_voting_config_falls_through() {
         http_timeout: Duration::from_secs(1),
     };
 
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    match outcome {
-        Outcome::FellThrough { reason } => assert!(reason.contains("voting-config fetch failed")),
-        other => panic!("expected FellThrough, got {other:?}"),
-    }
+    let err = bootstrap::run(&cfg).await.err().expect("expected error");
+    let s = format!("{err:#}");
+    assert!(
+        s.contains("strict bootstrap") || s.contains("voting-config"),
+        "unexpected error: {s}"
+    );
 }

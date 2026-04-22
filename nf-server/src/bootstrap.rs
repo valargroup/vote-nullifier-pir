@@ -27,13 +27,20 @@
 //!
 //! ## Failure policy
 //!
-//! Each network step (voting-config fetch, manifest fetch, blob fetch) is
-//! treated as a soft failure: we log loudly and fall through to whatever
-//! is on disk. The hard failure is `load_serving_state` later — if local
-//! state is unusable AND we couldn't bootstrap, the daemon refuses to
-//! start, which is the correct end-state for an empty PIR host. This
-//! preserves the existing operator workflow on offline dev machines
-//! (set `--voting-config-url ""` to skip entirely).
+//! **`nf-server serve` ships with a non-empty default** for
+//! `--voting-config-url` (see [`Config::DEFAULT_VOTING_CONFIG_URL`]), so normal
+//! operators do nothing: bootstrap runs against the published URL. **Strict
+//! rule:** whenever that URL is non-empty (the default, or any override you
+//! set), the published JSON must be fetchable over HTTP(S) and must include
+//! `snapshot_height`; otherwise [`run`] returns an error and startup stops.
+//! **Opt out:** set `--voting-config-url` / `SVOTE_VOTING_CONFIG_URL` to an
+//! **empty string** to disable bootstrap and serve only pre-staged `pir-data/`
+//! (offline dev, air-gapped hosts).
+//!
+//! After a canonical height is known, manifest and tier blob fetches from the
+//! pre-computed base URL may still fail transiently: those steps log warnings
+//! and fall through to local `pir-data/` if present. The final hard failure is
+//! `load_serving_state` when tier files are missing or corrupt.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -62,9 +69,9 @@ const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_ro
 #[derive(Debug, Deserialize)]
 struct VotingConfig {
     /// Canonical Orchard nullifier-tree snapshot height for the current
-    /// voting round. Optional in the schema for back-compat with older
-    /// configs; an absent value means "operator manages snapshots out of
-    /// band, don't touch local state".
+    /// voting round. Required whenever bootstrap is enabled (the default:
+    /// non-empty voting-config URL from CLI defaults); an absent field fails
+    /// startup.
     #[serde(default)]
     snapshot_height: Option<u64>,
 }
@@ -104,8 +111,9 @@ struct PublishedManifest {
 /// composes paths without doubled slashes.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Where to fetch `voting-config.json` from. Empty string disables
-    /// the entire bootstrap (operator manages snapshots manually).
+    /// Where to fetch `voting-config.json` from. The CLI default is
+    /// [`DEFAULT_VOTING_CONFIG_URL`]; set to an empty string to disable
+    /// bootstrap (operator manages `pir-data/` entirely on disk).
     pub voting_config_url: String,
     /// Bucket origin for pre-computed snapshots. Empty disables download
     /// even if the voting-config height differs from local state — we
@@ -145,10 +153,12 @@ pub enum Outcome {
 
 /// Run the bootstrap. See module docs for the algorithm.
 ///
-/// Returns the [`Outcome`] for logging; never returns Err for soft
-/// failures (network, missing remote snapshot at the requested height).
-/// Hard errors (e.g. unable to write into `pir_data_dir`) propagate up
-/// because they indicate a misconfigured host, not a transient issue.
+/// Returns [`Outcome::FellThrough`] when the voting-config height is known
+/// but the CDN path cannot refresh local tiers (empty precomputed URL,
+/// download failure, etc.). Returns `Err` when bootstrap is enabled (URL
+/// non-empty, including the baked-in default) but the config cannot be read
+/// or has no `snapshot_height`, or for I/O errors while installing from the
+/// CDN.
 pub async fn run(cfg: &Config) -> Result<Outcome> {
     let started = Instant::now();
     metrics::bootstrap_attempts_inc();
@@ -173,25 +183,19 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
             h
         }
         Ok(None) => {
-            warn!(
-                url = %cfg.voting_config_url,
-                "voting-config has no snapshot_height; falling through to local state"
+            metrics::bootstrap_outcome_inc("failed_voting_config");
+            bail!(
+                "voting-config at {} has no snapshot_height; set SVOTE_VOTING_CONFIG_URL= or \
+                 --voting-config-url \"\" to disable bootstrap and serve pre-staged pir-data only",
+                cfg.voting_config_url
             );
-            metrics::bootstrap_outcome_inc("fell_through");
-            return Ok(Outcome::FellThrough {
-                reason: "voting-config has no snapshot_height".to_string(),
-            });
         }
         Err(e) => {
-            warn!(
-                url = %cfg.voting_config_url,
-                error = %e,
-                "voting-config fetch failed; falling through to local state"
-            );
-            metrics::bootstrap_outcome_inc("fell_through");
-            return Ok(Outcome::FellThrough {
-                reason: format!("voting-config fetch failed: {e}"),
-            });
+            metrics::bootstrap_outcome_inc("failed_voting_config");
+            return Err(e.context(format!(
+                "voting-config fetch failed (strict bootstrap; URL={})",
+                cfg.voting_config_url
+            )));
         }
     };
 
@@ -265,9 +269,9 @@ fn read_local_height(pir_data_dir: &Path) -> Option<u64> {
 
 /// Fetch the published voting-config and return its `snapshot_height`.
 ///
-/// Returns `Ok(None)` when the field is absent (legitimate config
-/// without a declared snapshot, e.g. before the first round is set up);
-/// returns `Err` for network/decoding failures.
+/// Returns `Ok(None)` when the field is absent (the caller treats this as a
+/// fatal bootstrap error when the voting-config URL is enabled). Returns
+/// `Err` for network/decoding failures.
 async fn fetch_voting_config_height(url: &str, timeout: Duration) -> Result<Option<u64>> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
@@ -454,6 +458,10 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
     use tempfile::TempDir;
 
     fn write_pir_root(dir: &Path, height: Option<u64>) {
@@ -536,6 +544,50 @@ mod tests {
         };
         let outcome = run(&cfg).await.unwrap();
         assert_eq!(outcome, Outcome::Disabled);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_errors_when_voting_config_has_no_snapshot_height() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = r#"{"other":true}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config {
+            voting_config_url: format!("http://127.0.0.1:{}/cfg.json", addr.port()),
+            precomputed_base_url: String::new(),
+            pir_data_dir: tmp.path().to_path_buf(),
+            http_timeout: Duration::from_secs(5),
+        };
+        let err = run(&cfg).await.err().expect("expected error");
+        let s = format!("{err:#}");
+        assert!(
+            s.contains("snapshot_height"),
+            "unexpected error message: {s}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_errors_when_voting_config_connection_refused() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config {
+            voting_config_url: "http://127.0.0.1:1/voting-config.json".into(),
+            precomputed_base_url: String::new(),
+            pir_data_dir: tmp.path().to_path_buf(),
+            http_timeout: Duration::from_millis(500),
+        };
+        assert!(run(&cfg).await.is_err());
     }
 
     #[test]

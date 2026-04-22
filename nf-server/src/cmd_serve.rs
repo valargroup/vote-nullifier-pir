@@ -50,9 +50,10 @@ pub struct Args {
     chain_url: Option<String>,
 
     /// URL of the published `voting-config.json` whose `snapshot_height`
-    /// is treated as the canonical height every PIR replica should
-    /// serve. Set to an empty string to disable the startup
-    /// self-bootstrap entirely (operator manages snapshots manually).
+    /// is treated as the canonical height every PIR replica should serve.
+    /// Defaults to the production GitHub Pages URL; leave unset so operators
+    /// pick up the baked-in default, or set `SVOTE_VOTING_CONFIG_URL=` (empty)
+    /// to disable startup self-bootstrap and serve only pre-staged `pir-data/`.
     #[arg(
         long,
         env = "SVOTE_VOTING_CONFIG_URL",
