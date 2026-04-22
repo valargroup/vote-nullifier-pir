@@ -31,6 +31,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-test-
 
+      - name: nf-server doctor (smoke)
+        run: cargo run -p nf-server -- doctor
+
       - name: Run unit tests
         run: |
           cargo test --lib -p imt-tree
