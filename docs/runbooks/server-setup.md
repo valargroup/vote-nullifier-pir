@@ -2,19 +2,22 @@
 
 This runbook explains how to set up a vote nullifier private information retrieval (PIR) server.
 
-On Linux, we recommend using this one-CLI command to get started:
+**Linux (production):** install the release-tagged binary, bootstrap env pins, and the `nullifier-query-server` systemd unit in one step:
 
 ```bash
 curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
 ```
 
 What it does:
+
 - Downloads the latest binaries
 - Configures the service per the recommended parameters
 - Creates an automated **systemd** unit that auto-restarts on start-up and on failure
 - Bootstraps from pre-computed snapshots
 - Installs the binary
 - Serves PIR queries
+
+Piping a remote script into `bash` trusts the publisher and your TLS path; inspect the script first (`curl -fsSL …/start_pir.sh`) when your policy requires it. The same installer is also published per voting-config `snapshot_height` at `…/scripts/start_pir/<snapshot_height>/start_pir.sh` (details in [deploy-setup.md](../deploy-setup.md)). The script matches the bootstrap defaults in `nf-server` and writes `/etc/default/nf-server` like that guide. For Caddy/TLS in front of the listen port, extra environment variables, or a manual binary download, see [deploy-setup.md](../deploy-setup.md).
 
 For operators who prefer manual setup, or for debugging, manual approaches are outlined below.
 
@@ -49,29 +52,31 @@ Production binaries should be built with `--features serve` (and `--features avx
 
 Estimates assume the recommended hardware.
 
-- **Bootstrapped** cold start is often a few minutes on a well-connected host: CDN fetch of the large tier blob is usually on the order of tens of seconds, then loading mmap’d tiers and **YPIR offline precomputation** can add a couple of minutes before the process is ready for queries.
+- **Bootstrapped** startup (until **`GET /ready` returns 200**) is usually **~2–2.5 minutes wall clock** on a 4 vCPU Intel reference host, but the work splits differently on **cold** vs **warm** boots. After the HTTP listener binds, `nf-server` still runs a background pipeline: **nullifier index maintenance** on `pir-data/`, **voting-config fetch** and **snapshot bootstrap** (either CDN download + hash verification of `tier0.bin` / `tier1.bin` / ~**3 GiB** `tier2.bin` / `pir_root.json`, or an immediate no-op when local `pir_root.json` already matches `snapshot_height`), then **mmap** of the tiers and **YPIR offline precomputation**. On one `fra1` trace, CDN work logged **~16 s**; tier **1** YPIR precompute logged **~2 s**; tier **2** dominated with **~70 s** matrix construction plus **~46–52 s** offline precompute before **Server ready**—that tier‑2 CPU phase remains on **warm** restarts because it is not persisted to disk.
 - **Synced** mode wall time depends on chain tip, lightwalletd performance, and how much of the pipeline is skipped from existing files; a **fresh** full mainnet run is far longer than a sub-minute smoke test, but it is not inherently “hours” on fast paths—always budget using your own measurement.
 
-### Measured reference (single run, April 2026)
+### Measured reference (April 2026)
 
-These numbers are **one** benchmark on DigitalOcean; they will move with chain height, snapshot height, region, and peers. Use them as ballpark calibration, not an SLA.
+These numbers are **benchmark snapshots** on DigitalOcean; they move with chain height, snapshot height, region, and peers. Use them as ballpark calibration, not an SLA.
 
 | Item | Value |
 |------|--------|
-| When | 2026-04-22 UTC |
-| Host | DigitalOcean droplet `m-4vcpu-32gb-intel`, region `fra1`, Ubuntu 22.04, **100 GiB** root disk (slug default) |
+| Host | `m-4vcpu-32gb-intel`, region `fra1`, Ubuntu 22.04, **100 GiB** root disk (slug default) |
 | Binary | `nf-server` **v0.0.16** `linux-amd64` release (pre-built `serve` + `avx512`) |
-| `nf-server doctor` | 4 logical CPUs, **31.3 GiB** RAM (DO reports slightly under 32 GiB), **AVX-512F: yes**, ~95 GiB free on `/` at `pir-data` |
 
-**Full mainnet tip sync** (`SVOTE_PIR_VOTING_CONFIG_URL` **empty** so height is not capped by voting-config; `SVOTE_PIR_SYNC_RESET=1`; `nf-server sync --non-interactive --pir-data-dir /opt/nf-ingest/pir-data --lwd-url https://zec.rocks:443`; wall time from `/usr/bin/time`):
+**Session A — full mainnet tip sync** (2026-04-22 UTC):
 
-- **Elapsed (wall clock): 13 m 38 s** (chain tip height **3317378** on that day; nullifier stage dominated wall time, tree + tier export followed in the same process).
+- `nf-server doctor`: 4 logical CPUs, **31.3 GiB** RAM (DO reports slightly under 32 GiB on this SKU), **AVX-512F: yes**, ~95 GiB free on `/` at `pir-data`.
+- **Elapsed (wall clock): 13 m 38 s** from `/usr/bin/time` (`SVOTE_PIR_VOTING_CONFIG_URL` **empty** so height is not capped by voting-config; `SVOTE_PIR_SYNC_RESET=1`; `nf-server sync --non-interactive --pir-data-dir /opt/nf-ingest/pir-data --lwd-url https://zec.rocks:443`). Chain tip height **3317378** that day; nullifier streaming dominated wall time, then tree + tier export in the same process. Peak RSS about **12 GiB**.
 
-**Bootstrapped cold start** (empty `pir-data/`; production `SVOTE_PIR_VOTING_CONFIG_URL` + `SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com`; same region as the default bucket is favorable for CDN latency):
+**Session B — bootstrap cold vs warm** (2026-04-22 UTC, second droplet, same slug/region; production `SVOTE_PIR_VOTING_CONFIG_URL` + `SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com`; empty `pir-data/`, then two consecutive `nf-server serve …` runs, each timed until **`GET /ready` returns HTTP 200**):
 
-- **Time until `GET /ready` returns HTTP 200: 137 s** (~2 m 17 s). Use **`/ready`**, not **`/health`**: the listener comes up before the background startup pipeline finishes, so `/health` can return `"starting"` while bootstrap and YPIR precomputation are still running ([`nf-server` binds first, then runs index rebuild → bootstrap → load in a spawned task](../../nf-server/src/cmd_serve.rs)).
+- **Cold (CDN populate): 147 s** (~2 m 27 s). INFO logs on that run: snapshot bootstrap **~15.6 s** for ~3.2 GiB of tier payload + metadata; tier **1** YPIR offline precompute **~2.3 s**; tier **2** YPIR **~73.8 s** construct + **~51.5 s** offline precompute (internal **Server ready** elapsed **~130 s** vs **147 s** wall including index work and polling).
+- **Warm (immediate restart, `AlreadyAtHeight`): 120 s** (~2 m 0 s). Bootstrap skipped re-downloading tier blobs; tier **2** YPIR still logged **~69.9 s** construct + **~45.8 s** offline precompute (internal **Server ready** **~119 s**).
 
-**Caveats:** one sample; `fra1` is co-located with the default Spaces region; lightwalletd URL and routing differ by provider; RAM below 32 GiB on this SKU triggered `doctor` WARN only; peak RSS during sync was about **12 GiB** on this run. **Warm / hot startup** (tiers already present at the voting-config height, so bootstrap skips CDN) was **not** measured here; it is typically much faster than the cold bootstrap number because the large tier download is absent and only index rebuild, optional no-op bootstrap, mmap load, and YPIR precomputation remain.
+Use **`/ready`**, not **`/health`**: the listener comes up before the background startup pipeline finishes, so `/health` can return `"starting"` while bootstrap and YPIR precomputation are still running ([`nf-server` binds first, then runs index rebuild → bootstrap → load in a spawned task](../../nf-server/src/cmd_serve.rs)).
+
+**Caveats:** `fra1` is co-located with the default Spaces region (favorable CDN). A separate cold-only run on another instance the same evening saw **137 s** to `/ready`—treat **~2–2.5 min** as the noise band, not a guarantee. Warm restart saves CDN time but not tier‑2 YPIR CPU time (see Session B). Lightwalletd peers and routing differ by provider. RAM below 32 GiB on this SKU triggered `doctor` WARN only.
 
 ## Bootstrapped mode
 
@@ -148,7 +153,7 @@ The server can emit errors and traces to Sentry. Create a project at [sentry.io]
 - AVX-512 meaningfully accelerates PIR packing and query-side linear algebra.
 - Roughly 35 GB disk is enough for ~2 GB nullifier data, ~7 GB tier files, and working space. The rest is headroom.
 - 4 vCPUs help parallelize large matrix–vector steps during queries.
-- See **Measured reference** under [Startup time estimate](#startup-time-estimate) for a recent `m-4vcpu-32gb-intel` datapoint (sync + bootstrap wall times).
+- See **Measured reference** under [Startup time estimate](#startup-time-estimate) for recent `m-4vcpu-32gb-intel` datapoints (full-tip sync, cold bootstrap, warm restart).
 
 ## Useful configuration
 
