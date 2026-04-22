@@ -49,10 +49,29 @@ Production binaries should be built with `--features serve` (and `--features avx
 
 Estimates assume the recommended hardware.
 
-- On the order of tens of minutes in **bootstrap** mode (CDN download size and link dominate).
-- **Synced** mode depends on how far behind the data directory is; a fresh sync to mainnet tip is much longer than 90 seconds unless the range is tiny.
+- **Bootstrapped** cold start is often a few minutes on a well-connected host: CDN fetch of the large tier blob is usually on the order of tens of seconds, then loading mmap’d tiers and **YPIR offline precomputation** can add a couple of minutes before the process is ready for queries.
+- **Synced** mode wall time depends on chain tip, lightwalletd performance, and how much of the pipeline is skipped from existing files; a **fresh** full mainnet run is far longer than a sub-minute smoke test, but it is not inherently “hours” on fast paths—always budget using your own measurement.
 
-**TODO:** Validate numbers on reference hardware and extend the Rationale section.
+### Measured reference (single run, April 2026)
+
+These numbers are **one** benchmark on DigitalOcean; they will move with chain height, snapshot height, region, and peers. Use them as ballpark calibration, not an SLA.
+
+| Item | Value |
+|------|--------|
+| When | 2026-04-22 UTC |
+| Host | DigitalOcean droplet `m-4vcpu-32gb-intel`, region `fra1`, Ubuntu 22.04, **100 GiB** root disk (slug default) |
+| Binary | `nf-server` **v0.0.16** `linux-amd64` release (pre-built `serve` + `avx512`) |
+| `nf-server doctor` | 4 logical CPUs, **31.3 GiB** RAM (DO reports slightly under 32 GiB), **AVX-512F: yes**, ~95 GiB free on `/` at `pir-data` |
+
+**Full mainnet tip sync** (`SVOTE_PIR_VOTING_CONFIG_URL` **empty** so height is not capped by voting-config; `SVOTE_PIR_SYNC_RESET=1`; `nf-server sync --non-interactive --pir-data-dir /opt/nf-ingest/pir-data --lwd-url https://zec.rocks:443`; wall time from `/usr/bin/time`):
+
+- **Elapsed (wall clock): 13 m 38 s** (chain tip height **3317378** on that day; nullifier stage dominated wall time, tree + tier export followed in the same process).
+
+**Bootstrapped cold start** (empty `pir-data/`; production `SVOTE_PIR_VOTING_CONFIG_URL` + `SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com`; same region as the default bucket is favorable for CDN latency):
+
+- **Time until `GET /ready` returns HTTP 200: 137 s** (~2 m 17 s). Use **`/ready`**, not **`/health`**: the listener comes up before the background startup pipeline finishes, so `/health` can return `"starting"` while bootstrap and YPIR precomputation are still running ([`nf-server` binds first, then runs index rebuild → bootstrap → load in a spawned task](../../nf-server/src/cmd_serve.rs)).
+
+**Caveats:** one sample; `fra1` is co-located with the default Spaces region; lightwalletd URL and routing differ by provider; RAM below 32 GiB on this SKU triggered `doctor` WARN only; peak RSS during sync was about **12 GiB** on this run.
 
 ## Bootstrapped mode
 
@@ -129,6 +148,7 @@ The server can emit errors and traces to Sentry. Create a project at [sentry.io]
 - AVX-512 meaningfully accelerates PIR packing and query-side linear algebra.
 - Roughly 35 GB disk is enough for ~2 GB nullifier data, ~7 GB tier files, and working space. The rest is headroom.
 - 4 vCPUs help parallelize large matrix–vector steps during queries.
+- See **Measured reference** under [Startup time estimate](#startup-time-estimate) for a recent `m-4vcpu-32gb-intel` datapoint (sync + bootstrap wall times).
 
 ## Useful configuration
 
