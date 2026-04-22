@@ -31,7 +31,6 @@ graph TD
     service --> imtTree
     pirExport --> imtTree
     pirExport --> pirTypes
-    pirExport -.->|optional cli| service
     pirServer --> pirTypes
     pirClient --> pirTypes
     pirClient --> imtTree
@@ -47,24 +46,23 @@ graph TD
 |-------|------|-------------|
 | **imt-tree** | `imt-tree/` | Indexed Merkle Tree library. Poseidon hashing, punctured-range exclusion proofs (K=2), and tree-building primitives for circuit compatibility. |
 | **pir-types** | `pir/types/` | Lightweight shared types (`YpirScenario`, `RootInfo`, `HealthInfo`) serialised over HTTP between server and client. Also contains YPIR wire-format helpers. |
-| **pir-export** | `pir/export/` | Builds the depth-25 PIR tree from punctured-range leaves (K=2) and exports it as three binary tier files (tier0, tier1, tier2) consumed by the server and client. |
+| **pir-export** | `pir/export/` | Builds the depth-25 PIR tree from punctured-range leaves (K=2), persists `nullifiers.tree` checkpoints, and exports three binary tier files (tier0, tier1, tier2) consumed by the server and client. |
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides an async `PirClient` API and a local in-process mode. |
 | **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
-| **nf-server** | `nf-server/` | Unified CLI binary with `ingest`, `export`, and `serve` subcommands. The `serve` subcommand starts the PIR HTTP server (feature-gated). |
+| **nf-server** | `nf-server/` | Unified CLI: `sync` (nullifiers from lightwalletd → `nullifiers.tree` → tier files) and `serve` (PIR HTTP server, feature-gated). |
 | **pir-test** | `pir/test/` | End-to-end test harness with `small`, `local`, `server`, and `bench` modes. |
 
 ## Pipeline
 
-The system operates as a three-stage pipeline:
+The system operates as a resumable pipeline:
 
 ```
-ingest ──> export ──> serve ──> client query
+nf-server sync (nullifiers → nullifiers.tree → pir-data/) ──> serve ──> client query
 ```
 
-1. **Ingest** — Syncs nullifiers from a lightwalletd instance into `nullifiers.bin` (append-only flat file of 32-byte field elements).
-2. **Export** — Builds the PIR tree from the nullifier set and writes three binary tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`) plus metadata (`pir_root.json`).
-3. **Serve** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
+1. **`nf-server sync`** — Streams Orchard nullifiers into `nullifiers.bin` (with checkpoint/index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json`. Reruns skip completed stages.
+2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
 
 ## Build & Run
 
@@ -76,9 +74,7 @@ cargo build --release
 
 # Or use the Makefile for the standard pipeline:
 make build          # Build nf-server binary
-make bootstrap      # Download nullifier snapshot (first run)
-make ingest         # Sync nullifiers from lightwalletd
-make export-nf      # Build PIR tree and export tier files
+make sync           # Ingest + tree + tiers (resumable)
 make serve          # Start PIR HTTP server on port 3000
 
 # Run tests
@@ -92,11 +88,13 @@ Override via environment variables or Make arguments:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATA_DIR` | `.` | Directory for `nullifiers.bin`, `nullifiers.checkpoint` |
+| `DATA_DIR` | `.` | Directory for `nullifiers.bin`, checkpoint, index, `nullifiers.tree` |
 | `PIR_DATA_DIR` | `$DATA_DIR/pir-data` | Directory for tier files |
 | `LWD_URL` | `https://zec.rocks:443` | Lightwalletd gRPC endpoint |
 | `PORT` | `3000` | HTTP server port |
 | `SYNC_HEIGHT` | chain tip | Sync up to this block height (must be a multiple of 10) |
+| `SVOTE_PIR_SYNC_RESET` | unset | Set to `1` to wipe nullifiers + tree + tiers before `sync` |
+| `SVOTE_VOTING_CONFIG_URL` | (see `nf-server sync --help`) | Empty string skips voting-config fetch during `sync` |
 
 ## Deployment
 
@@ -109,6 +107,7 @@ All data is stored as flat binary files:
 - `nullifiers.bin` — Append-only raw 32-byte nullifier blobs
 - `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
 - `nullifiers.index` — Height-to-offset index for subset loading
+- `nullifiers.tree` — Versioned PIR Merkle checkpoint (magic `SVOTEPT1`; see `pir-export`)
 - `pir-data/` — Tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`)
 
 ## PIR Write Ups

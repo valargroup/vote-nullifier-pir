@@ -41,6 +41,9 @@ use tokio::sync::oneshot;
 #[path = "../src/metrics.rs"]
 #[allow(dead_code)]
 mod metrics;
+#[path = "../src/voting_config.rs"]
+#[allow(dead_code)]
+mod voting_config;
 #[path = "../src/bootstrap.rs"]
 #[allow(dead_code)]
 mod bootstrap;

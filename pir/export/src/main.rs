@@ -1,7 +1,8 @@
 //! Standalone CLI for building PIR tier files from a nullifier data file.
 //!
-//! This binary is an alternative to `nf-server export` for cases where you
-//! want to run the export step independently. Requires the `cli` feature
+//! Dev helper: build tier files from a `nullifiers.bin` at an arbitrary path.
+//! For production paths, use `nf-server sync` (nullifiers + `nullifiers.tree` + tiers).
+//! Requires the `cli` feature
 //! (enabled by default when building this binary target).
 //!
 //! Usage: `pir-export --nullifiers nullifiers.bin [--output-dir ./pir-data]`

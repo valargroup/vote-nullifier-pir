@@ -65,17 +65,6 @@ pub const PIR_SNAPSHOTS_PATH: &str = "/snapshots";
 /// already in place.
 const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"];
 
-/// Subset of `voting-config.json` that nf-server needs at startup.
-#[derive(Debug, Deserialize)]
-struct VotingConfig {
-    /// Canonical Orchard nullifier-tree snapshot height for the current
-    /// voting round. Required whenever bootstrap is enabled (the default:
-    /// non-empty voting-config URL from CLI defaults); an absent field fails
-    /// startup.
-    #[serde(default)]
-    snapshot_height: Option<u64>,
-}
-
 /// Subset of `pir_root.json` that the bootstrap reads to decide whether
 /// the local snapshot is already at the right height. We deliberately
 /// don't import the full `PirMetadata` struct from `pir-types` — the
@@ -174,8 +163,11 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
         metrics::served_height_set(h);
     }
 
-    let expected_height = match fetch_voting_config_height(&cfg.voting_config_url, cfg.http_timeout)
-        .await
+    let expected_height = match crate::voting_config::fetch_voting_snapshot_height(
+        &cfg.voting_config_url,
+        cfg.http_timeout,
+    )
+    .await
     {
         Ok(Some(h)) => {
             info!(height = h, "voting-config snapshot_height resolved");
@@ -265,30 +257,6 @@ fn read_local_height(pir_data_dir: &Path) -> Option<u64> {
     let raw = std::fs::read_to_string(&path).ok()?;
     let meta: PirRootHeader = serde_json::from_str(&raw).ok()?;
     meta.height
-}
-
-/// Fetch the published voting-config and return its `snapshot_height`.
-///
-/// Returns `Ok(None)` when the field is absent (the caller treats this as a
-/// fatal bootstrap error when the voting-config URL is enabled). Returns
-/// `Err` for network/decoding failures.
-async fn fetch_voting_config_height(url: &str, timeout: Duration) -> Result<Option<u64>> {
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .context("build reqwest client")?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?
-        .error_for_status()
-        .with_context(|| format!("GET {url} (non-2xx)"))?;
-    let cfg: VotingConfig = resp
-        .json()
-        .await
-        .with_context(|| format!("decode {url} as voting-config"))?;
-    Ok(cfg.snapshot_height)
 }
 
 /// Download manifest + tier files for `height`, verify sha256s, and

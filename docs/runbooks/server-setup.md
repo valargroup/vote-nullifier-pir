@@ -16,7 +16,7 @@ For operators who prefer manual setup, or for debugging, manual approaches are o
 There are two modes for starting up:
 
 1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage.
-2. **Synced** — the PIR server ingests Zcash mainnet Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), then exports a 3-tier representation per [PIR tree spec](../pir-tree-spec.md), writing flat files to disk so expensive work is not repeated on every restart.
+2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure.
 
 ## Recommended hardware
 
@@ -50,7 +50,7 @@ Behavior matches `nf-server serve` startup: index maintenance on the nullifier `
 2. Compare canonical height to local `pir_root.json` height.
    - If equal, continue to load and serve.
    - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `pir-data/`.
-3. **Aspirational (not all paths are implemented today):** if CDN sync fails but raw nullifier files exist at the expected height, an operator may run `make export-nf` (or `nf-server export`) to build tiers locally. The server does not currently prompt interactively if local height is above the voting height; reconcile data out of band.
+3. If CDN sync fails but raw nullifier files exist at the expected height, an operator may run `make sync` (or `nf-server sync`) to rebuild `nullifiers.tree` and tiers locally. If local **nullifier checkpoint** is above `snapshot_height` while the voting-config URL is enabled, `nf-server sync` prompts to type **`RESYNC`** (or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`) to wipe and realign.
 
 **Fatal errors (typical):**
 
@@ -64,22 +64,30 @@ Resolution hints:
 
 ## Synced mode
 
-Ingest nullifiers, export PIR tiers, then serve:
+Run the unified pipeline, then serve:
 
 ```bash
-make ingest
-make export-nf
+make sync
+make serve
 ```
+
+`make sync-invalidate` runs `nf-server sync --invalidate-after-blocks` so when new blocks are synced from lightwalletd, `nullifiers.tree` and tier blobs are removed and rebuilt.
 
 **What happens in the background?**
 
-1. **Ingest** (`make ingest` → `nf-server ingest`): sync Orchard nullifiers from NU5 activation up through `SYNC_HEIGHT`, or up to **mainnet chain tip** when `SYNC_HEIGHT` is unset (see the [Makefile](../../Makefile) — there is no “round down to latest multiple of 10” behavior when height is unset). Writes `nullifiers.bin` and `nullifiers.checkpoint`; index sidecar behavior is described in the `nf-ingest` crate docs.
-2. **Export** (`make export-nf` → `nf-server export`): builds the Merkle tree sidecar where applicable and writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `pir-data/` (paths depend on `DATA_DIR` / `PIR_DATA_DIR` in the Makefile).
-3. **Serve** (`make serve`): with tiers present, the same HTTP server starts; if voting-config and precomputed URLs remain at defaults, startup bootstrap may still refresh tiers from the CDN when the published height moves. For a fully local disk, unset or clear `SVOTE_VOTING_CONFIG_URL` / `SVOTE_PRECOMPUTED_BASE_URL` in the environment your unit uses (or pass empty `--voting-config-url`).
+1. **Stage 1 — Nullifiers** (`nf-server sync`): stream Orchard nullifiers from NU5 activation up through `SYNC_HEIGHT`, or up to **mainnet chain tip** when `SYNC_HEIGHT` is unset (see the [Makefile](../../Makefile)). When `SVOTE_VOTING_CONFIG_URL` is **non-empty**, `snapshot_height` is fetched and caps the target height; if your local checkpoint is **above** that height, the CLI stops until you confirm **`RESYNC`** (wipe) or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`. Writes `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.index` (see `nf-ingest` crate docs).
+2. **Stage 2 — Tree checkpoint**: builds the PIR Merkle structure and writes **`nullifiers.tree`** (magic `SVOTEPT1`, temp + rename). If this file already matches the checkpoint height, the stage is skipped.
+3. **Stage 3 — Tiers**: writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `PIR_DATA_DIR`. If those files already match the expected height and sizes, the stage is skipped.
+
+**Resume:** rerunning `make sync` continues after partial failure (e.g. if `nullifiers.bin` exists, nullifier sync resumes from checkpoint; if `nullifiers.tree` exists for the target height, tier export resumes; if tiers are complete, nothing heavy runs).
+
+**Fresh start:** set `SVOTE_PIR_SYNC_RESET=1` (or `true`) before `nf-server sync` to delete `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files under `PIR_DATA_DIR`, then run a full pipeline.
+
+**Unknown `nullifiers.tree` format:** files without the `SVOTEPT1` header are rejected; remove them or set `SVOTE_PIR_SYNC_RESET=1` so sync can rebuild.
 
 ```bash
-# After manual ingest + export, tier files are local; CDN bootstrap may
-# still run unless you disable it in the environment as above.
+# After sync, tier files are local; CDN bootstrap may still run on serve
+# unless you disable it in the environment as below.
 make serve
 ```
 
@@ -101,24 +109,29 @@ The server can emit errors and traces to Sentry. Create a project at [sentry.io]
 
 ## Useful configuration
 
-
 Makefile-oriented development variables (see [Makefile](../../Makefile)):
 
 | Variable | Role |
 |----------|------|
-| `DATA_DIR` | Directory for `nullifiers.bin`, checkpoint, tree sidecar |
+| `DATA_DIR` | Directory for `nullifiers.bin`, checkpoint, index, `nullifiers.tree` |
 | `PIR_DATA_DIR` | Output directory for tier blobs (default `$(DATA_DIR)/pir-data`) |
-| `LWD_URL` | First lightwalletd gRPC URL passed to ingest/serve |
-| `SYNC_HEIGHT` | Optional; if set, must be a multiple of 10; caps ingest |
+| `LWD_URL` | First lightwalletd gRPC URL passed to sync/serve |
+| `SYNC_HEIGHT` | Optional; if set, must be a multiple of 10; caps sync target (with chain tip and voting snapshot) |
 | `PORT` | HTTP listen port for `make serve` |
 
-### Ingest (CLI / future env parity)
+### `nf-server sync` (CLI / env)
 
-Planned names (see tracking issues / PRs): `SVOTE_PIR_MAX_HEIGHT`, `SVOTE_PIR_INVALIDATE`, data directory overrides. Today use Makefile variables or `nf-server ingest --help`.
+| Variable / flag | Role |
+|-----------------|------|
+| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run |
+| `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height` |
+| `SVOTE_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height` |
+| `--non-interactive` | No TTY prompts (CI / SSH) |
+| `--invalidate-after-blocks` | After new blocks are synced from lightwalletd in this run, delete `nullifiers.tree` and tier files so they rebuild |
 
 ### Serve (CLI / env)
 
-The `nf-server serve` CLI (see `nf-server serve --help`) reads environment variables including: `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, `SVOTE_DATA_DIR`, `SVOTE_VOTING_CONFIG_URL` (defaults to the production voting-config URL when unset), `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_MAINNET_RPC_DIR` (lightwalletd URL for rebuilds), `LWD_URLS` (comma-separated override for the same), `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, `SVOTE_VOTE_CHAIN_URL`, and `SENTRY_DSN`. A future rename may introduce `SVOTE_PIR_*` aliases for the voting-config and precomputed URLs only.
+The `nf-server serve` CLI (see `nf-server serve --help`) reads environment variables including: `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, `SVOTE_DATA_DIR`, `SVOTE_VOTING_CONFIG_URL` (defaults to the production voting-config URL when unset), `SVOTE_PRECOMPUTED_BASE_URL`, `SVOTE_MAINNET_RPC_DIR` (lightwalletd URL for rebuilds), `LWD_URLS` (comma-separated override for the same), `SVOTE_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_STALE_THRESHOLD_SECS`, `SVOTE_WATCHDOG_TICK_SECS`, `SVOTE_VOTE_CHAIN_URL`, and `SENTRY_DSN`.
 
 ## Tagging and releases
 
@@ -135,8 +148,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 ## TODO (product / engineering backlog)
 
-- Merge or unify `data_dir` (nullifier flat files) and `pir_data_dir` (tier blobs) so `make serve` can start from nullifiers alone when tiers are missing (auto-export path).
-- `export-nf` as a separate step vs integrated ingest stages with resume.
+- Merge or unify `data_dir` (nullifier flat files) and `pir_data_dir` (tier blobs) for simpler single-directory ops.
 - Optional: Terraform / DigitalOcean droplet setup in [vote-infrastructure](https://github.com/valargroup/vote-infrastructure).
 - Document `SVOTE_VOTE_CHAIN_URL` (optional; active-round guard for `POST /snapshot/prepare`) in operator-facing docs when stable.
 - Prefer installing release binaries + systemd for operators; Makefile remains the developer shortcut.

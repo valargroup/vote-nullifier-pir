@@ -65,9 +65,9 @@ That is the entire bootstrap step. On startup, `nf-server` reads
 `voting-config.snapshot_height` and downloads
 `<bucket>/snapshots/<height>/{manifest.json,tier*.bin,pir_root.json}`,
 verifies sha256 against the manifest, and atomically swaps into
-`/opt/nf-ingest/pir-data/`. There is no manual ingest, no manual
-export, and no separate cron-driven re-sync — the next bump is just a
-config PR plus a `systemctl restart` (see [the runbook][runbook]).
+`/opt/nf-ingest/pir-data/`. Operators do not run a separate cron for
+`nf-server sync` on replicas — the next bump is a config PR plus
+`systemctl restart` (see [the runbook][runbook]).
 
 The binary already defaults to a **non-empty** voting-config URL, so this
 step is optional self-documentation: the values below match the
@@ -77,10 +77,11 @@ the fetch must succeed—otherwise `nf-server serve` exits during startup
 (strict voting-config). CDN download issues after the height is known may
 still fall back to whatever tier files are already on disk.
 
-> The legacy first-boot flow (`curl` the raw `nullifiers.{bin,checkpoint,tree}`,
-> run `nf-server ingest`, then `nf-server export`) still works on
-> offline / dev machines: set `SVOTE_VOTING_CONFIG_URL=` (empty string)
-> and the binary will skip the bootstrap and serve whatever is on disk.
+> **Offline / dev:** stage `nullifiers.{bin,checkpoint}` (and optionally
+> `nullifiers.tree` + `pir-data/`), run `nf-server sync` with
+> `SVOTE_VOTING_CONFIG_URL=` to skip voting height checks, or set
+> `SVOTE_VOTING_CONFIG_URL=` so `nf-server serve` skips bootstrap and serves
+> on-disk `pir-data/`.
 
 [runbook]: https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html
 
@@ -283,7 +284,7 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 |--------|---------|-------------|
 | `PIR_PRIMARY_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR primary server. |
 | `PIR_BACKUP_HOST` | `deploy.yml`, `restart.yml`, `publish-snapshot.yml` | Hostname or IP of the PIR backup server. |
-| `DEPLOY_HOST` | `resync.yml` | Hostname or IP of the resync target (typically the primary). |
+| `DEPLOY_HOST` | `host-sync.yml` | Hostname or IP of the single-host sync target (often the primary). |
 | `DEPLOY_USER` | all | SSH username on the remote hosts. |
 | `SSH_KEY` | all | SSH private key for authentication. |
 | `NF_SENTRY_DSN` | `deploy.yml` | Sentry DSN written to `/opt/nf-ingest/.env` on deploy. |
@@ -296,13 +297,13 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nf-ingest`.
 - Ensure the SSH user can write to that directory.
-- Run an initial ingest.
+- Run an initial `nf-server sync` on the publisher host if you are building snapshots from chain (see `publish-snapshot.yml`).
 
 **Query server (PIR HTTP API)**
 
 The `nf-server serve` subcommand starts the PIR HTTP server. It needs:
 
-- **PIR data**: Exported tier files in `pir-data/`. Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server export`.
+- **PIR data**: Exported tier files in `pir-data/`. Either populated automatically by the startup self-bootstrap (default) or pre-staged manually via `nf-server sync` (or copied from another host).
 - **Bootstrap config**: `SVOTE_VOTING_CONFIG_URL` and `SVOTE_PRECOMPUTED_BASE_URL` (defaults are baked into the binary for production). Pin them in `/etc/default/nf-server` if you want the deploy to be self-describing or to point at a mirror. Set `SVOTE_VOTING_CONFIG_URL` to an empty string to disable bootstrap entirely. While the URL is non-empty (including the default), startup requires a successful fetch and a `snapshot_height` field (strict).
 - **Nullifier data** (only on the publisher host that runs `publish-snapshot.yml`): `nullifiers.bin` and `nullifiers.checkpoint` in `--data-dir`. PIR-only replicas no longer need these.
 - **Port**: Configurable via `--port` (default 3000).
@@ -326,9 +327,10 @@ to roll the fleet (backup-then-primary, with per-host
 `served_height == expected_height` verification). See the
 [in-repo restart runbook](runbooks/restart-pir-fleet.md) for the
 restart step in detail, or the [end-to-end operator runbook][runbook]
-for the full bump procedure. The old per-host `resync.yml` /
-`nf-resync.timer` flow is no longer required and was removed from
-`vote-infrastructure/cloud-init/pir.yaml`.
+for the full bump procedure. The old per-host timer-based resync flow
+was removed from `vote-infrastructure/cloud-init/pir.yaml`; use
+[`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml)
+if you need `nf-server sync` + restart on one machine outside the publish path.
 
 ### Changing deploy path or restart command
 
@@ -337,7 +339,7 @@ for the full bump procedure. The old per-host `resync.yml` /
 
 ### Manual runs
 
-`deploy.yml`, `restart.yml`, `publish-snapshot.yml`, and `resync.yml`
+`deploy.yml`, `restart.yml`, `publish-snapshot.yml`, and `host-sync.yml`
 all support `workflow_dispatch`, so you can trigger them from
 **Actions > Run workflow** without pushing to `main`.
 
@@ -349,11 +351,8 @@ From the workspace root:
 # Start the server (auto-bootstrap from data in the cloud by-default)
 make serve
 
-# Ingest from scratch 
-make ingest
-
-# Export PIR tier files to subsequently serve PIR queries from local data.
-make export-nf
+# Nullifiers from chain + tree checkpoint + tier export (`nf-server sync`)
+make sync
 ```
 
 Then check `http://localhost:3000/health` and `http://localhost:3000/root`.
@@ -368,19 +367,19 @@ flowchart LR
     release --> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
     deploy --> health["health check\nlocalhost:3000/health"]
     manual["workflow_dispatch"] -.-> deploy
-    publish["publish-snapshot.yml\ningest + export + upload\nto DO Spaces"] -.-> bucket["snapshots/<height>/"]
+    publish["publish-snapshot.yml\nnf-server sync + upload\nto DO Spaces"] -.-> bucket["snapshots/<height>/"]
     restart["restart.yml\nbackup → primary\nrolling restart"] -.-> pirHosts["PIR hosts\n(self-bootstrap from bucket)"]
     bucket -.-> pirHosts
-    resync["resync.yml (legacy)\ningest + export + restart"] -.-> pirHost["single PIR host"]
+    hostSync["host-sync.yml\nsync + restart\none host"] -.-> pirHost["single PIR host"]
 ```
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Hosts are rolled **serially** (`max-parallel: 1`) so the readiness gate on one host completes before the next is touched. |
-| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (with optional `height` input) | Runs ingest + export on `PIR_BACKUP_HOST`, builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
+| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (with optional `height` input) | Runs `nf-server sync` on `PIR_BACKUP_HOST`, builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and `nf_snapshot_served_height == nf_snapshot_expected_height`, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`runbooks/restart-pir-fleet.md`](runbooks/restart-pir-fleet.md). |
-| [`resync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/resync.yml) | Manual `workflow_dispatch` | **Legacy** ingest + export + restart on a single host. Superseded by `publish-snapshot.yml` + `restart.yml`; kept for emergencies. |
+| [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml) | Manual `workflow_dispatch` | Runs `nf-server sync` + `systemctl restart` on the host in `DEPLOY_HOST`. For fleet-wide snapshot bumps, prefer `publish-snapshot.yml` then `restart.yml`. |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin`, resolves the target PIR endpoint from the published `voting-config.json`, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. |
 
 ---
@@ -396,7 +395,7 @@ DNS records:
 |----------|---------|------|
 | `pir-primary.<domain>` | `vote-nullifier-pir-primary` | `g-8vcpu-32gb-intel` (Premium Intel, AVX-512) |
 | `pir-backup.<domain>` | `vote-nullifier-pir-backup` | `m-4vcpu-32gb-intel` (Premium Intel, AVX-512) |
-| `pir.<domain>` | pir-primary (convenience alias) | -- |
+| `pir.<domain>` | `pir-primary` (DNS points here) | -- |
 
 Cloud-init templates in `vote-infrastructure/cloud-init/pir.yaml` handle first-boot
 provisioning: install Caddy, mount the block volume, download `nf-server` from a

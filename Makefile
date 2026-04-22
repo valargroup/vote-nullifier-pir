@@ -1,20 +1,19 @@
-# nf-ingest
-# Top-level Makefile — delegates to nf-server (unified binary) and subcrates
+# Top-level Makefile — delegates to nf-server and subcrates
 #
 # Storage: flat binary files (no SQLite).
 #
 #   nullifiers.bin         – append-only raw 32-byte nullifier blobs
 #   nullifiers.checkpoint  – 16-byte (height LE, offset LE) crash-recovery marker
+#   nullifiers.index       – height → byte offset index
+#   nullifiers.tree        – v1 bincode PIR Merkle checkpoint (SVOTEPT1 magic)
 #   pir-data/              – PIR tier files (tier0.bin, tier1.bin, tier2.bin, pir_root.json)
 #
-# Pipeline: ingest → export → serve
+# Pipeline: `make sync` → `make serve`
 # ──────────────────────────────────
-# `make ingest` syncs nullifiers from lightwalletd into nullifiers.bin.
-# `make export-nf` builds the PIR tree and exports tier files.
-# `make serve` starts the PIR HTTP server.
-#
-# `make ingest-resync` ingests and deletes stale sidecar/tier files
-# (--invalidate) so the next export rebuilds from the updated data.
+# `make sync` runs `nf-server sync` (nullifiers from lightwalletd → tree checkpoint → tiers).
+# Empty `SVOTE_VOTING_CONFIG_URL` skips voting height cap / prompts.
+# `SVOTE_PIR_SYNC_RESET=1` wipes nullifiers + tree + tiers before a run.
+# `make sync-invalidate` passes `--invalidate-after-blocks` (rebuild tree + tiers when new blocks were synced).
 
 IMT_DIR     := imt-tree
 SERVICE_DIR := nf-ingest
@@ -27,8 +26,7 @@ PORT          ?= 3000
 SYNC_HEIGHT   ?=
 PIR_DATA_DIR  ?= $(DATA_DIR)/pir-data
 
-# Validate SYNC_HEIGHT and build --max-height flag for the ingest subcommand.
-# If unset, ingest runs to chain tip.  If set, it must be a multiple of 10.
+# Validate SYNC_HEIGHT and build --max-height for `nf-server sync`.
 ifdef SYNC_HEIGHT
   ifneq ($(shell expr $(SYNC_HEIGHT) % 10),0)
     $(error SYNC_HEIGHT must be a multiple of 10, got $(SYNC_HEIGHT))
@@ -38,9 +36,11 @@ else
   _MAX_HEIGHT_FLAG :=
 endif
 
+_SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
+
 # ── Targets ──────────────────────────────────────────────────────────
 
-.PHONY: build-nf ingest ingest-resync export-nf serve build test clean status help
+.PHONY: build-nf sync sync-invalidate serve build test clean status help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -52,14 +52,11 @@ build-nf: ## Build nf-server binary (release, nightly)
 build: ## Build nf-server and service library (release)
 	cd $(NF_DIR) && cargo build --release
 
-ingest: ## Ingest nullifiers incrementally up to SYNC_HEIGHT (or chain tip if unset)
-	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
+sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
+	$(_SYNC_CMD)
 
-ingest-resync: ## Ingest nullifiers up to SYNC_HEIGHT and invalidate stale sidecar/tier files
-	cd $(NF_DIR) && cargo run --release -- ingest --data-dir ../$(DATA_DIR) --lwd-url $(LWD_URL) --invalidate $(_MAX_HEIGHT_FLAG)
-
-export-nf: ## Build PIR tree and export tier files from nullifiers.bin
-	cd $(NF_DIR) && cargo run --release -- export --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR)
+sync-invalidate: ## Same as sync with `--invalidate-after-blocks` (rebuild tree/tiers when new blocks synced)
+	cd $(NF_DIR) && cargo run --release -- sync --data-dir ../$(DATA_DIR) --output-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
 
 serve: ## Start the PIR HTTP server
 	cd $(NF_DIR) && cargo run --release --features serve -- serve --pir-data-dir ../$(PIR_DATA_DIR) --data-dir ../$(DATA_DIR) --port $(PORT)
@@ -68,7 +65,7 @@ test: ## Run unit tests for all subcrates
 	cd $(IMT_DIR) && cargo test --lib
 	cd $(SERVICE_DIR) && cargo test --lib
 
-status: ## Show ingestion progress (nullifier count + last synced height)
+status: ## Show nullifier sync progress (count + checkpoint + tree file)
 	@NF="$(DATA_DIR)/nullifiers.bin"; CP="$(DATA_DIR)/nullifiers.checkpoint"; \
 	TREE="$(DATA_DIR)/nullifiers.tree"; \
 	echo "Data directory: $(DATA_DIR)"; \
@@ -89,13 +86,13 @@ status: ## Show ingestion progress (nullifier count + last synced height)
 	fi; \
 	if [ -f "$$TREE" ]; then \
 		TSIZE=$$(ls -lh "$$TREE" | awk '{print $$5}'); \
-		echo "  nullifiers.tree: $$TSIZE (sidecar)"; \
+		echo "  nullifiers.tree: $$TSIZE (PIR tree checkpoint)"; \
 	else \
-		echo "  nullifiers.tree: not present (will rebuild on serve)"; \
+		echo "  nullifiers.tree: not present"; \
 	fi
 
 clean: ## Remove built artifacts and data files
 	cd $(IMT_DIR) && cargo clean
 	cd $(SERVICE_DIR) && cargo clean
 	cd $(NF_DIR) && cargo clean
-	rm -f $(DATA_DIR)/nullifiers.bin $(DATA_DIR)/nullifiers.checkpoint $(DATA_DIR)/nullifiers.tree
+	rm -f $(DATA_DIR)/nullifiers.bin $(DATA_DIR)/nullifiers.checkpoint $(DATA_DIR)/nullifiers.index $(DATA_DIR)/nullifiers.tree $(DATA_DIR)/nullifiers.tree.tmp

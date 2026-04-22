@@ -12,10 +12,11 @@ pub const DEFAULT_LWD_URLS: &[&str] = &[
 /// override was set), the full `DEFAULT_LWD_URLS` list is used instead.
 const DEFAULT_SINGLE_LWD_URL: &str = "https://zec.rocks:443";
 
-/// Stale sidecar and PIR tier files that should be deleted after re-ingestion
-/// so the next export rebuilds from fresh data.
+/// Sidecar and PIR tier paths to remove when forcing a rebuild after new blocks
+/// were synced from lightwalletd (`--invalidate-after-blocks`).
 pub const STALE_FILES: &[&str] = &[
     "nullifiers.tree",
+    "nullifiers.tree.tmp",
     "pir-data/tier0.bin",
     "pir-data/tier1.bin",
     "pir-data/tier2.bin",

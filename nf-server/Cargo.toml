@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-serve = ["dep:pir-server", "dep:axum", "dep:tracing", "dep:tracing-subscriber", "dep:tower-http", "dep:reqwest", "dep:sentry", "dep:tower", "dep:sha2", "dep:prometheus"]
+serve = ["dep:pir-server", "dep:axum", "dep:tracing", "dep:tracing-subscriber", "dep:tower-http", "dep:sentry", "dep:tower", "dep:sha2", "dep:prometheus"]
 avx512 = ["serve", "pir-server/avx512"]
 
 [dependencies]
@@ -15,7 +15,7 @@ axum               = { version = "0.7", optional = true }
 tracing            = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 tower-http         = { version = "0.5", features = ["cors"], optional = true }
-reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"], optional = true }
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 sentry             = { version = "0.35", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tower-axum-matched-path"], optional = true }
 tower              = { version = "0.4", optional = true }
 # Snapshot bootstrap: hashing tier files against the published manifest.

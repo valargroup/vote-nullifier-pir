@@ -1,20 +1,20 @@
 //! Unified CLI binary for the nullifier PIR pipeline.
 //!
-//! Provides three subcommands:
-//!   - `ingest` — Sync nullifiers from a lightwalletd instance into flat files.
-//!   - `export` — Build the PIR tree and write tier files for the server.
-//!   - `serve`  — Start the PIR HTTP server (feature-gated behind `serve`).
+//! Provides:
+//!   - `sync` — Resumable ingest, `nullifiers.tree` checkpoint, PIR tier export.
+//!   - `serve` — Start the PIR HTTP server (feature-gated behind `serve`).
 
 #[cfg(feature = "serve")]
 mod bootstrap;
-mod cmd_export;
-mod cmd_ingest;
+mod cmd_sync;
+mod sync_pipeline;
 #[cfg(feature = "serve")]
 mod cmd_serve;
 #[cfg(feature = "serve")]
 mod metrics;
 #[cfg(feature = "serve")]
 mod serve;
+mod voting_config;
 
 use clap::{Parser, Subcommand};
 
@@ -22,7 +22,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "nf-server",
-    about = "Unified nullifier pipeline: ingest, export, and serve PIR data"
+    about = "Unified nullifier pipeline: sync (ingest + export) and serve PIR data"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -32,10 +32,8 @@ struct Cli {
 /// Available subcommands.
 #[derive(Subcommand)]
 enum Command {
-    /// Sync nullifiers from lightwalletd into nullifiers.bin
-    Ingest(cmd_ingest::Args),
-    /// Build PIR tree and export tier files from nullifiers.bin
-    Export(cmd_export::Args),
+    /// Ingest nullifiers, build tree checkpoint, export PIR tiers (resumable)
+    Sync(cmd_sync::Args),
     /// Start the PIR HTTP server (requires --features serve)
     #[cfg(feature = "serve")]
     Serve(cmd_serve::Args),
@@ -98,8 +96,7 @@ fn main() -> anyhow::Result<()> {
         .build()?
         .block_on(async {
             match cli.command {
-                Command::Ingest(args) => cmd_ingest::run(args).await,
-                Command::Export(args) => cmd_export::run(args),
+                Command::Sync(args) => cmd_sync::run(args).await,
                 #[cfg(feature = "serve")]
                 Command::Serve(args) => cmd_serve::run(args).await,
             }
