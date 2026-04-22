@@ -71,7 +71,7 @@ These numbers are **one** benchmark on DigitalOcean; they will move with chain h
 
 - **Time until `GET /ready` returns HTTP 200: 137 s** (~2 m 17 s). Use **`/ready`**, not **`/health`**: the listener comes up before the background startup pipeline finishes, so `/health` can return `"starting"` while bootstrap and YPIR precomputation are still running ([`nf-server` binds first, then runs index rebuild → bootstrap → load in a spawned task](../../nf-server/src/cmd_serve.rs)).
 
-**Caveats:** one sample; `fra1` is co-located with the default Spaces region; lightwalletd URL and routing differ by provider; RAM below 32 GiB on this SKU triggered `doctor` WARN only; peak RSS during sync was about **12 GiB** on this run.
+**Caveats:** one sample; `fra1` is co-located with the default Spaces region; lightwalletd URL and routing differ by provider; RAM below 32 GiB on this SKU triggered `doctor` WARN only; peak RSS during sync was about **12 GiB** on this run. **Warm / hot startup** (tiers already present at the voting-config height, so bootstrap skips CDN) was **not** measured here; it is typically much faster than the cold bootstrap number because the large tier download is absent and only index rebuild, optional no-op bootstrap, mmap load, and YPIR precomputation remain.
 
 ## Bootstrapped mode
 
