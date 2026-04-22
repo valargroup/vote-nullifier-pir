@@ -46,7 +46,7 @@ ensure_curl_and_ca_certificates() {
   fi
 
   if command -v dpkg-query >/dev/null 2>&1; then
-    if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -q 'install ok installed'; then
+    if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then
       need=true
     fi
   fi
@@ -103,7 +103,8 @@ chmod 644 /etc/default/nf-server
 
 if [ -n "${SENTRY_DSN:-}" ]; then
   umask 077
-  printf 'SENTRY_DSN=%s\n' "$SENTRY_DSN" >/opt/nf-ingest/.env
+  # Single %s so a DSN containing "%" is not interpreted by printf.
+  printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" >/opt/nf-ingest/.env
   chmod 600 /opt/nf-ingest/.env
 fi
 

@@ -135,6 +135,7 @@ jobs:
       - name: Render start_pir.sh installer
         run: |
           set -euo pipefail
+          # Keep sed substitutions aligned with start-pir-installer-smoke.yml.
           sed \
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \

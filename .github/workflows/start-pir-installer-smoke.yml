@@ -33,6 +33,7 @@ jobs:
             | jq -er .tag_name)"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+      # Keep the sed substitutions aligned with "Render start_pir.sh installer" in release.yml.
       - name: Render installer (same substitution as release.yml)
         run: |
           set -euo pipefail
