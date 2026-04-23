@@ -115,6 +115,9 @@ mkdir -p /opt/nf-ingest/pir-data
 install -m 755 "$BINARY_PATH" /opt/nf-ingest/nf-server
 install -m 644 "$SERVICE_PATH" /etc/systemd/system/nullifier-query-server.service
 
+# Expose nf-server on PATH so `nf-server doctor` etc. work in the same shell.
+ln -sf /opt/nf-ingest/nf-server /usr/local/bin/nf-server
+
 umask 022
 cat >/etc/default/nf-server <<EOF
 SVOTE_PIR_VOTING_CONFIG_URL=${START_VOTING_CONFIG_URL}

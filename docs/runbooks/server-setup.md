@@ -30,7 +30,7 @@ What it does:
 - Configures the service per the recommended parameters
 - Creates an automated **systemd** unit that auto-restarts on start-up and on failure
 - Bootstraps from pre-computed snapshots
-- Installs the binary
+- Installs the binary to `/opt/nf-ingest/nf-server` and symlinks it into `/usr/local/bin`, so `nf-server doctor` (and friends) work from any shell
 - Serves PIR queries
 
 After install, operate the service with:
