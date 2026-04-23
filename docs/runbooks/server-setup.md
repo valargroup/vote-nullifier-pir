@@ -44,7 +44,7 @@ There are two data-source modes:
 
 ## Recommended hardware
 
-**Production target: `linux-amd64` with AVX-512, 4 vCPU, 32 GB RAM, and at least 35 GB free disk.** Other platforms build but are not recommended for serving traffic (see [Build-time caveats per platform](#build-time-caveats-per-platform)).
+**Production target: `linux-amd64` with AVX-512, 4 vCPU, 32 GB RAM, and at least 35 GB free disk.** Other platforms build but are not recommended for serving traffic (see [Platform support](#platform-support)).
 
 Why these numbers:
 
@@ -73,32 +73,21 @@ Air-gapped hosts: pre-stage the binary, `SHA256SUMS`, and the tier files under `
 
 `start_pir.sh` is the recommended path; the rest of this section documents what it does so you can reproduce or audit it manually.
 
-### Where the binaries live
+### Release artifacts
 
-Each `v*` release publishes the same artifacts to two locations:
+Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and `nullifier-query-server.service` to **DigitalOcean Spaces** (primary) with **GitHub Releases** as a fallback. `start_pir.sh` tries Spaces first, then GitHub. Exact URL patterns are in the curl commands in [Manual install](#manual-install-no-start_pirsh).
 
-| Artifact | DigitalOcean Spaces (primary) | GitHub Releases (fallback) |
-|----------|--------------------------------|-----------------------------|
-| `nf-server-linux-amd64` | `https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/nf-server-<tag>-linux-amd64` | `https://github.com/valargroup/vote-nullifier-pir/releases/download/<tag>/nf-server-linux-amd64` |
-| `nf-server-linux-arm64` | `…/nf-server-<tag>-linux-arm64` | `…/<tag>/nf-server-linux-arm64` |
-| `nf-server-darwin-arm64` | `…/nf-server-<tag>-darwin-arm64` | `…/<tag>/nf-server-darwin-arm64` |
-| `nf-server-darwin-amd64` | `…/nf-server-<tag>-darwin-amd64` | `…/<tag>/nf-server-darwin-amd64` |
-| `nullifier-query-server.service` | — | `…/<tag>/nullifier-query-server.service` |
-| `SHA256SUMS` | `…/SHA256SUMS-<tag>` (same line format as GitHub; file names match GitHub asset names) | `…/<tag>/SHA256SUMS` |
+`start_pir.sh` itself is served at two URLs:
 
-`start_pir.sh` itself is published to:
+- `https://vote.fra1.digitaloceanspaces.com/start_pir.sh` — always the **latest** release.
+- `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matches a given voting `snapshot_height`. Use this for reproducible installs.
 
-- `https://vote.fra1.digitaloceanspaces.com/start_pir.sh` — always points at the **latest** release.
-- `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matched a given voting `snapshot_height`. Use this when you need a reproducible install of a specific snapshot.
+### Platform support
 
-`start_pir.sh` tries Spaces first, then falls back to GitHub Releases for the binary, `SHA256SUMS`, and the unit file.
-
-### Build-time caveats per platform
-
-- **`linux-amd64`** (recommended): built with `--features avx512` against `target-cpu=x86-64-v4`. Requires AVX-512; older Intel/AMD CPUs will SIGILL on startup. Run `nf-server doctor` first to confirm.
-- **`linux-arm64`**: built with `--features serve` (no AVX, no PIR-specific SIMD). Functional but slower; not the recommended production target.
-- **`darwin-arm64`**: built with `--features serve`; the recommended target for local dev on Apple Silicon.
-- **`darwin-amd64`**: dev-only. Ships **without `serve`**; use only for `nf-server doctor` / `nf-server sync` on Intel Macs.
+- **`linux-amd64`** — recommended production target. Requires AVX-512; older Intel/AMD CPUs will SIGILL on startup. Run `nf-server doctor` first to confirm.
+- **`linux-arm64`** — supported but slower (no PIR-specific SIMD); not recommended for serving production traffic.
+- **`darwin-arm64`** — recommended for local dev on Apple Silicon.
+- **`darwin-amd64`** — dev-only: ships without the `serve` subcommand. Use for `doctor` / `sync` on Intel Macs only.
 
 ### Manual install (no `start_pir.sh`)
 
@@ -188,8 +177,8 @@ Production binaries should be built with `--features serve` (and `--features avx
 
 Estimates assume the recommended hardware.
 
-- **Bootstrap** wall time is dominated by **tier 2** on the recommended SKU: ~70 s matrix construction plus ~45–50 s YPIR offline precompute. Warm restarts only recover the CDN download cost (~15s).
-- **Synced** wall time on the reference host is governed by lightwalletd nullifier streaming, not local CPU — roughly ~16 minutes from NU5 activation to mainnet tip as of early 2026 (grows with chain length; refresh on each release).
+- **Bootstrap**: ~2 min cold on the recommended SKU (dominated by tier-2 setup). Warm restarts (tier files already on disk) finish in ~15 s, bounded by the CDN check.
+- **Synced**: governed by lightwalletd nullifier streaming, not local CPU — roughly ~16 min from NU5 activation to mainnet tip as of early 2026 (grows with chain length; refresh on each release).
 
 ## Bootstrapped mode
 
@@ -312,11 +301,13 @@ Browse `/metrics` once after install for the full series list; names are stable 
 
 For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index` represent ~16 minutes of lightwalletd streaming work; back them up if you want to skip a re-stream after disk loss. Tier files are derivable.
 
-## Useful configuration
+## Configuration reference
 
-### Operator: `nf-server serve` (CLI / env)
+### `nf-server serve` (CLI / env)
 
-These are the variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` (or, for `SENTRY_DSN`, `/opt/nf-ingest/.env`). See `nf-server serve --help` for the full list.
+Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` (or, for `SENTRY_DSN`, `/opt/nf-ingest/.env`). Run `nf-server serve --help` for the full list.
+
+**Common:**
 
 | Variable | Role |
 |----------|------|
@@ -324,15 +315,20 @@ These are the variables the shipped systemd unit honors. Set them in `/etc/defau
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
+| `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
+| `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
+
+**Advanced** (rarely touched; see `--help` for more):
+
+| Variable | Role |
+|----------|------|
 | `LWD_URLS` | Comma-separated lightwalletd gRPC URLs (overrides built-in defaults). |
 | `SVOTE_PIR_MAINNET_RPC_URL` | Optional zcashd JSON-RPC endpoint for chain-tip checks. |
 | `SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS` | Cap on bootstrap wall time before startup fails. |
-| `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SVOTE_PIR_WATCHDOG_TICK_SECS` | How often the watchdog re-checks staleness. |
 | `SVOTE_PIR_VOTE_CHAIN_URL` | Optional active-round guard URL for `POST /snapshot/prepare`. |
-| `SENTRY_DSN` | Enables Sentry error / trace reporting. Live in `/opt/nf-ingest/.env` (mode `0600`). |
 
-### Operator: `nf-server sync` (CLI / env)
+### `nf-server sync` (CLI / env)
 
 Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd unit ships for it.
 
@@ -343,8 +339,6 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 | `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run. |
 | `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height`. |
-| `--non-interactive` | No TTY prompts (CI / SSH). |
-| `--invalidate-after-blocks` | After new blocks are synced from lightwalletd in this run, delete `nullifiers.tree` and tier files so they rebuild. |
 
 ## Tagging and releases
 
@@ -365,9 +359,9 @@ Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for
 | File | Stage / source | Purpose |
 |------|----------------|---------|
 | `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Orchard nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
-| `nullifiers.checkpoint` | Stage 1 — sync | 16-byte `(height, offset)` written atomically per batch. Durable commit point: on startup, `nullifiers.bin` is truncated to `offset`, discarding any half-written batch. |
-| `nullifiers.index` | Stage 1 — sync | Append-only log of `(height, offset)` per committed batch. Lets `sync` and `POST /snapshot/prepare` export a snapshot at a past `voting-config.snapshot_height`. Auto-rebuilt from the checkpoint if missing. |
-| `nullifiers.tree` | Stage 2 — sync | Versioned `SVOTEPT1` checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
+| `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`; half-written batches are discarded on startup. |
+| `nullifiers.index` | Stage 1 — sync | Per-batch height index; lets `sync` and `POST /snapshot/prepare` export a snapshot at a past height. Auto-rebuilt if missing. |
+| `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
 | `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries (mmap'd by `serve`). Identical to `<precomputed-base>/snapshots/<height>/tier*.bin`. |
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: tree roots, tier byte sizes, and `height`. Source of truth for "what height am I serving"; installed **last** so a half-applied bootstrap retries cleanly next start. |
 
@@ -401,7 +395,7 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |
 | `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Startup time estimate](#startup-time-estimate) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
 | `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above canonical `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |
-| `nullifiers.tree` rejected as unknown format | File predates the `SVOTEPT1` header (old build) | Delete the file or set `SVOTE_PIR_SYNC_RESET=1` and rerun sync. |
+| `nullifiers.tree` rejected as unknown format | Tree file left over from an older build | Delete the file or set `SVOTE_PIR_SYNC_RESET=1` and rerun sync. |
 
 For deeper investigation, raise verbosity with `RUST_LOG=debug,nf_server=trace` in `/etc/default/nf-server` and restart.
 
