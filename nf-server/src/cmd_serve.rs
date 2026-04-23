@@ -5,18 +5,21 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Args as ClapArgs;
 use sentry::integrations::tower as sentry_tower;
+use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tower::ServiceBuilder;
 
 use nf_ingest::config;
 use nf_ingest::file_store;
 
+use crate::admin_listen::{parse_admin_listen, AdminBind};
 use crate::bootstrap;
 use crate::metrics;
 use crate::serve::handlers;
@@ -26,13 +29,13 @@ use crate::serve::watchdog;
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Listen port.
+    /// Listen port (public PIR API).
     #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
 
     /// Directory for all on-disk state: nullifiers.bin, nullifiers.checkpoint,
     /// nullifiers.index, nullifiers.tree, tier0.bin, tier1.bin, tier2.bin, and
-    /// pir_root.json. Required for snapshot rebuilds via POST /snapshot/prepare.
+    /// pir_root.json. Required for snapshot rebuilds via the admin listener.
     #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
     pir_data_dir: PathBuf,
 
@@ -42,7 +45,7 @@ pub struct Args {
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
-    /// If set, POST /snapshot/prepare will reject rebuilds when a round is active.
+    /// If set, POST /snapshot/prepare (admin) will reject rebuilds when a round is active.
     #[arg(long, env = "SVOTE_PIR_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
@@ -95,9 +98,84 @@ pub struct Args {
     #[arg(long, env = "SVOTE_PIR_WATCHDOG_TICK_SECS", default_value = "60")]
     watchdog_tick_secs: u64,
 
+    /// Admin listener for `POST /snapshot/prepare` and `GET /snapshot/status`.
+    /// Accepts `unix:///run/nf-server/admin.sock` or `tcp://127.0.0.1:3001`.
+    /// When unset, those routes are not served (use `nf-server snapshot` with
+    /// a matching `--admin-listen` on the server process).
+    #[arg(long, env = "SVOTE_PIR_ADMIN_LISTEN")]
+    admin_listen: Option<String>,
+
+    /// Allow non-loopback `tcp://` for `--admin-listen` (exposes admin API on the network).
+    #[arg(long, default_value_t = false)]
+    admin_listen_allow_public: bool,
+
     /// Sentry DSN for error tracking. When empty, Sentry is disabled.
     #[arg(long, env = "SENTRY_DSN", default_value = "")]
     pub(crate) sentry_dsn: String,
+}
+
+fn public_router(state: Arc<AppState>) -> Router {
+    let cors = tower_http::cors::CorsLayer::permissive();
+    Router::new()
+        .route("/tier0", get(handlers::get_tier0))
+        .route("/params/tier1", get(handlers::get_params_tier1))
+        .route("/params/tier2", get(handlers::get_params_tier2))
+        .route("/tier1/query", post(handlers::post_tier1_query))
+        .route("/tier2/query", post(handlers::post_tier2_query))
+        .route("/tier1/row/:idx", get(handlers::get_tier1_row))
+        .route("/tier2/row/:idx", get(handlers::get_tier2_row))
+        .route("/root", get(handlers::get_root))
+        .route("/snapshot/status", get(rebuild::get_snapshot_status))
+        .route("/metrics", get(metrics::handle_metrics))
+        .route("/health", get(handlers::get_health))
+        .route("/ready", get(handlers::get_ready))
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(cors)
+        .layer(
+            ServiceBuilder::new()
+                .layer(sentry_tower::NewSentryLayer::new_from_top())
+                .layer(sentry_tower::SentryHttpLayer::with_transaction()),
+        )
+        .with_state(state)
+}
+
+fn admin_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/snapshot/prepare", post(rebuild::post_snapshot_prepare))
+        .route("/snapshot/status", get(rebuild::get_snapshot_status))
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(
+            ServiceBuilder::new()
+                .layer(sentry_tower::NewSentryLayer::new_from_top())
+                .layer(sentry_tower::SentryHttpLayer::with_transaction()),
+        )
+        .with_state(state)
+}
+
+/// Serve the admin `Router` on a Unix domain socket (HTTP/1 + upgrades, matching `axum::serve`).
+#[cfg(unix)]
+async fn serve_admin_unix(listener: tokio::net::UnixListener, app: Router) -> std::io::Result<()> {
+    use hyper::body::Incoming;
+    use hyper::Request;
+    use hyper_util::rt::TokioExecutor;
+    use hyper_util::rt::TokioIo;
+    use hyper_util::server::conn::auto::Builder;
+    use hyper_util::service::TowerToHyperService;
+    use tower::ServiceBuilder;
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let stream = TokioIo::new(stream);
+        let svc = ServiceBuilder::new()
+            .map_request(|req: Request<Incoming>| req.map(Body::new))
+            .service(app.clone());
+        let hyper_svc = TowerToHyperService::new(svc);
+        tokio::spawn(async move {
+            let _ = Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(stream, hyper_svc)
+                .await;
+        });
+    }
 }
 
 pub async fn run(args: Args) -> Result<()> {
@@ -121,33 +199,11 @@ pub async fn run(args: Args) -> Result<()> {
         inflight_requests: AtomicUsize::new(0),
     });
 
-    let cors = tower_http::cors::CorsLayer::permissive();
-
-    let app = Router::new()
-        .route("/tier0", get(handlers::get_tier0))
-        .route("/params/tier1", get(handlers::get_params_tier1))
-        .route("/params/tier2", get(handlers::get_params_tier2))
-        .route("/tier1/query", post(handlers::post_tier1_query))
-        .route("/tier2/query", post(handlers::post_tier2_query))
-        .route("/tier1/row/:idx", get(handlers::get_tier1_row))
-        .route("/tier2/row/:idx", get(handlers::get_tier2_row))
-        .route("/root", get(handlers::get_root))
-        .route("/snapshot/prepare", post(rebuild::post_snapshot_prepare))
-        .route("/snapshot/status", get(rebuild::get_snapshot_status))
-        .route("/metrics", get(metrics::handle_metrics))
-        .route("/health", get(handlers::get_health))
-        .route("/ready", get(handlers::get_ready))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
-        .layer(cors)
-        .layer(
-            ServiceBuilder::new()
-                .layer(sentry_tower::NewSentryLayer::new_from_top())
-                .layer(sentry_tower::SentryHttpLayer::with_transaction()),
-        )
-        .with_state(Arc::clone(&state));
+    let public_app = public_router(Arc::clone(&state));
+    let admin_app = admin_router(Arc::clone(&state));
 
     let addr = format!("0.0.0.0:{}", args.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = TcpListener::bind(&addr).await?;
     eprintln!("Listening on {addr}");
 
     let warm_state = Arc::clone(&state);
@@ -167,10 +223,10 @@ pub async fn run(args: Args) -> Result<()> {
     };
     // Hold `rebuild_lock` for the entire duration of the startup
     // pipeline (index rebuild → bootstrap → load). This serialises
-    // startup against `POST /snapshot/prepare`, which also acquires
-    // this lock before touching `pir_data_dir`. Without
-    // it, a prepare call arriving in the Starting window would race
-    // with `rebuild_index`, `bootstrap::run`, and `load_serving_state`
+    // startup against `POST /snapshot/prepare` on the admin listener,
+    // which also acquires this lock before touching `pir_data_dir`.
+    // Without it, a prepare call arriving in the Starting window would
+    // race with `rebuild_index`, `bootstrap::run`, and `load_serving_state`
     // on the same on-disk stores and clobber `phase` / `serving`.
     //
     // The prepare handler separately refuses to run unless the phase
@@ -302,7 +358,48 @@ pub async fn run(args: Args) -> Result<()> {
         }
     });
 
-    axum::serve(listener, app).await?;
+    if let Some(spec) = args.admin_listen.as_deref() {
+        let bind = parse_admin_listen(spec, args.admin_listen_allow_public)
+            .with_context(|| format!("parse --admin-listen {spec:?}"))?;
+        match bind {
+            AdminBind::Tcp(admin_addr) => {
+                let admin_listener = TcpListener::bind(admin_addr)
+                    .await
+                    .with_context(|| format!("bind admin tcp {admin_addr}"))?;
+                eprintln!("Admin listening on tcp://{admin_addr}");
+                tokio::try_join!(
+                    axum::serve(listener, public_app),
+                    axum::serve(admin_listener, admin_app),
+                )?;
+            }
+            #[cfg(unix)]
+            AdminBind::Unix(path) => {
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .with_context(|| format!("remove stale unix socket {}", path.display()))?;
+                }
+                let uds = tokio::net::UnixListener::bind(&path)
+                    .with_context(|| format!("bind admin unix socket {}", path.display()))?;
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &path,
+                    std::fs::Permissions::from_mode(0o660),
+                )
+                .with_context(|| format!("chmod admin unix socket {}", path.display()))?;
+                eprintln!("Admin listening on unix://{}", path.display());
+                tokio::try_join!(
+                    axum::serve(listener, public_app),
+                    serve_admin_unix(uds, admin_app),
+                )?;
+            }
+            #[cfg(not(unix))]
+            AdminBind::Unix(_) => {
+                anyhow::bail!("unix admin listen is not supported on this platform");
+            }
+        }
+    } else {
+        axum::serve(listener, public_app).await?;
+    }
 
     Ok(())
 }

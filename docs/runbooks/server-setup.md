@@ -26,7 +26,7 @@ systemctl restart nullifier-query-server
 journalctl -u nullifier-query-server -f
 ```
 
-The shipped unit (`nullifier-query-server.service`) lives at `/etc/systemd/system/`, runs `/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`, and reads environment from `/etc/default/nf-server` (operator-owned: `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`) and `/opt/nf-ingest/.env` (deploy-owned: `SENTRY_DSN`). See [Configuring the service](#configuring-the-service) for the full unit layout and how to change settings.
+The shipped unit (`nullifier-query-server.service`) lives at `/etc/systemd/system/`, runs `/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000 --admin-listen unix:///run/nf-server/admin.sock`, and reads environment from `/etc/default/nf-server` (operator-owned: `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`) and `/opt/nf-ingest/.env` (deploy-owned: `SENTRY_DSN`). See [Configuring the service](#configuring-the-service) for the full unit layout and how to change settings.
 
 There are two modes for starting up manually:
 
@@ -151,6 +151,30 @@ Estimates assume the recommended hardware.
 - **Bootstrap** wall time is dominated by **tier 2** on the recommended SKU: ~70 s matrix construction plus ~45–50 s YPIR offline precompute. Warm restarts only recover the CDN download cost (~15s).
 - **Synced** wall time on the reference host is governed by lightwalletd nullifier streaming, not local CPU. As of April 2026, ~16 minutes from NU5 activation to mainnet tip.
 
+## Hot in-process rebuild (admin listener)
+
+`POST /snapshot/prepare` is **not** exposed on the public PIR port (`--port`, default 3000). It is served only on the **admin listener** configured with `serve --admin-listen` (production systemd uses `unix:///run/nf-server/admin.sock` under `RuntimeDirectory=nf-server`). The public listener still exposes read-only `GET /snapshot/status` (for example for operators and for convergence checks alongside `/metrics`).
+
+Trigger a rebuild on a **running** replica without `systemctl restart`:
+
+```bash
+# Production (socket mode 0660, group nf-admin — add operators with sudo usermod -aG nf-admin <user>)
+sudo nf-server snapshot prepare --height 3456780 --endpoint unix:///run/nf-server/admin.sock
+
+# Poll JSON status (same endpoint as the admin listener)
+nf-server snapshot status --endpoint unix:///run/nf-server/admin.sock
+```
+
+Local `make serve` defaults `--admin-listen tcp://127.0.0.1:3001` (override with `ADMIN_LISTEN=…` on the Make command line). Point the CLI at the same URL:
+
+```bash
+nf-server snapshot status --endpoint tcp://127.0.0.1:3001
+```
+
+`SVOTE_PIR_ADMIN_ENDPOINT` is accepted as an alternative to repeating `--endpoint`.
+
+Until the **vote-sdk** admin UI and any reverse proxy are updated to reach the admin listener (or a sidecar that forwards to the UDS), use this CLI from the host instead of `POST` on the public PIR port.
+
 ## Bootstrapped mode
 
 This is what the shipped systemd unit runs by default. After install, the service is already enabled and started; nothing more to do for the happy path.
@@ -235,7 +259,7 @@ The release ships `nullifier-query-server.service` and `start_pir.sh` installs i
 
 - runs `Type=simple` with `Restart=on-failure` and `RestartSec=30`;
 - has `WorkingDirectory=/opt/nf-ingest`;
-- `ExecStart=/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`;
+- `ExecStart=/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000 --admin-listen unix:///run/nf-server/admin.sock` (admin Unix socket under `RuntimeDirectory=nf-server`; `Group=nf-admin` so operators in that group can run `nf-server snapshot` without sudo);
 - pulls environment from two files (both optional, `EnvironmentFile=-…`):
   - `/etc/default/nf-server` — operator / cloud-init owned. Holds `SVOTE_PIR_VOTING_CONFIG_URL` and `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Edit this file to point at a mirror or to disable bootstrap (`SVOTE_PIR_VOTING_CONFIG_URL=`).
   - `/opt/nf-ingest/.env` — deploy-workflow owned. Holds `SENTRY_DSN`. Mode `0600`.
@@ -271,6 +295,8 @@ These are the variables the shipped systemd unit honors. Set them in `/etc/defau
 |----------|------|
 | `SVOTE_PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files. Unit overrides via `--pir-data-dir /opt/nf-ingest/pir-data`. |
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
+| `SVOTE_PIR_ADMIN_LISTEN` | Optional. When set on `serve`, binds a second HTTP listener for `POST /snapshot/prepare` and `GET /snapshot/status` only (e.g. `unix:///run/nf-server/admin.sock` or `tcp://127.0.0.1:3001`). The shipped unit sets the Unix path. |
+| `SVOTE_PIR_ADMIN_ENDPOINT` | Used by `nf-server snapshot prepare` / `status` (CLI) to reach that admin listener; defaults to the production socket path. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
 | `LWD_URLS` | Comma-separated lightwalletd gRPC URLs (overrides built-in defaults). |
@@ -278,7 +304,7 @@ These are the variables the shipped systemd unit honors. Set them in `/etc/defau
 | `SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS` | Cap on bootstrap wall time before startup fails. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SVOTE_PIR_WATCHDOG_TICK_SECS` | How often the watchdog re-checks staleness. |
-| `SVOTE_PIR_VOTE_CHAIN_URL` | Optional active-round guard URL for `POST /snapshot/prepare`. |
+| `SVOTE_PIR_VOTE_CHAIN_URL` | Optional active-round guard URL for `POST /snapshot/prepare` on the **admin** listener. |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Live in `/opt/nf-ingest/.env` (mode `0600`). |
 
 ### Operator: `nf-server sync` (CLI / env)
@@ -309,7 +335,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 |-------|----------|
 | Voting-config unavailable when its URL is set | With the default non-empty URL (or any non-empty override), fetch and `snapshot_height` are required or startup fails. **Offline / manual disks:** explicitly clear `SVOTE_PIR_VOTING_CONFIG_URL` and stage tier files under `SVOTE_PIR_DATA_DIR` yourself. |
 | `nullifiers.checkpoint` vs `nullifiers.index` | **Checkpoint** is the durable commit point (height + byte offset into `nullifiers.bin`). **Index** records per-batch offsets for export at specific aligned heights. Both are kept. |
-| Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
+| Remove `POST /snapshot/prepare`? | **Keep the handler** for in-service rebuilds; mount it **only** on `--admin-listen` (UDS in production). Operators use `nf-server snapshot prepare` / `status`; the public port keeps read-only `GET /snapshot/status` only. |
 | CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |
 
 ## TODO (product / engineering backlog)

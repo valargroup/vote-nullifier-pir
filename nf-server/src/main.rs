@@ -3,11 +3,15 @@
 //! Provides:
 //!   - `doctor` — Pre-flight host checks vs runbook hardware guidance.
 //!   - `sync` — Resumable ingest, `nullifiers.tree` checkpoint, PIR tier export.
+//!   - `snapshot` — Admin client for hot rebuilds on a running `serve` process.
 //!   - `serve` — Start the PIR HTTP server (feature-gated behind `serve`).
 
+mod admin_client;
+mod admin_listen;
 #[cfg(feature = "serve")]
 mod bootstrap;
 mod cmd_doctor;
+mod cmd_snapshot;
 mod cmd_sync;
 mod sync_pipeline;
 #[cfg(feature = "serve")]
@@ -24,7 +28,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "nf-server",
-    about = "Nullifier PIR pipeline: doctor, sync (ingest + export), and serve"
+    about = "Nullifier PIR pipeline: doctor, sync, snapshot (admin client), and serve"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -38,6 +42,8 @@ enum Command {
     Doctor(cmd_doctor::Args),
     /// Ingest nullifiers, build tree checkpoint, export PIR tiers (resumable)
     Sync(cmd_sync::Args),
+    /// Trigger or observe in-process snapshot rebuilds on a running `nf-server serve`
+    Snapshot(cmd_snapshot::Args),
     /// Start the PIR HTTP server (requires --features serve)
     #[cfg(feature = "serve")]
     Serve(cmd_serve::Args),
@@ -104,6 +110,7 @@ fn main() -> anyhow::Result<()> {
             match cli.command {
                 Command::Doctor(args) => Ok(cmd_doctor::run(args)?),
                 Command::Sync(args) => cmd_sync::run(args).await,
+                Command::Snapshot(args) => std::process::exit(cmd_snapshot::run(args).await),
                 #[cfg(feature = "serve")]
                 Command::Serve(args) => cmd_serve::run(args).await,
             }

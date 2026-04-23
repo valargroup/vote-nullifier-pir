@@ -28,6 +28,8 @@ NF_RELEASE_BIN := $(ROOT)/target/release/nf-server
 PIR_DATA_DIR ?= pir-data
 LWD_URL       ?= https://zec.rocks:443
 PORT          ?= 3000
+# Admin listener for hot rebuilds (`nf-server snapshot …`). Matches `serve --admin-listen`.
+ADMIN_LISTEN  ?= tcp://127.0.0.1:3001
 SYNC_HEIGHT   ?=
 
 # `make install`: DESTDIR for packaging. PREFIX defaults to ~/.local (no sudo); system-wide:
@@ -73,8 +75,8 @@ sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
 sync-invalidate: ## Same as sync with `--invalidate-after-blocks` (rebuild tree/tiers when new blocks synced)
 	cd $(NF_DIR) && cargo run --release -- sync --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
 
-serve: ## Start the PIR HTTP server
-	cd $(NF_DIR) && cargo run --release --features serve -- serve --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT)
+serve: ## Start the PIR HTTP server (public :PORT + admin $(ADMIN_LISTEN) for snapshot CLI)
+	cd $(NF_DIR) && cargo run --release --features serve -- serve --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT) --admin-listen $(ADMIN_LISTEN)
 
 test: ## Run unit tests for all subcrates
 	cd $(IMT_DIR) && cargo test --lib

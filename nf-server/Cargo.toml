@@ -5,7 +5,15 @@ edition = "2021"
 
 [features]
 default = []
-serve = ["dep:pir-server", "dep:axum", "dep:tower-http", "dep:sentry", "dep:tower", "dep:sha2", "dep:prometheus"]
+serve = [
+    "dep:pir-server",
+    "dep:axum",
+    "dep:tower-http",
+    "dep:sentry",
+    "dep:tower",
+    "dep:sha2",
+    "dep:prometheus",
+]
 avx512 = ["serve", "pir-server/avx512"]
 
 [dependencies]
@@ -22,6 +30,12 @@ tower              = { version = "0.4", optional = true }
 sha2               = { version = "0.10", optional = true }
 # /metrics endpoint and counters/gauges for the bootstrap pipeline.
 prometheus         = { version = "0.13", default-features = false, features = ["process"], optional = true }
+# HTTP client for `nf-server snapshot` (admin UDS / loopback TCP).
+hyper              = { version = "1", features = ["client", "http1"] }
+hyper-util         = { version = "0.1", features = ["tokio", "server-auto"] }
+http-body-util     = "0.1"
+http               = "1"
+bytes              = "1"
 
 # Always needed
 pir-export        = { path = "../pir/export" }
@@ -41,5 +55,6 @@ sysinfo = { version = "0.33", default-features = false, features = ["system", "d
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hex = "0.4"
 sha2 = "0.10"

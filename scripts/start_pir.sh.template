@@ -108,6 +108,12 @@ if [ -n "${SENTRY_DSN:-}" ]; then
   chmod 600 /opt/nf-ingest/.env
 fi
 
+# Operators in this group can connect to the admin Unix socket (0660) for
+# `nf-server snapshot prepare` without sudo.
+if ! getent group nf-admin >/dev/null 2>&1; then
+  groupadd --system nf-admin
+fi
+
 systemctl daemon-reload
 systemctl enable --now nullifier-query-server.service
 
@@ -115,3 +121,7 @@ echo
 echo "Installed nf-server ${START_RELEASE_TAG} (${PLATFORM}) under /opt/nf-ingest."
 echo "Service: systemctl status nullifier-query-server"
 echo "Ready check: curl -fsS http://127.0.0.1:3000/ready"
+echo
+echo "Hot snapshot rebuilds: admin socket /run/nf-server/admin.sock (see systemd unit)."
+echo "  sudo nf-server snapshot prepare --height <H> --endpoint unix:///run/nf-server/admin.sock"
+echo "  (or: sudo usermod -aG nf-admin <user> && re-login, then nf-server snapshot … without sudo)"

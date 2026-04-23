@@ -20,5 +20,8 @@ grep -Fq SVOTE_PIR_VOTING_CONFIG_URL /etc/default/nf-server
 grep -Fq SVOTE_PIR_PRECOMPUTED_BASE_URL /etc/default/nf-server
 command -v curl >/dev/null
 /opt/nf-ingest/nf-server --help >/dev/null
+/opt/nf-ingest/nf-server snapshot --help >/dev/null
+grep -Fq 'admin-listen' /etc/systemd/system/nullifier-query-server.service
+grep -Fq 'admin.sock' /etc/systemd/system/nullifier-query-server.service
 
 echo "start_pir smoke: OK"

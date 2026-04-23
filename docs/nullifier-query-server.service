@@ -5,6 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
+Group=nf-admin
+RuntimeDirectory=nf-server
+RuntimeDirectoryMode=0750
 WorkingDirectory=/opt/nf-ingest
 # Two env files by design: cloud-init owns /etc/default/nf-server (the
 # Phase 3 SVOTE_PIR_VOTING_CONFIG_URL / SVOTE_PIR_PRECOMPUTED_BASE_URL pins),
@@ -15,7 +18,8 @@ EnvironmentFile=-/etc/default/nf-server
 EnvironmentFile=-/opt/nf-ingest/.env
 ExecStart=/opt/nf-ingest/nf-server serve \
     --pir-data-dir /opt/nf-ingest/pir-data \
-    --port 3000
+    --port 3000 \
+    --admin-listen unix:///run/nf-server/admin.sock
 Restart=on-failure
 # A failed bootstrap (e.g. transient bucket 5xx) re-runs the full
 # startup including the CDN fetch. 30 s back-off keeps us from
