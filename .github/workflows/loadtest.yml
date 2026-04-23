@@ -60,7 +60,18 @@ jobs:
           echo "Target: $PIR_URL"
 
       - name: Fetch nullifiers snapshot
-        run: curl -fL --retry 3 -o nullifiers.bin https://vote.fra1.digitaloceanspaces.com/nullifiers.bin
+        run: |
+          set -euo pipefail
+          HEIGHT="$(jq -r '.snapshot_height | tonumber | tostring' voting-config.json)"
+          case "$HEIGHT" in
+            '' | *[!0-9]*)
+              echo "voting-config snapshot_height must be a non-negative integer, got: ${HEIGHT:-<empty>}" >&2
+              exit 1
+              ;;
+          esac
+          URL="https://vote.fra1.digitaloceanspaces.com/snapshots/${HEIGHT}/nullifiers.bin"
+          echo "Fetching $URL"
+          curl -fL --retry 3 -o nullifiers.bin "$URL"
 
       - name: Run load test
         run: |
