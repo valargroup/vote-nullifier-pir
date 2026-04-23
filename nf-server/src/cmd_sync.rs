@@ -170,6 +170,15 @@ pub async fn run(args: Args) -> Result<()> {
         target = target.min(s);
     }
 
+    // PIR snapshots and voting-config `snapshot_height` are defined on 10-block
+    // boundaries (see `nf_ingest::config::validate_export_height`).
+    let export_target = (target / 10) * 10;
+    config::validate_export_height(export_target).with_context(|| {
+        format!(
+            "aligned export height {export_target} (from cap {target}, chain_tip={chain_tip})"
+        )
+    })?;
+
     let data_dir = &nullifier_root;
     let pir_dir = &tier_dir;
 
@@ -190,19 +199,21 @@ pub async fn run(args: Args) -> Result<()> {
 
         let needs_nullifier_sync = match local_cp {
             None => true,
-            Some(h) => h < target,
+            Some(h) => h < export_target,
         };
 
         println!("Nullifier / tree directory: {}", data_dir.display());
         println!("Tier output directory: {}", pir_dir.display());
-        println!("Target block height: {target} (chain_tip={chain_tip})");
+        println!(
+            "Export block height: {export_target} (cap {target}, chain_tip={chain_tip})"
+        );
         if needs_nullifier_sync {
             println!(
                 "Stage 1/3: syncing Orchard nullifiers via {} lightwalletd server(s)",
                 lwd_urls.len()
             );
             let t_start = std::time::Instant::now();
-            let nullifier_sync = sync_nullifiers::sync(data_dir, &lwd_urls, Some(target), |height, tgt, batch, total| {
+            let nullifier_sync = sync_nullifiers::sync(data_dir, &lwd_urls, Some(export_target), |height, tgt, batch, total| {
                 let elapsed = t_start.elapsed().as_secs_f64();
                 let bps = if elapsed > 0.0 {
                     (height - sync_nullifiers::NU5_ACTIVATION_HEIGHT) as f64 / elapsed
@@ -245,41 +256,57 @@ pub async fn run(args: Args) -> Result<()> {
             )
         })?;
 
-        if ch < target {
+        if ch < export_target {
             bail!(
-                "checkpoint height {} is still below target {}; check SYNC_HEIGHT / voting snapshot",
+                "checkpoint height {} is still below export target {}; check SYNC_HEIGHT / voting snapshot",
                 ch,
-                target
+                export_target
             );
         }
 
         let tree_path = data_dir.join("nullifiers.tree");
         if let Ok(Some((_, hh))) = pir_export::read_tree_checkpoint_header(&tree_path) {
-            if hh != ch {
+            if hh != export_target {
                 eprintln!(
-                    "Removing stale nullifiers.tree (checkpoint height {}, tree header {})",
-                    ch, hh
+                    "Removing stale nullifiers.tree (on-disk checkpoint height {}, tree header {}, export target {})",
+                    ch, hh, export_target
                 );
                 let _ = std::fs::remove_file(&tree_path);
             }
         }
 
-        println!("Stage 2/3: PIR Merkle tree (nullifiers.tree checkpoint at height {ch})");
+        println!(
+            "Stage 2/3: PIR Merkle tree (nullifiers.checkpoint height {ch}, export target {export_target})"
+        );
         let data_dir_c = data_dir.to_path_buf();
         let pir_dir_c = pir_dir.to_path_buf();
+        let export_target_c = export_target;
+        let ch_c = ch;
         tokio::task::spawn_blocking(move || -> Result<()> {
-            if pir_export::tiers_complete_for_height(&pir_dir_c, ch)? {
-                println!("Stage 3/3: PIR tier files already complete at height {ch}");
+            if pir_export::tiers_complete_for_height(&pir_dir_c, export_target_c)? {
+                println!("Stage 3/3: PIR tier files already complete at height {export_target_c}");
                 return Ok(());
             }
 
-            let nfs = file_store::load_all_nullifiers(&data_dir_c)?;
+            let nfs = if ch_c > export_target_c {
+                let (_idx_h, byte_off) = file_store::offset_for_height(&data_dir_c, export_target_c)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "nullifiers.index has no entry for export height {export_target_c} \
+                             (checkpoint is {ch_c}); run a full sync so the index covers this height"
+                        )
+                    })?;
+                file_store::load_nullifiers_up_to(&data_dir_c, byte_off)
+                    .with_context(|| format!("load nullifiers up to byte offset {byte_off}"))?
+            } else {
+                file_store::load_all_nullifiers(&data_dir_c)?
+            };
             println!("  Building/resuming tree and exporting tiers …");
             sync_pipeline::export_tree_and_tiers_from_nullifiers(
                 nfs,
                 &data_dir_c,
                 &pir_dir_c,
-                ch,
+                export_target_c,
                 |msg, _| eprintln!("    {msg}"),
             )?;
             Ok(())
