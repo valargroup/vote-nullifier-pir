@@ -17,6 +17,12 @@
 //! <precomputed_base_url>/snapshots/<height>/pir_root.json
 //! ```
 //!
+//! `manifest.json` may list additional objects (for example
+//! `nullifiers.bin`, `nullifiers.checkpoint`, `nullifiers.tree`) when
+//! operators publish them alongside a snapshot. **`nf-server serve`
+//! ignores those extras** and only downloads [`SNAPSHOT_FILES`]; other
+//! tooling may fetch them from the same prefix using the manifest hashes.
+//!
 //! ## Atomicity
 //!
 //! Files are written into `<pir_data_dir>/.bootstrap-staging/` and verified
@@ -579,6 +585,34 @@ mod tests {
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
         assert_eq!(keys, ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]);
+    }
+
+    #[test]
+    fn manifest_decodes_with_optional_nullifier_artifacts() {
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "height": 100,
+            "created_at": "2026-01-01T00:00:00Z",
+            "nf_server_sha256": "deadbeef",
+            "publisher": { "git_ref": "main", "git_sha": "abc" },
+            "files": {
+                "tier0.bin":     { "size": 1, "sha256": "00" },
+                "tier1.bin":     { "size": 2, "sha256": "11" },
+                "tier2.bin":     { "size": 3, "sha256": "22" },
+                "pir_root.json": { "size": 4, "sha256": "33" },
+                "nullifiers.bin": { "size": 5, "sha256": "44" },
+                "nullifiers.checkpoint": { "size": 16, "sha256": "55" },
+                "nullifiers.tree": { "size": 7, "sha256": "66" }
+            }
+        });
+        let m: PublishedManifest = serde_json::from_value(raw).unwrap();
+        for f in SNAPSHOT_FILES {
+            assert!(
+                m.files.contains_key(*f),
+                "bootstrap-required file {f} missing"
+            );
+        }
+        assert!(m.files.contains_key("nullifiers.bin"));
     }
 
 }

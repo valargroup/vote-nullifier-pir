@@ -31,6 +31,7 @@ permissions:
 
 env:
   VOTING_CONFIG_URL: https://valargroup.github.io/token-holder-voting-config/voting-config.json
+  SNAPSHOTS_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
 
 jobs:
   loadtest:
@@ -69,9 +70,29 @@ jobs:
               exit 1
               ;;
           esac
-          URL="https://vote.fra1.digitaloceanspaces.com/snapshots/${HEIGHT}/nullifiers.bin"
-          echo "Fetching $URL"
-          curl -fL --retry 3 -o nullifiers.bin "$URL"
+          curl -fsSL --retry 3 "$SNAPSHOTS_BASE/$HEIGHT/manifest.json" -o manifest.json
+          if ! jq -e '.files["nullifiers.bin"]' manifest.json >/dev/null 2>&1; then
+            echo "ERROR: snapshot $HEIGHT has no nullifiers.bin in manifest."
+            echo "Publish that height from 'Publish nullifier snapshot' with include_nullifier_artifacts enabled."
+            exit 1
+          fi
+          EXPECT_SHA=$(jq -r '.files["nullifiers.bin"].sha256' manifest.json)
+          EXPECT_SIZE=$(jq -r '.files["nullifiers.bin"].size' manifest.json)
+          echo "Fetching $SNAPSHOTS_BASE/$HEIGHT/nullifiers.bin"
+          curl -fL --retry 3 -o nullifiers.bin "$SNAPSHOTS_BASE/$HEIGHT/nullifiers.bin"
+          ACTUAL_SIZE=$(wc -c < nullifiers.bin | tr -d ' ')
+          if [ "$ACTUAL_SIZE" != "$EXPECT_SIZE" ]; then
+            echo "ERROR: nullifiers.bin size mismatch (expected $EXPECT_SIZE, got $ACTUAL_SIZE)"
+            exit 1
+          fi
+          ACTUAL_SHA=$(sha256sum nullifiers.bin | awk '{print $1}')
+          if [ "$ACTUAL_SHA" != "$EXPECT_SHA" ]; then
+            echo "ERROR: nullifiers.bin sha256 mismatch"
+            echo "  expected: $EXPECT_SHA"
+            echo "  actual:   $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Fetched nullifiers.bin for height $HEIGHT (verified against manifest)"
 
       - name: Run load test
         run: |
