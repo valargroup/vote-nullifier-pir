@@ -68,8 +68,6 @@ The server needs the following network access:
 | Outbound 443 | lightwalletd (e.g. `zec.rocks:443`) | **Synced mode only** |
 | Inbound 3000 | client / reverse proxy | PIR query traffic |
 
-Air-gapped hosts: pre-stage the binary, `SHA256SUMS`, and the tier files under `SVOTE_PIR_DATA_DIR`, then set `SVOTE_PIR_VOTING_CONFIG_URL=` to disable bootstrap. See [Manual install](#manual-install-no-start_pirsh).
-
 ## Platform support
 
 - **`linux-amd64`** — recommended production target. Requires AVX-512; older Intel/AMD CPUs will SIGILL on startup. Run `nf-server doctor` first to confirm.
@@ -92,7 +90,7 @@ Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and
 
 ### Manual install (no `start_pir.sh`)
 
-For air-gapped hosts, custom layouts, non-Linux platforms, or when debugging the installer:
+For custom layouts, non-Linux platforms, or when debugging the installer:
 
 1. **Download the binary** for your platform from one of the URLs above. Save it as `/tmp/nf-server-${PLATFORM}` (the name used in `SHA256SUMS`) regardless of whether you pull from Spaces or GitHub:
 
@@ -309,7 +307,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 - A new `v*` release with security or correctness fixes (watch GitHub Releases; subscribe via the repo's release feed).
 - Otherwise, no need to chase patch releases mid-round.
 
-For air-gapped / pinned-snapshot installs, use the per-snapshot `start_pir.sh` URL: `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh`.
+For pinned-snapshot installs, use the per-snapshot `start_pir.sh` URL: `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh`.
 
 ## Configuration reference
 
