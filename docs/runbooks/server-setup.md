@@ -217,17 +217,6 @@ systemctl start nullifier-query-server
 
 Pass `--invalidate-after-blocks` to rebuild `nullifiers.tree` and tier blobs whenever new blocks are streamed in this run. Pass `--non-interactive` from non-TTY contexts (CI, unattended SSH); when doing so, also set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` if a wipe is expected.
 
-Environment from `/etc/default/nf-server` (e.g. `SVOTE_PIR_VOTING_CONFIG_URL`) is **not** auto-loaded by an interactive shell. Either pass the same vars explicitly with `sudo --preserve-env=…`, source the env file (`set -a; . /etc/default/nf-server; set +a`), or run sync inside the unit's environment with `systemd-run`:
-
-```bash
-sudo systemd-run --pty --uid=root \
-    --working-directory=/opt/nf-ingest \
-    -p EnvironmentFile=-/etc/default/nf-server \
-    -p EnvironmentFile=-/opt/nf-ingest/.env \
-    /opt/nf-ingest/nf-server sync \
-    --pir-data-dir /opt/nf-ingest/pir-data \
-    --lwd-url https://zec.rocks:443
-```
 
 **What happens in the background?**
 
