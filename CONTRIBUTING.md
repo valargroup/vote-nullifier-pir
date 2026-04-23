@@ -77,7 +77,7 @@ The `nf-server` crate uses feature flags to keep the default build lightweight:
 | `serve` | Enables the `serve` subcommand (`pir-server`, `axum`, …). The default binary always includes `sync` and `reqwest` (voting-config fetch). |
 | `avx512` | Implies `serve`; compiles YPIR with AVX-512 intrinsics for ~2x query throughput |
 
-The `avx512` feature requires nightly Rust and a CPU with AVX-512 support. GitHub Releases publish `linux-amd64` with `serve` only (x86-64-v3); use `avx512` when you build binaries yourself for AVX-512 hardware.
+The `avx512` feature requires nightly Rust and a CPU with AVX-512 support. GitHub Releases publish `linux-amd64` with **`avx512`** and `target-cpu=x86-64-v3` (see `.github/workflows/release.yml`).
 
 ## Code Style
 

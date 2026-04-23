@@ -19,7 +19,7 @@ This guide covers two deployment paths:
 
 ### AVX-512 note
 
-The `serve` feature works on any x86-64 CPU. AVX-512 is an optional compile-time optimization that approximately halves PIR query latency on capable hardware. The pre-built `linux-amd64` release binary targets **x86-64-v3** (AVX2) for broad compatibility; for AVX-512 builds, compile from source with `--features avx512` on the host (see `CONTRIBUTING.md`).
+The `serve` feature works on any x86-64 CPU. AVX-512 is an optional compile-time optimization that approximately halves PIR query latency on capable hardware. The pre-built `linux-amd64` release binary is built with **`--features avx512`** and a **x86-64-v3** baseline (`target-cpu`) so it runs on typical cloud VMs while still including YPIR’s AVX-512 kernels. For a fully native tuned build, compile from source on the host (see `CONTRIBUTING.md`).
 
 ---
 

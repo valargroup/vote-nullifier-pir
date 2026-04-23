@@ -68,14 +68,13 @@ jobs:
             cp target/${{ matrix.rust_target }}/release/nf-server target/release/
           else
             if [ "${{ matrix.platform }}" = "linux-amd64" ]; then
-              # x86-64-v3 (AVX2) matches typical cloud VMs and GitHub-hosted runners.
-              # v4 + AVX-512 binaries fault with SIGILL on many hypervisors; the
-              # start_pir installer smoke runs the downloaded binary in a fresh
-              # Ubuntu container. For maximum PIR throughput on AVX-512 hosts,
-              # rebuild with RUSTFLAGS=-Ctarget-cpu=x86-64-v4 and --features avx512.
+              # Baseline codegen at x86-64-v3 (AVX2) so the binary starts on typical
+              # cloud VMs; `avx512` still compiles YPIR AVX-512 paths for production
+              # throughput. Do not use x86-64-v4 here: broad v4 codegen SIGILLs on
+              # many GitHub / hypervisor hosts (see start_pir installer smoke).
               CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3" \
                 cargo build --release \
-                --manifest-path nf-server/Cargo.toml --features serve \
+                --manifest-path nf-server/Cargo.toml --features avx512 \
                 --target x86_64-unknown-linux-gnu
               mkdir -p target/release
               cp target/x86_64-unknown-linux-gnu/release/nf-server target/release/
