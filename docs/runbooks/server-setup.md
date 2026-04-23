@@ -9,7 +9,7 @@ curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
 ```
 
 What it does:
-- Downloads the latest binaries
+- Downloads the latest binaries and verifies `nf-server` against `SHA256SUMS` for the pinned release (Spaces first, then GitHub Releases)
 - Configures the service per the recommended parameters
 - Creates an automated **systemd** unit that auto-restarts on start-up and on failure
 - Bootstraps from pre-computed snapshots
@@ -48,13 +48,14 @@ Each `v*` release publishes the same artifacts to two locations:
 | `nf-server-darwin-arm64` | `…/nf-server-<tag>-darwin-arm64` | `…/<tag>/nf-server-darwin-arm64` |
 | `nf-server-darwin-amd64` | `…/nf-server-<tag>-darwin-amd64` | `…/<tag>/nf-server-darwin-amd64` |
 | `nullifier-query-server.service` | — | `…/<tag>/nullifier-query-server.service` |
+| `SHA256SUMS` | `…/SHA256SUMS-<tag>` (same line format as GitHub; file names match GitHub asset names) | `…/<tag>/SHA256SUMS` |
 
 `start_pir.sh` itself is published to:
 
 - `https://vote.fra1.digitaloceanspaces.com/start_pir.sh` — always points at the **latest** release.
 - `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matched a given voting `snapshot_height`. Use this when you need a reproducible install of a specific snapshot.
 
-`start_pir.sh` tries Spaces first, then falls back to GitHub Releases for both the binary and the unit file.
+`start_pir.sh` tries Spaces first, then falls back to GitHub Releases for the binary, `SHA256SUMS`, and the unit file.
 
 ### Build-time caveats per platform
 
@@ -67,19 +68,26 @@ Each `v*` release publishes the same artifacts to two locations:
 
 For air-gapped hosts, custom layouts, non-Linux platforms, or when debugging the installer:
 
-1. **Download the binary** for your platform from one of the URLs above and put it on disk:
+1. **Download the binary** for your platform from one of the URLs above. Save it as `/tmp/nf-server-${PLATFORM}` (the name used in `SHA256SUMS`) regardless of whether you pull from Spaces or GitHub:
 
    ```bash
    PLATFORM=linux-amd64        # or linux-arm64, darwin-arm64, darwin-amd64
    TAG=v0.x.y                  # pin the release tag
 
-   curl -fL -o /tmp/nf-server \
+   curl -fL -o "/tmp/nf-server-${PLATFORM}" \
      "https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/nf-server-${TAG}-${PLATFORM}" \
-     || curl -fL -o /tmp/nf-server \
+     || curl -fL -o "/tmp/nf-server-${PLATFORM}" \
        "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/nf-server-${PLATFORM}"
 
+   curl -fL -o /tmp/SHA256SUMS \
+     "https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/SHA256SUMS-${TAG}" \
+     || curl -fL -o /tmp/SHA256SUMS \
+       "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/SHA256SUMS"
+
+   ( cd /tmp && sha256sum -c SHA256SUMS --ignore-missing )
+
    sudo install -d /opt/nf-ingest /opt/nf-ingest/pir-data
-   sudo install -m 0755 /tmp/nf-server /opt/nf-ingest/nf-server
+   sudo install -m 0755 "/tmp/nf-server-${PLATFORM}" /opt/nf-ingest/nf-server
    ```
 
 2. **Sanity-check** the binary and the host:
@@ -314,7 +322,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 ## TODO (product / engineering backlog)
 
-- Publish a `SHA256SUMS` (and ideally a Sigstore / minisign signature) per release alongside the `nf-server-<platform>` binaries on both DigitalOcean Spaces and GitHub Releases, and document the verification step in the manual-install flow.
+- Sign `SHA256SUMS` with Sigstore (or minisign) and document signature verification in the manual-install flow.
 
 ## See also
 

@@ -84,6 +84,27 @@ else
   exit 1
 fi
 
+SUMS_SPACES_URL="${START_BINARY_BASE_URL}/SHA256SUMS-${START_RELEASE_TAG}"
+SUMS_GH_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/SHA256SUMS"
+SUMS_PATH="${tmp}/SHA256SUMS"
+
+if curl -fL --retry 3 --retry-delay 2 -o "$SUMS_PATH" "$SUMS_SPACES_URL"; then
+  :
+elif curl -fL --retry 3 --retry-delay 2 -o "$SUMS_PATH" "$SUMS_GH_URL"; then
+  echo "Note: downloaded SHA256SUMS from GitHub releases (DigitalOcean Spaces fetch failed or object missing)." >&2
+else
+  echo "Failed to download SHA256SUMS for tag ${START_RELEASE_TAG} from Spaces and from GitHub." >&2
+  exit 1
+fi
+
+EXPECTED="$(awk -v f="nf-server-${PLATFORM}" '$2 == f { print $1; exit }' "$SUMS_PATH")"
+ACTUAL="$(sha256sum "$BINARY_PATH" | awk '{ print $1 }')"
+if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "SHA256 verification failed for nf-server-${PLATFORM} (tag ${START_RELEASE_TAG})." >&2
+  echo "expected=${EXPECTED:-<missing>} actual=${ACTUAL}" >&2
+  exit 1
+fi
+
 chmod +x "$BINARY_PATH"
 
 SERVICE_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/nullifier-query-server.service"
