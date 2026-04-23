@@ -32,7 +32,6 @@ systemctl restart nullifier-query-server
 journalctl -u nullifier-query-server -f
 ```
 
-The shipped unit (`nullifier-query-server.service`) lives at `/etc/systemd/system/`, runs `/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`, and reads environment from `/etc/default/nf-server` (operator-owned: `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`) and `/opt/nf-ingest/.env` (deploy-owned: `SENTRY_DSN`). See [Configuring the service](#configuring-the-service) for the full unit layout and how to change settings.
 
 There are two data-source modes:
 
@@ -184,19 +183,20 @@ systemctl restart nullifier-query-server
 
 **What happens in the background?**
 
-Behavior matches `nf-server serve` startup: index maintenance under `SVOTE_PIR_DATA_DIR`, then snapshot bootstrap (voting-config + optional CDN tier fetch), then loading mmap’d tier files. The binary **defaults** to a non-empty voting-config URL (`https://valargroup.github.io/token-holder-voting-config/voting-config.json`), so operators normally configure nothing. While that URL stays non-empty (default or your override), its fetch and the `snapshot_height` field are **required**—startup fails otherwise. **Offline / pre-staged tiers only:** set `SVOTE_PIR_VOTING_CONFIG_URL=` (or `--voting-config-url ""`) to turn bootstrap off. After the canonical height is known, CDN tier download failures may still log warnings and fall through to existing files on disk under `SVOTE_PIR_DATA_DIR`; the process **errors** if tier files ultimately cannot be loaded. Prometheus metrics are exposed at `GET /metrics` on the serve port; optional Sentry reporting uses `SENTRY_DSN`, and snapshot staleness alerting uses `SVOTE_PIR_STALE_THRESHOLD_SECS` / `SVOTE_PIR_WATCHDOG_TICK_SECS` when Sentry is configured.
+`nf-server serve` startup runs three phases: index maintenance under `SVOTE_PIR_DATA_DIR`, snapshot bootstrap (voting-config fetch + optional CDN tier download), then loading the mmap'd tier files.
 
-1. Fetch `voting-config.json` from the configured URL (same default as above unless you override it).
-   - Require `snapshot_height` in the JSON whenever bootstrap is enabled (non-empty URL).
-2. Compare canonical height to local `pir_root.json` height.
+By default the binary points at a non-empty voting-config URL (`https://valargroup.github.io/token-holder-voting-config/voting-config.json`), so operators normally configure nothing. Setting `SVOTE_PIR_VOTING_CONFIG_URL=` (or `--voting-config-url ""`) disables bootstrap — use this only for offline / pre-staged tiers.
+
+1. Fetch `voting-config.json` from the configured URL. While bootstrap is enabled (non-empty URL), `snapshot_height` is **required**; startup fails otherwise.
+2. Compare canonical `snapshot_height` to local `pir_root.json` height.
    - If equal, continue to load and serve.
-   - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `SVOTE_PIR_DATA_DIR`.
+   - If not equal, download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `SVOTE_PIR_DATA_DIR`. CDN download failures log a warning and fall through to existing on-disk files; startup **errors** if tier files ultimately cannot be loaded.
 3. If CDN sync fails but raw nullifier files exist at the expected height, an operator may run `nf-server sync` (see [Synced mode](#synced-mode)) to rebuild `nullifiers.tree` and tiers locally. If local **nullifier checkpoint** is above `snapshot_height` while the voting-config URL is enabled, `nf-server sync` prompts to type **`RESYNC`** (or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`) to wipe and realign.
 
 **Fatal errors (typical):**
 
 - Tier load fails after bootstrap (missing or corrupt `tier0.bin` / `pir_root.json`, etc.).
-- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while bootstrap is still enabled (default: non-empty voting-config URL). For offline-only disks, set `SVOTE_PIR_VOTING_CONFIG_URL=` so bootstrap is skipped and pre-staged files under `SVOTE_PIR_DATA_DIR` are served.
+- `voting-config.json` cannot be fetched or decoded, or `snapshot_height` is missing, while bootstrap is enabled. For offline-only disks, set `SVOTE_PIR_VOTING_CONFIG_URL=` so bootstrap is skipped and pre-staged files under `SVOTE_PIR_DATA_DIR` are served.
 
 Resolution hints:
 
@@ -265,7 +265,9 @@ For HTTPS in front of the listen port, run a reverse proxy (for example Caddy or
 
 ## Observability
 
-The server can emit errors and traces to Sentry. Create a project at [sentry.io](https://sentry.io), copy the DSN, and set `SENTRY_DSN`. The in-process snapshot watchdog emits stale-snapshot events through Sentry when `SVOTE_PIR_STALE_THRESHOLD_SECS` is non-zero and a DSN is present; tune `SVOTE_PIR_WATCHDOG_TICK_SECS` for how often it checks gauges versus the threshold.
+Prometheus metrics are exposed at `GET /metrics` on the serve port; scrape with your usual tooling.
+
+The server can also emit errors and traces to Sentry. Create a project at [sentry.io](https://sentry.io), copy the DSN, and set `SENTRY_DSN`. The in-process snapshot watchdog emits stale-snapshot events through Sentry when `SVOTE_PIR_STALE_THRESHOLD_SECS` is non-zero and a DSN is present; tune `SVOTE_PIR_WATCHDOG_TICK_SECS` for how often it checks gauges versus the threshold.
 
 ## Rationale
 
