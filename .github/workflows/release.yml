@@ -3,8 +3,9 @@
 # Release assets:
 #   nf-server-linux-amd64, nf-server-linux-arm64,
 #   nf-server-darwin-amd64, nf-server-darwin-arm64,
-#   nullifier-query-server.service
+#   nullifier-query-server.service, SHA256SUMS
 # DO Spaces: start_pir.sh (latest + scripts/start_pir/<snapshot_height>/)
+#   + SHA256SUMS-<tag> (same contents as GitHub Releases SHA256SUMS)
 #
 # The zally (Shielded-Vote) release workflow fetches these binaries via
 # `gh release download` when assembling its own release tarballs.
@@ -109,6 +110,17 @@ jobs:
           done
           cp docs/nullifier-query-server.service .
 
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          sha256sum \
+            nf-server-linux-amd64 \
+            nf-server-linux-arm64 \
+            nf-server-darwin-amd64 \
+            nf-server-darwin-arm64 \
+            nullifier-query-server.service \
+            > SHA256SUMS
+
       - name: Create release with assets
         uses: softprops/action-gh-release@v2
         with:
@@ -119,6 +131,7 @@ jobs:
             nf-server-darwin-amd64
             nf-server-darwin-arm64
             nullifier-query-server.service
+            SHA256SUMS
 
   distribute:
     name: Distribute to DigitalOcean Spaces
@@ -135,6 +148,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: nf-server-*
+
+      - name: Prepare binaries and SHA256SUMS for Spaces
+        run: |
+          set -euo pipefail
+          for PLATFORM in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            cp "nf-server-${PLATFORM}/nf-server" "nf-server-${PLATFORM}.tmp"
+            rm -rf "nf-server-${PLATFORM}"
+            mv "nf-server-${PLATFORM}.tmp" "nf-server-${PLATFORM}"
+            chmod +x "nf-server-${PLATFORM}"
+          done
+          cp docs/nullifier-query-server.service .
+          sha256sum \
+            nf-server-linux-amd64 \
+            nf-server-linux-arm64 \
+            nf-server-darwin-amd64 \
+            nf-server-darwin-arm64 \
+            nullifier-query-server.service \
+            > SHA256SUMS
 
       - name: Render start_pir.sh installer
         run: |
@@ -166,12 +197,16 @@ jobs:
           use_https = True
           EOF
           for PLATFORM in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
-            BINARY="nf-server-${PLATFORM}/nf-server"
+            BINARY="nf-server-${PLATFORM}"
             if [ -f "$BINARY" ]; then
               s3cmd -c /tmp/do-spaces.s3cfg put "$BINARY" \
                 "s3://vote/binaries/vote-pir/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
             fi
           done
+          if [ -f SHA256SUMS ]; then
+            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force SHA256SUMS \
+              "s3://vote/binaries/vote-pir/SHA256SUMS-${VERSION}"
+          fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
             s3://vote/start_pir.sh
           VOTING_CONFIG_URL="https://valargroup.github.io/token-holder-voting-config/voting-config.json"
