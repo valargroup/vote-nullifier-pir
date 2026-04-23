@@ -1,6 +1,12 @@
 # Runbook: Setup PIR Server
 
-This runbook explains how to set up a vote nullifier private information retrieval (PIR) server.
+## Overview
+
+Vote-nullifier PIR lets a client prove that a Zcash Orchard nullifier is **not** in the on-chain nullifier set, without revealing *which* nullifier it is asking about — a building block for shielded voting. See the [project README](../../README.md) and the [PIR tree spec](../pir-tree-spec.md) for background.
+
+This runbook covers the operator side: standing up an `nf-server` host that answers PIR queries from clients over HTTP. One server is a single `nf-server` binary listening on a single port (default `3000`); see [Recommended hardware](#recommended-hardware) for the target SKU.
+
+## Quick start
 
 On Linux, we recommend using this one-CLI command to get started:
 
@@ -28,10 +34,14 @@ journalctl -u nullifier-query-server -f
 
 The shipped unit (`nullifier-query-server.service`) lives at `/etc/systemd/system/`, runs `/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`, and reads environment from `/etc/default/nf-server` (operator-owned: `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`) and `/opt/nf-ingest/.env` (deploy-owned: `SENTRY_DSN`). See [Configuring the service](#configuring-the-service) for the full unit layout and how to change settings.
 
-There are two modes for starting up manually:
+There are two data-source modes:
 
 1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
 2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+
+## Recommended hardware
+
+We recommend a 4 Intel vCPU machine with AVX-512 support, 32 GB RAM, and at least 35 GB free disk. See [Pre-flight check](#pre-flight-check-nf-server-doctor) to verify a host before installing, and the [Rationale](#recommended-hardware-1) below for why.
 
 ## Install
 
@@ -62,7 +72,7 @@ Each `v*` release publishes the same artifacts to two locations:
 - **`linux-amd64`** is built with `--features avx512` against `target-cpu=x86-64-v4`. It requires a CPU with AVX-512; older Intel/AMD hardware will SIGILL on startup. Run `nf-server doctor` first to confirm.
 - **`linux-arm64`** is built with `--features serve` (no AVX, no PIR-specific SIMD).
 - **`darwin-arm64`** is built with `--features serve` and is the recommended Mac target.
-- **`darwin-amd64`** is **cross-compiled without the `serve` feature** (YPIR's C++ build hard-codes `-march=native` and breaks under cross-compilation). It is only useful for `nf-server doctor` and `nf-server sync` on Intel Macs — it cannot run `nf-server serve`. Production serving on Intel Mac is unsupported.
+- **`darwin-amd64`** ships **without the `serve` feature**; use it only for `nf-server doctor` and `nf-server sync` on Intel Macs. Production serving on Intel Mac is unsupported.
 
 ### Manual install (no `start_pir.sh`)
 
@@ -129,10 +139,6 @@ For air-gapped hosts, custom layouts, non-Linux platforms, or when debugging the
 ### Upgrading
 
 Repeat steps 1–2 with a new `TAG`, then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
-
-## Recommended hardware
-
-We recommend a 4 Intel vCPU machine with AVX-512 support, 32 GB RAM, and at least 35 GB free disk.
 
 ## Pre-flight check (`nf-server doctor`)
 
@@ -303,10 +309,6 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 | `--non-interactive` | No TTY prompts (CI / SSH). |
 | `--invalidate-after-blocks` | After new blocks are synced from lightwalletd in this run, delete `nullifiers.tree` and tier files so they rebuild. |
 
-### Developer (source checkout)
-
-Source-checkout workflows (`cargo`, `make build`, `make sync`, `make serve`, `make sync-invalidate`, `make install`, etc.) are documented in [CONTRIBUTING.md](../../CONTRIBUTING.md) and the [Makefile](../../Makefile). They are not part of operator deployment and are intentionally excluded from this runbook.
-
 ## Tagging and releases
 
 Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifacts). Integrators should pin **binary version** and the **voting snapshot height** they expect.
@@ -325,6 +327,21 @@ Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: tree roots, tier byte sizes, and `height`. Source of truth for "what height am I serving"; installed **last** so a half-applied bootstrap retries cleanly next start. |
 
 When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN.
+
+### HTTP endpoints
+
+`nf-server serve` exposes the routes below on `--port`. The **Audience** column shows who calls each route in normal operation; locking the rest down at a reverse proxy is reasonable.
+
+| Method & path | Audience | Purpose |
+|---------------|----------|---------|
+| `GET /tier0` | Client | Download tier-0 of the PIR tree in plaintext (small, public). |
+| `GET /params/tier1`, `GET /params/tier2` | Client | YPIR scenario parameters needed to build a query. |
+| `POST /tier1/query`, `POST /tier2/query` | Client | Submit an encrypted PIR query, get an encrypted response. |
+| `GET /root` | Client | Current tree roots, depth, `num_ranges`, and serving `height`. |
+| `GET /health` | Ops | JSON: server `phase` (`starting` / `ok` / `rebuilding` / `error`) and tier shape. Always 200. |
+| `GET /ready` | Ops / load balancer | 200 only when phase is `Serving`; 503 otherwise. |
+| `GET /metrics` | Ops | Prometheus exposition. |
+| `GET /tier1/row/:idx`, `GET /tier2/row/:idx` | Debug only | Raw tier row, **not** privacy-preserving. Restrict at the proxy. |
 
 ## See also
 
