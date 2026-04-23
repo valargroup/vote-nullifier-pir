@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 avx512 = ["ypir/explicit_avx512"]
+rayon = ["ypir/rayon"]
 
 [dependencies]
 pir-types  = { path = "../types" }

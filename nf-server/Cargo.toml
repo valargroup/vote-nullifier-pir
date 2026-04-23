@@ -7,6 +7,10 @@ edition = "2021"
 default = []
 serve = ["dep:pir-server", "dep:axum", "dep:tower-http", "dep:sentry", "dep:tower", "dep:sha2", "dep:prometheus"]
 avx512 = ["serve", "pir-server/avx512"]
+# Parallelise the YPIR dot-product kernel across cores via rayon.
+# Orthogonal to avx512: both are additive and typically enabled together
+# on the release fleet (see .github/workflows/release.yml).
+rayon = ["serve", "pir-server/rayon"]
 
 [dependencies]
 # Serve-only (YPIR PIR server)
