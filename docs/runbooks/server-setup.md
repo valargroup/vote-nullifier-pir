@@ -49,10 +49,8 @@ Production binaries should be built with `--features serve` (and `--features avx
 
 Estimates assume the recommended hardware.
 
-- On the order of tens of minutes in **bootstrap** mode (CDN download size and link dominate).
-- **Synced** mode depends on how far behind the data directory is; a fresh sync to mainnet tip is much longer than 90 seconds unless the range is tiny.
-
-**TODO:** Validate numbers on reference hardware and extend the Rationale section.
+- **Bootstrap** wall time is dominated by **tier 2** on the recommended SKU: ~70 s matrix construction plus ~45–50 s YPIR offline precompute. Warm restarts only recover the CDN download cost (~15s).
+- **Synced** wall time on the reference host is governed by lightwalletd nullifier streaming, not local CPU. As of April 2026, ~16 minutes from NU5 activation to mainnet tip.
 
 ## Bootstrapped mode
 
