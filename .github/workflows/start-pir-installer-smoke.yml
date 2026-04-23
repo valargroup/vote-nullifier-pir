@@ -22,6 +22,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build portable nf-server for smoke override
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="-C target-cpu=x86-64-v3"
+          cargo build --release -p nf-server --features serve
+          cp target/release/nf-server /tmp/nf-server-smoke-override
+          chmod +x /tmp/nf-server-smoke-override
+
       - name: Resolve latest release tag
         id: rel
         env:
@@ -48,4 +59,4 @@ jobs:
           chmod +x /tmp/start_pir.sh
 
       - name: Fresh Ubuntu container smoke
-        run: scripts/ci_smoke_start_pir.sh /tmp/start_pir.sh
+        run: scripts/ci_smoke_start_pir.sh /tmp/start_pir.sh /tmp/nf-server-smoke-override

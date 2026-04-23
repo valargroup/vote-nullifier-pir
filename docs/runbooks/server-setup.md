@@ -58,7 +58,7 @@ Each `v*` release publishes the same artifacts to two locations:
 
 ### Build-time caveats per platform
 
-- **`linux-amd64`** is built with `--features avx512` against `target-cpu=x86-64-v4`. It requires a CPU with AVX-512; older Intel/AMD hardware will SIGILL on startup. Run `nf-server doctor` first to confirm.
+- **`linux-amd64`** is built with `--features serve` against `target-cpu=x86-64-v3` (AVX2) so the published binary runs on typical cloud VMs and older hardware. For maximum throughput on AVX-512 hosts, rebuild from source with `--features avx512` and a suitable `RUSTFLAGS` (see release workflow comments).
 - **`linux-arm64`** is built with `--features serve` (no AVX, no PIR-specific SIMD).
 - **`darwin-arm64`** is built with `--features serve` and is the recommended Mac target.
 - **`darwin-amd64`** is **cross-compiled without the `serve` feature** (YPIR's C++ build hard-codes `-march=native` and breaks under cross-compilation). It is only useful for `nf-server doctor` and `nf-server sync` on Intel Macs — it cannot run `nf-server serve`. Production serving on Intel Mac is unsupported.

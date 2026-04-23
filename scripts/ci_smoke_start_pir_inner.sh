@@ -13,6 +13,13 @@ export PATH="/mockbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
 
 bash /start_pir.sh
 
+# Optional: replace the release download with a known-portable binary (CI builds
+# with x86-64-v3) so installer smoke stays green while older tagged assets used
+# a higher microarchitecture level.
+if [ -n "${OVERRIDE_NF_SERVER:-}" ] && [ -x "${OVERRIDE_NF_SERVER}" ]; then
+  install -m 755 "${OVERRIDE_NF_SERVER}" /opt/nf-ingest/nf-server
+fi
+
 test -x /opt/nf-ingest/nf-server
 test -f /etc/systemd/system/nullifier-query-server.service
 test -f /etc/default/nf-server

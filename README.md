@@ -66,7 +66,7 @@ nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ─
 
 ## Build & Run
 
-Requires Rust (stable for most crates; nightly for `pir-server` with AVX-512 support).
+Requires Rust stable for normal builds; nightly only if you compile `nf-server` with the optional `avx512` feature.
 
 ```bash
 # Build everything

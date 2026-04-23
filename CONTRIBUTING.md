@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Vote Nullifier PIR.
 ## Prerequisites
 
 - **Rust stable** toolchain (most crates)
-- **Rust nightly** toolchain (only needed for the `avx512` feature flag, used in production deployment)
+- **Rust nightly** toolchain (only needed for the optional `avx512` feature flag)
 
 Install both with [rustup](https://rustup.rs/):
 
@@ -77,7 +77,7 @@ The `nf-server` crate uses feature flags to keep the default build lightweight:
 | `serve` | Enables the `serve` subcommand (`pir-server`, `axum`, …). The default binary always includes `sync` and `reqwest` (voting-config fetch). |
 | `avx512` | Implies `serve`; compiles YPIR with AVX-512 intrinsics for ~2x query throughput |
 
-The `avx512` feature requires nightly Rust and a CPU with AVX-512 support. CI builds use it for the deploy target but not for tests.
+The `avx512` feature requires nightly Rust and a CPU with AVX-512 support. GitHub Releases publish `linux-amd64` with `serve` only (x86-64-v3); use `avx512` when you build binaries yourself for AVX-512 hardware.
 
 ## Code Style
 

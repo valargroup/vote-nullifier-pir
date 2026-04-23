@@ -19,7 +19,7 @@ This guide covers two deployment paths:
 
 ### AVX-512 note
 
-The `serve` feature works on any x86-64 CPU. AVX-512 is an optional optimization that approximately halves PIR query latency (tier 1: ~0.5 s, tier 2: ~1.6 s per query). The pre-built `linux-amd64` release binary includes AVX-512 support; on CPUs without it the binary still runs but falls back to baseline SIMD.
+The `serve` feature works on any x86-64 CPU. AVX-512 is an optional compile-time optimization that approximately halves PIR query latency on capable hardware. The pre-built `linux-amd64` release binary targets **x86-64-v3** (AVX2) for broad compatibility; for AVX-512 builds, compile from source with `--features avx512` on the host (see `CONTRIBUTING.md`).
 
 ---
 
