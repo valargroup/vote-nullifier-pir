@@ -146,7 +146,7 @@ externally](#confirming-convergence-externally).
 
 - [`docs/runbooks/server-setup.md`](server-setup.md) — host-side
   install and configuration, including `/etc/default/nf-server`.
-- [`docs/ci-setup.md`](../ci-setup.md) — CI/CD pipeline, GitHub
+- [`docs/runbooks/ci-setup.md`](ci-setup.md) — CI/CD pipeline, GitHub
   secrets, and the Sentry-side wiring for the snapshot-stale alert.
 - [Snapshot-bump runbook](https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html)
   in `shielded-vote-book` — end-to-end procedure for moving the fleet
@@ -154,4 +154,4 @@ externally](#confirming-convergence-externally).
   step 4.
 - [`Publish nullifier snapshot`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/publish-snapshot.yml) — what to run before this workflow if no snapshot exists at the new height yet.
 - [`Deploy nf-server`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/deploy.yml) — what to run instead of this workflow when shipping a new binary (it does the binary swap *and* the restart). Note: `deploy.yml` runs both hosts in parallel; if you need rolling order during a binary deploy, run it twice with `targets=backup` then `targets=primary`.
-- Snapshot-stale watchdog: [`docs/ci-setup.md#snapshot-stale-alerting`](../ci-setup.md#snapshot-stale-alerting).
+- Snapshot-stale watchdog: [`docs/runbooks/ci-setup.md#snapshot-stale-alerting`](ci-setup.md#snapshot-stale-alerting).
