@@ -314,6 +314,8 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 ## TODO (product / engineering backlog)
 
-- Optional: Terraform / DigitalOcean droplet setup in [vote-infrastructure](https://github.com/valargroup/vote-infrastructure).
-- Document `SVOTE_PIR_VOTE_CHAIN_URL` (optional; active-round guard for `POST /snapshot/prepare`) in operator-facing docs when stable.
 - Publish a `SHA256SUMS` (and ideally a Sigstore / minisign signature) per release alongside the `nf-server-<platform>` binaries on both DigitalOcean Spaces and GitHub Releases, and document the verification step in the manual-install flow.
+
+## See also
+
+- [vote-infrastructure](https://github.com/valargroup/vote-infrastructure) — Terraform / DigitalOcean droplet provisioning.
