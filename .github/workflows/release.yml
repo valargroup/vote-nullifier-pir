@@ -68,10 +68,11 @@ jobs:
             cp target/${{ matrix.rust_target }}/release/nf-server target/release/
           else
             if [ "${{ matrix.platform }}" = "linux-amd64" ]; then
-              # Baseline codegen at x86-64-v3 (AVX2) so the binary starts on typical
-              # cloud VMs; `avx512` still compiles YPIR AVX-512 paths for production
-              # throughput. Do not use x86-64-v4 here: broad v4 codegen SIGILLs on
-              # many GitHub / hypervisor hosts (see start_pir installer smoke).
+              # `target-cpu` applies to the whole binary (std, deps, init), not only
+              # YPIR. x86-64-v4 makes that baseline assume AVX-512-class features and
+              # SIGILLs on common VMs (e.g. GitHub Actions, many DO/AWS SKUs) even
+              # for `nf-server --help`. v3 (AVX2) is the highest portable default.
+              # `--features avx512` still emits YPIR's explicit AVX-512 kernels on top.
               CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3" \
                 cargo build --release \
                 --manifest-path nf-server/Cargo.toml --features avx512 \
