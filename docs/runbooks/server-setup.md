@@ -326,13 +326,6 @@ Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for
 
 When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN.
 
-## Decisions (formerly open questions)
-
-| Topic | Decision |
-|-------|----------|
-| Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
-| CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |
-
 ## See also
 
 - [vote-infrastructure](https://github.com/valargroup/vote-infrastructure) — Terraform / DigitalOcean droplet provisioning.
