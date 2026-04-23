@@ -22,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve latest release tag
+      - name: Resolve latest release tag and SHA256SUMS asset
         id: rel
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,6 +32,10 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
             | jq -er .tag_name)"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          HAS="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            | jq 'any(.assets[]?; .name == "SHA256SUMS")')"
+          echo "has_sha256sums=${HAS}" >> "$GITHUB_OUTPUT"
 
       # Keep the sed substitutions aligned with "Render start_pir.sh installer" in release.yml.
       - name: Render installer (same substitution as release.yml)
@@ -48,4 +52,10 @@ jobs:
           chmod +x /tmp/start_pir.sh
 
       - name: Fresh Ubuntu container smoke
+        if: steps.rel.outputs.has_sha256sums == 'true'
         run: scripts/ci_smoke_start_pir.sh /tmp/start_pir.sh
+
+      - name: Note skipped installer smoke (latest release lacks SHA256SUMS)
+        if: steps.rel.outputs.has_sha256sums != 'true'
+        run: |
+          echo "::notice::Release ${{ steps.rel.outputs.tag }} has no SHA256SUMS asset yet; skipping container smoke until a tagged release publishes it."
