@@ -17,8 +17,6 @@ What it does:
 - Installs the binary
 - Serves PIR queries
 
-Piping a remote script into `bash` trusts the publisher and your TLS path; inspect the script first (`curl -fsSL …/start_pir.sh`) when your policy requires it. The same installer is also published per voting-config `snapshot_height` at `…/scripts/start_pir/<snapshot_height>/start_pir.sh` (details in [deploy-setup.md](../deploy-setup.md)). The script matches the bootstrap defaults in `nf-server` and writes `/etc/default/nf-server` like that guide. For Caddy/TLS in front of the listen port, extra environment variables, or a manual binary download, see [deploy-setup.md](../deploy-setup.md).
-
 For operators who prefer manual setup, or for debugging, manual approaches are outlined below.
 
 There are two modes for starting up:
