@@ -114,6 +114,7 @@ jobs:
               fi
               if [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
+                echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
                 exit 1
               fi
               echo "OK: backup converged on height $SERVED"
@@ -188,6 +189,7 @@ jobs:
               fi
               if [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
+                echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
                 exit 1
               fi
               echo "OK: primary converged on height $SERVED"
