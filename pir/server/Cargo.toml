@@ -9,7 +9,7 @@ avx512 = ["ypir/explicit_avx512"]
 
 [dependencies]
 pir-types  = { path = "../types" }
-ypir = { version = "0.1.0", package = "valar-ypir", default-features = false, features = ["server"] }
+ypir = { version = "0.1.3", package = "valar-ypir", default-features = false, features = ["server"] }
 spiral-rs = { version = "0.5", package = "valar-spiral-rs" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

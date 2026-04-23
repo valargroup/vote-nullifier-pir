@@ -3829,7 +3829,8 @@ dependencies = [
 [[package]]
 name = "valar-spiral-rs"
 version = "0.5.1"
-source = "git+https://github.com/valargroup/spiral-rs?rev=3a5132f#3a5132f2d79b5fa1681cf66cf1d2683a0f187de6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c501f15052c202b2c9934226b1b16572e7ee6dfe77c014b6782e2580f205417a"
 dependencies = [
  "fastrand",
  "getrandom 0.2.17",
@@ -3842,8 +3843,9 @@ dependencies = [
 
 [[package]]
 name = "valar-ypir"
-version = "0.1.1"
-source = "git+https://github.com/valargroup/ypir?rev=e47e6d1#e47e6d19003a462748fe51ed262adf472cb26dff"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bb09e03af16c344a2e205924808978776fc12b48a4f6a388f4c8f55c56c6394"
 dependencies = [
  "cc",
  "clap",
