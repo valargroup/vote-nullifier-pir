@@ -15,8 +15,21 @@ use super::state::{AppState, ServerPhase};
 
 // ── Snapshot management endpoints ─────────────────────────────────────────────
 
+// NOTE: `POST /snapshot/prepare` is currently disabled. The handler below
+// returns 410 Gone and the in-process rebuild pipeline (`run_rebuild`,
+// `check_active_round`, `PrepareRequest`) is left in place for historical
+// reasons — to document the previous in-service rebuild flow and to make
+// it easy to re-enable later if we decide to support host-local rebuilds
+// again. The recommended way to move a server to a new snapshot height
+// today is the bootstrap path (`bootstrap::run` at startup, fed from the
+// published snapshot CDN); restart the process after the canonical
+// `snapshot_height` advances and bootstrap will resync to the right height.
+
 /// Request body for `POST /snapshot/prepare`.
+///
+/// Retained for historical reasons; see the module-level note above.
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct PrepareRequest {
     /// Target block height to rebuild the snapshot at.
     height: u64,
@@ -26,6 +39,9 @@ pub(crate) struct PrepareRequest {
 ///
 /// Returns `Some(round_id)` if a round is currently active, `None` otherwise.
 /// Used to prevent rebuilds during active rounds which would invalidate proofs.
+///
+/// Retained for historical reasons; see the module-level note above.
+#[allow(dead_code)]
 async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
     let url = format!("{}/shielded-vote/v1/rounds/active", chain_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
@@ -51,10 +67,37 @@ async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// `POST /snapshot/prepare` is disabled.
+///
+/// We no longer support kicking off in-process snapshot rebuilds over HTTP.
+/// To move a server to a newer height, restart `nf-server serve` and let
+/// `bootstrap::run` pull the latest published snapshot from the CDN
+/// (`<precomputed_base_url>/snapshots/<height>/...`); the canonical height
+/// comes from `voting-config.snapshot_height`. The handler is kept (and
+/// wired into the router) for historical reasons so that callers get a
+/// clear, structured 410 response instead of a 404.
 pub(crate) async fn post_snapshot_prepare(
-    State(state): State<Arc<AppState>>,
-    axum::Json(req): axum::Json<PrepareRequest>,
+    State(_state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    (
+        StatusCode::GONE,
+        axum::Json(serde_json::json!({
+            "error": "POST /snapshot/prepare is disabled",
+            "recommendation": "restart nf-server serve to bootstrap from the published snapshot at voting-config.snapshot_height",
+        })),
+    )
+        .into_response()
+}
+
+/// Original in-process rebuild pipeline used by `POST /snapshot/prepare`.
+///
+/// Retained for historical reasons; see the module-level note above.
+/// Currently unreachable because the HTTP handler short-circuits with 410.
+#[allow(dead_code)]
+async fn _post_snapshot_prepare_legacy(
+    state: Arc<AppState>,
+    req: PrepareRequest,
+) -> axum::response::Response {
     let height = req.height;
 
     if let Err(e) = nf_ingest::config::validate_export_height(height) {
@@ -188,6 +231,9 @@ pub(crate) async fn post_snapshot_prepare(
 }
 
 /// Run the full rebuild pipeline: nullifier sync (if needed) → tree + tiers → load.
+///
+/// Retained for historical reasons; see the module-level note above.
+#[allow(dead_code)]
 async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     let pir_data_dir = state.pir_data_dir.clone();
     let lwd_urls = state.lwd_urls.clone();
