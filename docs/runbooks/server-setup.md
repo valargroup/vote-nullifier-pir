@@ -311,18 +311,27 @@ Source-checkout workflows (`cargo`, `make build`, `make sync`, `make serve`, `ma
 
 Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifacts). Integrators should pin **binary version** and the **voting snapshot height** they expect.
 
+## Files under `SVOTE_PIR_DATA_DIR`
+
+Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for the systemd unit), grouped by which `nf-server sync` stage writes it. Stage 3 outputs are also what `serve` bootstrap fetches from the CDN, so they may appear without sync ever having run locally.
+
+| File | Stage / source | Purpose |
+|------|----------------|---------|
+| `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Orchard nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
+| `nullifiers.checkpoint` | Stage 1 — sync | 16-byte `(height, offset)` written atomically per batch. Durable commit point: on startup, `nullifiers.bin` is truncated to `offset`, discarding any half-written batch. |
+| `nullifiers.index` | Stage 1 — sync | Append-only log of `(height, offset)` per committed batch. Lets `sync` and `POST /snapshot/prepare` export a snapshot at a past `voting-config.snapshot_height`. Auto-rebuilt from the checkpoint if missing. |
+| `nullifiers.tree` | Stage 2 — sync | Versioned `SVOTEPT1` checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
+| `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries (mmap'd by `serve`). Identical to `<precomputed-base>/snapshots/<height>/tier*.bin`. |
+| `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: tree roots, tier byte sizes, and `height`. Source of truth for "what height am I serving"; installed **last** so a half-applied bootstrap retries cleanly next start. |
+
+When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN.
+
 ## Decisions (formerly open questions)
 
 | Topic | Decision |
 |-------|----------|
-| Voting-config unavailable when its URL is set | With the default non-empty URL (or any non-empty override), fetch and `snapshot_height` are required or startup fails. **Offline / manual disks:** explicitly clear `SVOTE_PIR_VOTING_CONFIG_URL` and stage tier files under `SVOTE_PIR_DATA_DIR` yourself. |
-| `nullifiers.checkpoint` vs `nullifiers.index` | **Checkpoint** is the durable commit point (height + byte offset into `nullifiers.bin`). **Index** records per-batch offsets for export at specific aligned heights. Both are kept. |
 | Remove `POST /snapshot/prepare`? | **Keep** for in-service rebuilds when nullifier files live on the server; fleet CDN workflow does not replace every ops scenario. |
 | CHANGELOG and tag policy | **Yes** — maintain `CHANGELOG.md` and document SemVer + `v*` release tagging for integrators. |
-
-## TODO (product / engineering backlog)
-
-- Sign `SHA256SUMS` with Sigstore (or minisign) and document signature verification in the manual-install flow.
 
 ## See also
 
