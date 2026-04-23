@@ -2,13 +2,19 @@
 
 This runbook explains how to set up a vote nullifier private information retrieval (PIR) server.
 
-**Linux (production):** install the release-tagged binary, bootstrap env pins, and the `nullifier-query-server` systemd unit in one step:
+On Linux, we recommend using this one-CLI command to get started:
 
 ```bash
 curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
 ```
 
-Piping a remote script into `bash` trusts the publisher and your TLS path; inspect the script first (`curl -fsSL …/start_pir.sh`) when your policy requires it. The same installer is published per voting-config `snapshot_height` at `…/scripts/start_pir/<snapshot_height>/start_pir.sh` (see [deploy-setup.md](../deploy-setup.md)). On minimal Ubuntu/Debian images the script installs **`curl`** and **`ca-certificates`** via `apt-get` when needed. For Caddy/TLS, extra environment variables, or a manual binary download, see [deploy-setup.md](../deploy-setup.md).
+What it does:
+- Downloads the latest binaries
+- Configures the service per the recommended parameters
+- Creates an automated **systemd** unit that auto-restarts on start-up and on failure
+- Bootstraps from pre-computed snapshots
+- Installs the binary
+- Serves PIR queries
 
 For operators who prefer manual setup, or for debugging, manual approaches are outlined below.
 
