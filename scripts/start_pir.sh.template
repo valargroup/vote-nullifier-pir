@@ -138,4 +138,5 @@ systemctl enable --now nullifier-query-server.service
 echo
 echo "Installed nf-server ${START_RELEASE_TAG} (${PLATFORM}) under /opt/nf-ingest."
 echo "Service: systemctl status nullifier-query-server"
+echo "Logs:    journalctl -u nullifier-query-server -f"
 echo "Ready check: curl -fsS http://127.0.0.1:3000/ready"

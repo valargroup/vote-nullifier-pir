@@ -9,7 +9,7 @@ This runbook covers the operator side: standing up an `nf-server` host that answ
 **Who this runbook is for:**
 
 - **Operators**: use the release binary + systemd path. The one-liner below is the shortcut; the rest of the runbook leads with that path and uses the installed `nf-server` binary directly.
-- **Air-gapped / custom-layout / non-Linux**: see [Manual install](#manual-install-no-start_pirsh).
+- **Custom-layout / non-Linux**: see [Manual install](#manual-install-no-start_pirsh).
 - **Developers** iterating from a source checkout (`cargo run`, `make sync`, `make serve`): see [CONTRIBUTING.md](../../CONTRIBUTING.md). Those workflows are intentionally out of scope here.
 
 There are two data-source modes the server can run in:
