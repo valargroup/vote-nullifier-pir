@@ -97,7 +97,7 @@ Override via environment variables or Make arguments:
 
 ## Deployment
 
-See [docs/deploy-setup.md](docs/deploy-setup.md) for production deployment instructions, systemd configuration, and CI/CD workflow details.
+See [docs/runbooks/server-setup.md](docs/runbooks/server-setup.md) for production deployment instructions, hardware sizing, install, and systemd configuration. For the CI/CD pipeline and GitHub Actions workflow details, see [docs/ci-setup.md](docs/ci-setup.md).
 
 ## Storage Format
 

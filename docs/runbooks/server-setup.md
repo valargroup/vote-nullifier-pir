@@ -6,6 +6,17 @@ Vote-nullifier PIR lets a client prove that a Zcash Orchard nullifier is **not**
 
 This runbook covers the operator side: standing up an `nf-server` host that answers PIR queries from clients over HTTP. One server is a single `nf-server` binary listening on a single port (default `3000`); see [Recommended hardware](#recommended-hardware) for the target SKU.
 
+**Who this runbook is for:**
+
+- **Operators**: use the release binary + systemd path. The one-liner below is the shortcut; the rest of the runbook leads with that path and uses the installed `nf-server` binary directly.
+- **Air-gapped / custom-layout / non-Linux**: see [Manual install](#manual-install-no-start_pirsh).
+- **Developers** iterating from a source checkout (`cargo run`, `make sync`, `make serve`): see [CONTRIBUTING.md](../../CONTRIBUTING.md). Those workflows are intentionally out of scope here.
+
+There are two data-source modes the server can run in:
+
+1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
+2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+
 ## Quick start
 
 On Linux, we recommend using this one-CLI command to get started:
@@ -15,18 +26,12 @@ curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
 ```
 
 What it does:
-- Downloads the latest binaries and verifies `nf-server` against `SHA256SUMS` for the pinned release (Spaces first, then GitHub Releases)
+- Downloads the latest binaries and verifies `nf-server` against `SHA256SUMS` for the pinned release.
 - Configures the service per the recommended parameters
 - Creates an automated **systemd** unit that auto-restarts on start-up and on failure
 - Bootstraps from pre-computed snapshots
 - Installs the binary
 - Serves PIR queries
-
-Scope of this runbook:
-
-- **Operators**: use the release binary + systemd path. The one-liner above is the shortcut; the rest of the runbook leads with that path and uses the installed `nf-server` binary directly.
-- **Air-gapped / custom-layout / non-Linux**: see [Manual install](#manual-install-no-start_pirsh).
-- **Developers** iterating from a source checkout (`cargo run`, `make sync`, `make serve`): see [CONTRIBUTING.md](../../CONTRIBUTING.md). Those workflows are intentionally out of scope here.
 
 After install, operate the service with:
 
@@ -36,11 +41,7 @@ systemctl restart nullifier-query-server
 journalctl -u nullifier-query-server -f
 ```
 
-
-There are two data-source modes:
-
-1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
-2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+See [Smoke test](#smoke-test) for a post-install check.
 
 ## Recommended hardware
 
@@ -52,7 +53,7 @@ Why these numbers:
 - ~35 GB disk covers ~2 GB nullifier data, ~7 GB tier files, and working space, with headroom.
 - 4 vCPUs parallelize the matrix–vector steps that dominate query latency.
 
-Verify a candidate host with [`nf-server doctor`](#pre-flight-check-nf-server-doctor) before installing.
+Verify a candidate host with [`nf-server doctor`](#host-health-check-nf-server-doctor) before installing.
 
 ## Network requirements
 
@@ -69,6 +70,13 @@ The server needs the following network access:
 
 Air-gapped hosts: pre-stage the binary, `SHA256SUMS`, and the tier files under `SVOTE_PIR_DATA_DIR`, then set `SVOTE_PIR_VOTING_CONFIG_URL=` to disable bootstrap. See [Manual install](#manual-install-no-start_pirsh).
 
+## Platform support
+
+- **`linux-amd64`** — recommended production target. Requires AVX-512; older Intel/AMD CPUs will SIGILL on startup. Run `nf-server doctor` first to confirm.
+- **`linux-arm64`** — supported but slower (no PIR-specific SIMD); not recommended for serving production traffic.
+- **`darwin-arm64`** — recommended for local dev on Apple Silicon.
+- **`darwin-amd64`** — dev-only: ships without the `serve` subcommand. Use for `doctor` / `sync` on Intel Macs only.
+
 ## Install
 
 `start_pir.sh` is the recommended path; the rest of this section documents what it does so you can reproduce or audit it manually.
@@ -81,13 +89,6 @@ Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and
 
 - `https://vote.fra1.digitaloceanspaces.com/start_pir.sh` — always the **latest** release.
 - `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matches a given voting `snapshot_height`. Use this for reproducible installs.
-
-### Platform support
-
-- **`linux-amd64`** — recommended production target. Requires AVX-512; older Intel/AMD CPUs will SIGILL on startup. Run `nf-server doctor` first to confirm.
-- **`linux-arm64`** — supported but slower (no PIR-specific SIMD); not recommended for serving production traffic.
-- **`darwin-arm64`** — recommended for local dev on Apple Silicon.
-- **`darwin-amd64`** — dev-only: ships without the `serve` subcommand. Use for `doctor` / `sync` on Intel Macs only.
 
 ### Manual install (no `start_pir.sh`)
 
@@ -151,11 +152,19 @@ For air-gapped hosts, custom layouts, non-Linux platforms, or when debugging the
    curl -fsS http://127.0.0.1:3000/ready
    ```
 
-### Upgrading
+## Smoke test
 
-Repeat steps 1–2 with a new `TAG`, then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
+After install, verify end-to-end without a real client:
 
-## Pre-flight check (`nf-server doctor`)
+```bash
+curl -fsS http://127.0.0.1:3000/ready                                   # 200 OK
+curl -fsS http://127.0.0.1:3000/health | jq '.phase'                    # "ok"
+curl -fsS http://127.0.0.1:3000/root   | jq '{height, depth, num_ranges}'
+```
+
+Compare the `height` from `/root` to `voting-config.json` `snapshot_height`; they should match while bootstrap is enabled.
+
+## Host health check (`nf-server doctor`)
 
 Before provisioning or when debugging a host, run:
 
@@ -173,13 +182,6 @@ The command prints logical CPU count, system RAM, free space on the volume backi
 
 Production binaries should be built with `--features serve` (and `--features avx512` on capable hardware); `doctor` notes when those compile-time features are off.
 
-## Startup time estimate
-
-Estimates assume the recommended hardware.
-
-- **Bootstrap**: ~2 min cold on the recommended SKU (dominated by tier-2 setup). Warm restarts (tier files already on disk) finish in ~15 s, bounded by the CDN check.
-- **Synced**: governed by lightwalletd nullifier streaming, not local CPU — roughly ~16 min from NU5 activation to mainnet tip as of early 2026 (grows with chain length; refresh on each release).
-
 ## Bootstrapped mode
 
 This is what the shipped systemd unit runs by default. After install, the service is already enabled and started; nothing more to do for the happy path.
@@ -194,6 +196,8 @@ To re-bootstrap (for example after editing `/etc/default/nf-server` or after a b
 ```bash
 systemctl restart nullifier-query-server
 ```
+
+**Startup time:** ~2 min cold on the recommended SKU (dominated by tier-2 setup). Warm restarts, when tier files are already on disk, finish in ~15 s — bounded by the CDN check.
 
 **On startup**, `serve` fetches `voting-config.json`, compares its `snapshot_height` to local `pir_root.json`, and downloads the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. Defaults are correct for production — operators normally configure nothing.
 
@@ -222,6 +226,8 @@ Useful flags:
 - `--max-height <H>` — stop at `H` (must be a multiple of 10). Without it, syncs to mainnet chain tip, capped by `voting-config.snapshot_height` when bootstrap is enabled.
 
 `nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped. To start clean, set `SVOTE_PIR_SYNC_RESET=1`.
+
+**Sync time** is governed by lightwalletd nullifier streaming, not local CPU — roughly ~16 min from NU5 activation to mainnet tip as of early 2026 (grows with chain length; refresh on each release).
 
 After sync, tier files are local — but CDN bootstrap still runs on the next `serve` startup unless you disable it (`SVOTE_PIR_VOTING_CONFIG_URL=` in `/etc/default/nf-server`).
 
@@ -269,18 +275,6 @@ pir.example.org {
 
 Caddy obtains a certificate automatically. For nginx, use any standard `proxy_pass` config to `127.0.0.1:3000` and block the `/tier1/row/*` and `/tier2/row/*` paths.
 
-### Smoke test
-
-After install, verify end-to-end without a real client:
-
-```bash
-curl -fsS http://127.0.0.1:3000/ready                                   # 200 OK
-curl -fsS http://127.0.0.1:3000/health | jq '.phase'                    # "ok"
-curl -fsS http://127.0.0.1:3000/root   | jq '{height, depth, num_ranges}'
-```
-
-Compare the `height` from `/root` to `voting-config.json` `snapshot_height`; they should match while bootstrap is enabled.
-
 ## Observability
 
 **Prometheus**: scrape `GET /metrics` on the serve port. Useful signals to alert on:
@@ -300,6 +294,22 @@ Browse `/metrics` once after install for the full series list; names are stable 
 `SVOTE_PIR_DATA_DIR` is **disposable** for bootstrapped hosts: tier files come from the CDN and the snapshot height is fixed by `voting-config.json`. To recover, reinstall and restart — `start_pir.sh` and the systemd unit will re-bootstrap. No backups required for serve-only hosts.
 
 For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index` represent ~16 minutes of lightwalletd streaming work; back them up if you want to skip a re-stream after disk loss. Tier files are derivable.
+
+## Upgrading
+
+Repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG`, then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
+
+## Tagging and releases
+
+Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifacts). Integrators should pin both the **binary version** and the **voting snapshot height** they expect.
+
+**When to upgrade:**
+
+- A new voting round publishes a new `snapshot_height` in `voting-config.json`. A bootstrapped server picks it up on next restart, but you should also confirm the pinned binary is still supported.
+- A new `v*` release with security or correctness fixes (watch GitHub Releases; subscribe via the repo's release feed).
+- Otherwise, no need to chase patch releases mid-round.
+
+For air-gapped / pinned-snapshot installs, use the per-snapshot `start_pir.sh` URL: `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh`.
 
 ## Configuration reference
 
@@ -340,17 +350,7 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 | `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height`. |
 
-## Tagging and releases
-
-Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifacts). Integrators should pin both the **binary version** and the **voting snapshot height** they expect.
-
-**When to upgrade:**
-
-- A new voting round publishes a new `snapshot_height` in `voting-config.json`. A bootstrapped server picks it up on next restart, but you should also confirm the pinned binary is still supported.
-- A new `v*` release with security or correctness fixes (watch GitHub Releases; subscribe via the repo's release feed).
-- Otherwise, no need to chase patch releases mid-round.
-
-For air-gapped / pinned-snapshot installs, use the per-snapshot `start_pir.sh` URL: `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh`.
+See [Synced mode](#synced-mode) for the common ad-hoc flags (`--non-interactive`, `--invalidate-after-blocks`, `--max-height`). `nf-server sync --help` has the full list.
 
 ## Files under `SVOTE_PIR_DATA_DIR`
 
@@ -393,7 +393,7 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 | `phase: "starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
 | `phase: "error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |
-| `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Startup time estimate](#startup-time-estimate) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
+| `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Bootstrapped mode](#bootstrapped-mode) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
 | `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above canonical `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |
 | `nullifiers.tree` rejected as unknown format | Tree file left over from an older build | Delete the file or set `SVOTE_PIR_SYNC_RESET=1` and rerun sync. |
 
