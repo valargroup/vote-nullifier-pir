@@ -92,6 +92,14 @@ Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and
 
 For custom layouts, non-Linux platforms, or when debugging the installer:
 
+**Prerequisites (Linux):** `systemd`, `curl`, and CA certificates for HTTPS. On minimal Ubuntu/Debian images install them first (the one-liner installer does this automatically):
+
+```bash
+sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
+```
+
+`jq` is optional but matches the [Smoke test](#smoke-test) commands below.
+
 1. **Download the binary** for your platform from one of the URLs above. Save it as `/tmp/nf-server-${PLATFORM}` (the name used in `SHA256SUMS`) regardless of whether you pull from Spaces or GitHub:
 
    ```bash
@@ -128,13 +136,13 @@ For custom layouts, non-Linux platforms, or when debugging the installer:
      "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/nullifier-query-server.service"
    ```
 
-4. **Write the env files** the unit reads (see [Configuring the service](#configuring-the-service) for the full layout):
+4. **Write the env files** the unit reads (see [Configuring the service](#configuring-the-service) for the full layout). **Do not indent the lines inside the heredoc** — leading spaces would end up in the file and break `EnvironmentFile` parsing.
 
    ```bash
    sudo tee /etc/default/nf-server >/dev/null <<'EOF'
-   SVOTE_PIR_VOTING_CONFIG_URL=https://valargroup.github.io/token-holder-voting-config/voting-config.json
-   SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
-   EOF
+SVOTE_PIR_VOTING_CONFIG_URL=https://valargroup.github.io/token-holder-voting-config/voting-config.json
+SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
+EOF
 
    # Optional: Sentry DSN for observability (see configuration below)
    sudo install -d -m 0755 /opt/nf-ingest
@@ -156,9 +164,11 @@ After install, verify end-to-end without a real client:
 
 ```bash
 curl -fsS http://127.0.0.1:3000/ready                                   # 200 OK
-curl -fsS http://127.0.0.1:3000/health | jq '.phase'                    # "ok"
-curl -fsS http://127.0.0.1:3000/root   | jq '{height, depth, num_ranges}'
+curl -fsS http://127.0.0.1:3000/health | jq -r '.status'                # ok (starting / rebuilding / error while warming)
+curl -fsS http://127.0.0.1:3000/root   | jq '{height, pir_depth, num_ranges}'
 ```
+
+`GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
 Compare the `height` from `/root` to `voting-config.json` `snapshot_height`; they should match while bootstrap is enabled.
 
@@ -211,11 +221,19 @@ The shipped systemd unit only covers `serve`; sync is operator-driven. Stop the 
 
 ```bash
 systemctl stop nullifier-query-server
+# Optional: load the same env as systemd so sync picks up voting-config height cap
+# sudo set -a && . /etc/default/nf-server && set +a
+
+SNAPSHOT=$(curl -fsSL https://valargroup.github.io/token-holder-voting-config/voting-config.json | jq -r '.snapshot_height')
+
 sudo /opt/nf-ingest/nf-server sync \
     --pir-data-dir /opt/nf-ingest/pir-data \
-    --lwd-url https://zec.rocks:443
+    --non-interactive \
+    --max-height "$SNAPSHOT"
 systemctl start nullifier-query-server
 ```
+
+`--lwd-url` defaults to `https://zec.rocks:443`; omit it unless you need a different lightwalletd.
 
 Useful flags:
 
@@ -295,7 +313,7 @@ For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index
 
 ## Upgrading
 
-Repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG`, then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
+Repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG` (re-download the binary, re-check `SHA256SUMS`, reinstall to `/opt/nf-ingest/nf-server`, run `doctor`), then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
 
 ## Tagging and releases
 
@@ -330,8 +348,8 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 
 | Variable | Role |
 |----------|------|
-| `LWD_URLS` | Comma-separated lightwalletd gRPC URLs (overrides built-in defaults). |
-| `SVOTE_PIR_MAINNET_RPC_URL` | Optional zcashd JSON-RPC endpoint for chain-tip checks. |
+| `LWD_URLS` | Comma-separated lightwalletd gRPC URLs. **If set and non-empty, this wins over** `--lwd-url` / `SVOTE_PIR_MAINNET_RPC_URL` (see `nf_ingest::config::resolve_lwd_urls`). |
+| `SVOTE_PIR_MAINNET_RPC_URL` | Historical env name bound to `--lwd-url`: primary lightwalletd gRPC URL for `sync` / rebuild paths. *Not* a zcashd JSON-RPC endpoint despite the name. |
 | `SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS` | Cap on bootstrap wall time before startup fails. |
 | `SVOTE_PIR_WATCHDOG_TICK_SECS` | How often the watchdog re-checks staleness. |
 | `SVOTE_PIR_VOTE_CHAIN_URL` | Optional active-round guard URL for `POST /snapshot/prepare`. |
@@ -375,21 +393,21 @@ When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above 
 | `GET /params/tier1`, `GET /params/tier2` | Client | YPIR scenario parameters needed to build a query. |
 | `POST /tier1/query`, `POST /tier2/query` | Client | Submit an encrypted PIR query, get an encrypted response. |
 | `GET /root` | Client | Current tree roots, depth, `num_ranges`, and serving `height`. |
-| `GET /health` | Ops | JSON: server `phase` (`starting` / `ok` / `rebuilding` / `error`) and tier shape. Always 200. |
-| `GET /ready` | Ops / load balancer | 200 only when phase is `Serving`; 503 otherwise. |
+| `GET /health` | Ops | JSON: `status` (`starting` / `ok` / `rebuilding` / `error`) plus tier row metadata. Always 200. |
+| `GET /ready` | Ops / load balancer | 200 only when the internal phase is `Serving`; **503** with a JSON `phase` body while still starting or on error. |
 | `GET /metrics` | Ops | Prometheus exposition. |
 | `GET /tier1/row/:idx`, `GET /tier2/row/:idx` | Debug only | Raw tier row, **not** privacy-preserving. Block at the proxy. |
 
 ## Troubleshooting
 
-Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -fsS http://127.0.0.1:3000/health | jq .`. The `phase` field maps directly to the symptoms below.
+Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -fsS http://127.0.0.1:3000/health | jq .`. The JSON `status` field mirrors the internal lifecycle (`starting` / `ok` / `rebuilding` / `error`). For finer-grained `Starting { progress: ... }` payloads, inspect logs or `curl` `/ready` while it still returns 503.
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
-| `phase: "starting"` for >2 min, log shows `voting-config.json` fetch errors | Outbound HTTPS to `valargroup.github.io` blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
-| `phase: "starting"`, log shows `snapshot_height required` | Bootstrap is enabled but `voting-config.json` lacks `snapshot_height` (or you pointed at a non-canonical URL) | Restore the default URL or use a config that defines `snapshot_height`. |
-| `phase: "starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
-| `phase: "error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
+| `status` stays `"starting"` for >2 min, log shows `voting-config.json` fetch errors | Outbound HTTPS to `valargroup.github.io` blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
+| `status` stays `"starting"`, log shows `snapshot_height required` | Bootstrap is enabled but `voting-config.json` lacks `snapshot_height` (or you pointed at a non-canonical URL) | Restore the default URL or use a config that defines `snapshot_height`. |
+| `status` stays `"starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
+| `status` is `"error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |
 | `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Bootstrapped mode](#bootstrapped-mode) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
 | `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above canonical `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |

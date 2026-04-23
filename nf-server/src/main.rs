@@ -24,6 +24,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "nf-server",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Nullifier PIR pipeline: doctor, sync (ingest + export), and serve"
 )]
 struct Cli {

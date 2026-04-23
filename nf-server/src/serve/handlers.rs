@@ -155,7 +155,7 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
     axum::Json(info).into_response()
 }
 
-/// `GET /health` — Return server health including phase and tier metadata.
+/// `GET /health` — Return server health (`status` + tier metadata).
 pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let phase = state.phase.read().await;
     let serving = state.serving.read().await;
