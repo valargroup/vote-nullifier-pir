@@ -16,12 +16,111 @@ What it does:
 - Installs the binary
 - Serves PIR queries
 
-For operators who prefer manual setup, or for debugging, manual approaches are outlined below.
+**Operators should use the release binary + systemd path** (the one-liner above is the shortcut for it). The body of this runbook leads with that path and uses the installed `nf-server` binary directly. Manual / non-systemd install is covered below for air-gapped, custom-layout, or non-Linux environments. Developers iterating from a source checkout (`cargo run`, `make sync`, `make serve`, etc.) should consult [CONTRIBUTING.md](../../CONTRIBUTING.md) instead — those workflows are intentionally not part of this runbook.
 
-There are two modes for starting up:
+After install, operate the service with:
 
-1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage.
-2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure.
+```bash
+systemctl status nullifier-query-server
+systemctl restart nullifier-query-server
+journalctl -u nullifier-query-server -f
+```
+
+The shipped unit (`nullifier-query-server.service`) lives at `/etc/systemd/system/`, runs `/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`, and reads environment from `/etc/default/nf-server` (operator-owned: `SVOTE_PIR_VOTING_CONFIG_URL`, `SVOTE_PIR_PRECOMPUTED_BASE_URL`) and `/opt/nf-ingest/.env` (deploy-owned: `SENTRY_DSN`). See [Configuring the service](#configuring-the-service) for the full unit layout and how to change settings.
+
+There are two modes for starting up manually:
+
+1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
+2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+
+## Install
+
+`start_pir.sh` is the recommended path; the rest of this section documents what it does so you can reproduce or audit it manually.
+
+### Where the binaries live
+
+Each `v*` release publishes the same artifacts to two locations:
+
+| Artifact | DigitalOcean Spaces (primary) | GitHub Releases (fallback) |
+|----------|--------------------------------|-----------------------------|
+| `nf-server-linux-amd64` | `https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/nf-server-<tag>-linux-amd64` | `https://github.com/valargroup/vote-nullifier-pir/releases/download/<tag>/nf-server-linux-amd64` |
+| `nf-server-linux-arm64` | `…/nf-server-<tag>-linux-arm64` | `…/<tag>/nf-server-linux-arm64` |
+| `nf-server-darwin-arm64` | `…/nf-server-<tag>-darwin-arm64` | `…/<tag>/nf-server-darwin-arm64` |
+| `nf-server-darwin-amd64` | `…/nf-server-<tag>-darwin-amd64` | `…/<tag>/nf-server-darwin-amd64` |
+| `nullifier-query-server.service` | — | `…/<tag>/nullifier-query-server.service` |
+
+`start_pir.sh` itself is published to:
+
+- `https://vote.fra1.digitaloceanspaces.com/start_pir.sh` — always points at the **latest** release.
+- `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matched a given voting `snapshot_height`. Use this when you need a reproducible install of a specific snapshot.
+
+`start_pir.sh` tries Spaces first, then falls back to GitHub Releases for both the binary and the unit file.
+
+### Build-time caveats per platform
+
+- **`linux-amd64`** is built with `--features avx512` against `target-cpu=x86-64-v4`. It requires a CPU with AVX-512; older Intel/AMD hardware will SIGILL on startup. Run `nf-server doctor` first to confirm.
+- **`linux-arm64`** is built with `--features serve` (no AVX, no PIR-specific SIMD).
+- **`darwin-arm64`** is built with `--features serve` and is the recommended Mac target.
+- **`darwin-amd64`** is **cross-compiled without the `serve` feature** (YPIR's C++ build hard-codes `-march=native` and breaks under cross-compilation). It is only useful for `nf-server doctor` and `nf-server sync` on Intel Macs — it cannot run `nf-server serve`. Production serving on Intel Mac is unsupported.
+
+### Manual install (no `start_pir.sh`)
+
+For air-gapped hosts, custom layouts, non-Linux platforms, or when debugging the installer:
+
+1. **Download the binary** for your platform from one of the URLs above and put it on disk:
+
+   ```bash
+   PLATFORM=linux-amd64        # or linux-arm64, darwin-arm64, darwin-amd64
+   TAG=v0.x.y                  # pin the release tag
+
+   curl -fL -o /tmp/nf-server \
+     "https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/nf-server-${TAG}-${PLATFORM}" \
+     || curl -fL -o /tmp/nf-server \
+       "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/nf-server-${PLATFORM}"
+
+   sudo install -d /opt/nf-ingest /opt/nf-ingest/pir-data
+   sudo install -m 0755 /tmp/nf-server /opt/nf-ingest/nf-server
+   ```
+
+2. **Sanity-check** the binary and the host:
+
+   ```bash
+   /opt/nf-ingest/nf-server --version
+   /opt/nf-ingest/nf-server doctor --pir-data-dir /opt/nf-ingest/pir-data
+   ```
+
+3. **Download the systemd unit** and install it:
+
+   ```bash
+   sudo curl -fL -o /etc/systemd/system/nullifier-query-server.service \
+     "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/nullifier-query-server.service"
+   ```
+
+4. **Write the env files** the unit reads (see [Configuring the service](#configuring-the-service) for the full layout):
+
+   ```bash
+   sudo tee /etc/default/nf-server >/dev/null <<'EOF'
+   SVOTE_PIR_VOTING_CONFIG_URL=https://valargroup.github.io/token-holder-voting-config/voting-config.json
+   SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
+   EOF
+
+   # Optional: Sentry DSN for observability (see configuration below)
+   sudo install -d -m 0755 /opt/nf-ingest
+   echo "SENTRY_DSN=https://…@…ingest.sentry.io/…" | sudo install -m 0600 /dev/stdin /opt/nf-ingest/.env
+   ```
+
+5. **Enable and start** the service:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now nullifier-query-server
+   sudo systemctl status nullifier-query-server
+   curl -fsS http://127.0.0.1:3000/ready
+   ```
+
+### Upgrading
+
+Repeat steps 1–2 with a new `TAG`, then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
 
 ## Recommended hardware
 
@@ -54,10 +153,17 @@ Estimates assume the recommended hardware.
 
 ## Bootstrapped mode
 
-Run:
+This is what the shipped systemd unit runs by default. After install, the service is already enabled and started; nothing more to do for the happy path.
 
 ```bash
-make serve
+systemctl status nullifier-query-server
+journalctl -u nullifier-query-server -f
+```
+
+To re-bootstrap (for example after editing `/etc/default/nf-server` or after a binary upgrade):
+
+```bash
+systemctl restart nullifier-query-server
 ```
 
 **Policy:** If local PIR tier state is unusable and bootstrap cannot fix it (for example nothing valid under `SVOTE_PIR_DATA_DIR` and CDN fetch failed), startup fails after bootstrap. Fix bootstrap configuration, network, or use **Synced** mode / pre-staged files.
@@ -71,7 +177,7 @@ Behavior matches `nf-server serve` startup: index maintenance under `SVOTE_PIR_D
 2. Compare canonical height to local `pir_root.json` height.
    - If equal, continue to load and serve.
    - If not equal, attempt to download the snapshot for the expected height from the pre-computed base URL (`…/snapshots/<height>/…`), verify hashes from `manifest.json`, and install into `SVOTE_PIR_DATA_DIR`.
-3. If CDN sync fails but raw nullifier files exist at the expected height, an operator may run `make sync` (or `nf-server sync`) to rebuild `nullifiers.tree` and tiers locally. If local **nullifier checkpoint** is above `snapshot_height` while the voting-config URL is enabled, `nf-server sync` prompts to type **`RESYNC`** (or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`) to wipe and realign.
+3. If CDN sync fails but raw nullifier files exist at the expected height, an operator may run `nf-server sync` (see [Synced mode](#synced-mode)) to rebuild `nullifiers.tree` and tiers locally. If local **nullifier checkpoint** is above `snapshot_height` while the voting-config URL is enabled, `nf-server sync` prompts to type **`RESYNC`** (or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`) to wipe and realign.
 
 **Fatal errors (typical):**
 
@@ -85,36 +191,63 @@ Resolution hints:
 
 ## Synced mode
 
-Run the unified pipeline, then serve:
+The shipped systemd unit only covers `serve`; sync is operator-driven. Stop the service, run `nf-server sync` against the same data directory the unit uses, then start the service again:
 
 ```bash
-make sync
-make serve
+systemctl stop nullifier-query-server
+sudo /opt/nf-ingest/nf-server sync \
+    --pir-data-dir /opt/nf-ingest/pir-data \
+    --lwd-url https://zec.rocks:443
+systemctl start nullifier-query-server
 ```
 
-`make sync-invalidate` runs `nf-server sync --invalidate-after-blocks` so when new blocks are synced from lightwalletd, `nullifiers.tree` and tier blobs are removed and rebuilt.
+Pass `--invalidate-after-blocks` to rebuild `nullifiers.tree` and tier blobs whenever new blocks are streamed in this run. Pass `--non-interactive` from non-TTY contexts (CI, unattended SSH); when doing so, also set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` if a wipe is expected.
+
+Environment from `/etc/default/nf-server` (e.g. `SVOTE_PIR_VOTING_CONFIG_URL`) is **not** auto-loaded by an interactive shell. Either pass the same vars explicitly with `sudo --preserve-env=…`, source the env file (`set -a; . /etc/default/nf-server; set +a`), or run sync inside the unit's environment with `systemd-run`:
+
+```bash
+sudo systemd-run --pty --uid=root \
+    --working-directory=/opt/nf-ingest \
+    -p EnvironmentFile=-/etc/default/nf-server \
+    -p EnvironmentFile=-/opt/nf-ingest/.env \
+    /opt/nf-ingest/nf-server sync \
+    --pir-data-dir /opt/nf-ingest/pir-data \
+    --lwd-url https://zec.rocks:443
+```
 
 **What happens in the background?**
 
-1. **Stage 1 — Nullifiers** (`nf-server sync`): stream Orchard nullifiers from NU5 activation up through `SYNC_HEIGHT`, or up to **mainnet chain tip** when `SYNC_HEIGHT` is unset (see the [Makefile](../../Makefile)). When `SVOTE_PIR_VOTING_CONFIG_URL` is **non-empty**, `snapshot_height` is fetched and caps the target height; if your local checkpoint is **above** that height, the CLI stops until you confirm **`RESYNC`** (wipe) or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`. Writes `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.index` (see `nf-ingest` crate docs).
+1. **Stage 1 — Nullifiers** (`nf-server sync`): stream Orchard nullifiers from NU5 activation up through the `--max-height` flag if set (must be a multiple of 10), or up to **mainnet chain tip** when unset. When `SVOTE_PIR_VOTING_CONFIG_URL` is **non-empty**, `snapshot_height` is fetched and caps the target height; if your local checkpoint is **above** that height, the CLI stops until you confirm **`RESYNC`** (wipe) or set `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC` with `--non-interactive`. Writes `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.index` (see `nf-ingest` crate docs).
 2. **Stage 2 — Tree checkpoint**: builds the PIR Merkle structure and writes **`nullifiers.tree`** (magic `SVOTEPT1`, temp + rename). If this file already matches the checkpoint height, the stage is skipped.
-3. **Stage 3 — Tiers**: writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default under the same `PIR_DATA_DIR` as nullifiers; use `--output-dir` to split for staging uploads). If those files already match the expected height and sizes, the stage is skipped.
+3. **Stage 3 — Tiers**: writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default under the same `--pir-data-dir` as nullifiers; use `--output-dir` to split for staging uploads). If those files already match the expected height and sizes, the stage is skipped.
 
-**Resume:** rerunning `make sync` continues after partial failure (e.g. if `nullifiers.bin` exists, nullifier sync resumes from checkpoint; if `nullifiers.tree` exists for the target height, tier export resumes; if tiers are complete, nothing heavy runs).
+**Resume:** rerunning `nf-server sync` continues after partial failure (e.g. if `nullifiers.bin` exists, nullifier sync resumes from checkpoint; if `nullifiers.tree` exists for the target height, tier export resumes; if tiers are complete, nothing heavy runs).
 
-**Fresh start:** set `SVOTE_PIR_SYNC_RESET=1` (or `true`) before `nf-server sync` to delete `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files under the nullifier root and tier output directory (`PIR_DATA_DIR` / `--pir-data-dir` by default), then run a full pipeline.
+**Fresh start:** set `SVOTE_PIR_SYNC_RESET=1` (or `true`) before `nf-server sync` to delete `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files under the nullifier root and tier output directory (`--pir-data-dir` by default), then run a full pipeline.
 
 **Unknown `nullifiers.tree` format:** files without the `SVOTEPT1` header are rejected; remove them or set `SVOTE_PIR_SYNC_RESET=1` so sync can rebuild.
 
-```bash
-# After sync, tier files are local; CDN bootstrap may still run on serve
-# unless you disable it in the environment as below.
-make serve
-```
+After sync, tier files are local but CDN bootstrap may still run on the next `serve` startup unless you disable it (`SVOTE_PIR_VOTING_CONFIG_URL=` in `/etc/default/nf-server` for the systemd unit).
 
 ## Configuring the service
 
-Ship a **systemd** unit (the release artifact includes `nullifier-query-server.service`) under `/etc/systemd/system/`, point `ExecStart` at `nf-server serve`, and pass configuration via the environment—commonly `/etc/default/nf-server`, `EnvironmentFile=` in the unit, or an `.env` next to the binary. Run `systemctl daemon-reload`, then `enable` and `start` the unit. For HTTPS in front of the listen port, run a reverse proxy (for example Caddy or nginx) on the host. Rolling restarts across replicas are described in [restart-pir-fleet.md](restart-pir-fleet.md).
+The release ships `nullifier-query-server.service` and `start_pir.sh` installs it to `/etc/systemd/system/`. The unit:
+
+- runs `Type=simple` with `Restart=on-failure` and `RestartSec=30`;
+- has `WorkingDirectory=/opt/nf-ingest`;
+- `ExecStart=/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`;
+- pulls environment from two files (both optional, `EnvironmentFile=-…`):
+  - `/etc/default/nf-server` — operator / cloud-init owned. Holds `SVOTE_PIR_VOTING_CONFIG_URL` and `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Edit this file to point at a mirror or to disable bootstrap (`SVOTE_PIR_VOTING_CONFIG_URL=`).
+  - `/opt/nf-ingest/.env` — deploy-workflow owned. Holds `SENTRY_DSN`. Mode `0600`.
+
+To change settings, edit the appropriate env file and:
+
+```bash
+systemctl daemon-reload   # only after editing the .service file itself
+systemctl restart nullifier-query-server
+```
+
+For HTTPS in front of the listen port, run a reverse proxy (for example Caddy or nginx) on the host. Rolling restarts across replicas are described in [restart-pir-fleet.md](restart-pir-fleet.md). For step-by-step manual install (without `start_pir.sh`), see [Install → Manual install](#manual-install-no-start_pirsh).
 
 ## Observability
 
@@ -130,30 +263,41 @@ The server can emit errors and traces to Sentry. Create a project at [sentry.io]
 
 ## Useful configuration
 
-Makefile-oriented development variables (see [Makefile](../../Makefile)):
+### Operator: `nf-server serve` (CLI / env)
+
+These are the variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` (or, for `SENTRY_DSN`, `/opt/nf-ingest/.env`). See `nf-server serve --help` for the full list.
 
 | Variable | Role |
 |----------|------|
-| `PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files (same as `SVOTE_PIR_DATA_DIR` for `nf-server`; default `pir-data` in the Makefile) |
-| `LWD_URL` | First lightwalletd gRPC URL passed to sync/serve |
-| `SYNC_HEIGHT` | Optional; if set, must be a multiple of 10; caps sync target (with chain tip and voting snapshot) |
-| `PORT` | HTTP listen port for `make serve` |
+| `SVOTE_PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files. Unit overrides via `--pir-data-dir /opt/nf-ingest/pir-data`. |
+| `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
+| `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
+| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
+| `LWD_URLS` | Comma-separated lightwalletd gRPC URLs (overrides built-in defaults). |
+| `SVOTE_PIR_MAINNET_RPC_URL` | Optional zcashd JSON-RPC endpoint for chain-tip checks. |
+| `SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS` | Cap on bootstrap wall time before startup fails. |
+| `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
+| `SVOTE_PIR_WATCHDOG_TICK_SECS` | How often the watchdog re-checks staleness. |
+| `SVOTE_PIR_VOTE_CHAIN_URL` | Optional active-round guard URL for `POST /snapshot/prepare`. |
+| `SENTRY_DSN` | Enables Sentry error / trace reporting. Live in `/opt/nf-ingest/.env` (mode `0600`). |
 
-### `nf-server sync` (CLI / env)
+### Operator: `nf-server sync` (CLI / env)
+
+Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd unit ships for it.
 
 | Variable / flag | Role |
 |-----------------|------|
-| `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`) |
-| `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`) |
-| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run |
-| `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height` |
-| `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height` |
-| `--non-interactive` | No TTY prompts (CI / SSH) |
-| `--invalidate-after-blocks` | After new blocks are synced from lightwalletd in this run, delete `nullifiers.tree` and tier files so they rebuild |
+| `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`). |
+| `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`). |
+| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run. |
+| `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height`. |
+| `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height`. |
+| `--non-interactive` | No TTY prompts (CI / SSH). |
+| `--invalidate-after-blocks` | After new blocks are synced from lightwalletd in this run, delete `nullifiers.tree` and tier files so they rebuild. |
 
-### Serve (CLI / env)
+### Developer (source checkout)
 
-The `nf-server serve` CLI (see `nf-server serve --help`) reads environment variables including: `SVOTE_PIR_PORT`, `SVOTE_PIR_DATA_DIR`, `SVOTE_PIR_VOTING_CONFIG_URL` (defaults to the production voting-config URL when unset), `SVOTE_PIR_PRECOMPUTED_BASE_URL`, `SVOTE_PIR_MAINNET_RPC_URL`, `LWD_URLS` (comma-separated override for lightwalletd), `SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS`, `SVOTE_PIR_STALE_THRESHOLD_SECS`, `SVOTE_PIR_WATCHDOG_TICK_SECS`, `SVOTE_PIR_VOTE_CHAIN_URL`, and `SENTRY_DSN`.
+Source-checkout workflows (`cargo`, `make build`, `make sync`, `make serve`, `make sync-invalidate`, `make install`, etc.) are documented in [CONTRIBUTING.md](../../CONTRIBUTING.md) and the [Makefile](../../Makefile). They are not part of operator deployment and are intentionally excluded from this runbook.
 
 ## Tagging and releases
 
@@ -172,4 +316,4 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 - Optional: Terraform / DigitalOcean droplet setup in [vote-infrastructure](https://github.com/valargroup/vote-infrastructure).
 - Document `SVOTE_PIR_VOTE_CHAIN_URL` (optional; active-round guard for `POST /snapshot/prepare`) in operator-facing docs when stable.
-- Prefer installing release binaries + systemd for operators; Makefile remains the developer shortcut.
+- Publish a `SHA256SUMS` (and ideally a Sigstore / minisign signature) per release alongside the `nf-server-<platform>` binaries on both DigitalOcean Spaces and GitHub Releases, and document the verification step in the manual-install flow.
