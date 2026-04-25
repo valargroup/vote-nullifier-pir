@@ -1,6 +1,6 @@
 [package]
 name = "imt-tree"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Indexed Merkle Tree for nullifier non-membership proofs"
 license = "MIT OR Apache-2.0"

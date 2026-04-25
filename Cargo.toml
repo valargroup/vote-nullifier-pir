@@ -11,6 +11,9 @@ members = [
     "nf-ingest",
 ]
 
+[workspace.dependencies]
+imt-tree = { path = "imt-tree", version = "0.1.1" }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

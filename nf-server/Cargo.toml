@@ -30,7 +30,7 @@ prometheus         = { version = "0.13", default-features = false, features = ["
 # Always needed
 pir-export        = { path = "../pir/export" }
 nf-ingest = { path = "../nf-ingest" }
-imt-tree          = "0.1"
+imt-tree          = { workspace = true }
 tokio             = { version = "1", features = ["rt-multi-thread", "macros"] }
 clap              = { version = "4", features = ["derive", "env"] }
 anyhow            = "1.0"
