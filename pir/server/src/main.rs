@@ -22,8 +22,8 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, TIER1_ROWS, TIER1_ROW_BYTES,
-    TIER2_ROWS, TIER2_ROW_BYTES,
+    dispatch_batch_query, dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState,
+    TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 use tracing::info;
 
@@ -64,6 +64,8 @@ async fn main() -> Result<()> {
         .route("/params/tier2", get(get_params_tier2))
         .route("/tier1/query", post(post_tier1_query))
         .route("/tier2/query", post(post_tier2_query))
+        .route("/tier1/batch_query", post(post_tier1_batch_query))
+        .route("/tier2/batch_query", post(post_tier2_batch_query))
         .route("/tier1/row/:idx", get(get_tier1_row))
         .route("/tier2/row/:idx", get(get_tier2_row))
         .route("/root", get(get_root))
@@ -108,6 +110,32 @@ async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> im
 
 async fn post_tier2_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
     dispatch_query(
+        &state.serving.tier2,
+        "tier2",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
+}
+
+async fn post_tier1_batch_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    dispatch_batch_query(
+        &state.serving.tier1,
+        "tier1",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
+}
+
+async fn post_tier2_batch_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    dispatch_batch_query(
         &state.serving.tier2,
         "tier2",
         &body,
@@ -163,6 +191,7 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         num_ranges: state.serving.metadata.num_ranges,
         pir_depth: state.serving.metadata.pir_depth,
         height: state.serving.metadata.height,
+        supports_batch_query: true,
     };
     axum::Json(info)
 }

@@ -70,6 +70,8 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
                     "GET /params/tier2",
                     "POST /tier1/query",
                     "POST /tier2/query",
+                    "POST /tier1/batch_query",
+                    "POST /tier2/batch_query",
                     "GET /tier1/row/",
                     "GET /tier2/row/",
                     "GET /root",

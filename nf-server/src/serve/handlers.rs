@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS,
-    TIER2_ROW_BYTES,
+    dispatch_batch_query, dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS,
+    TIER1_ROW_BYTES, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
 use super::state::{AppState, ServerPhase};
@@ -71,6 +71,40 @@ pub(crate) async fn post_tier2_query(
     let guard = require_serving!(state);
     let s = guard.as_ref().expect("guaranteed Some by require_serving");
     dispatch_query(
+        &s.tier2,
+        "tier2",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
+}
+
+/// `POST /tier1/batch_query` — Process K encrypted YPIR queries against Tier 1
+/// in one HTTP request. See [`pir_server::dispatch_batch_query`].
+pub(crate) async fn post_tier1_batch_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let guard = require_serving!(state);
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
+    dispatch_batch_query(
+        &s.tier1,
+        "tier1",
+        &body,
+        &state.next_req_id,
+        &state.inflight_requests,
+    )
+}
+
+/// `POST /tier2/batch_query` — Process K encrypted YPIR queries against Tier 2
+/// in one HTTP request. See [`pir_server::dispatch_batch_query`].
+pub(crate) async fn post_tier2_batch_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let guard = require_serving!(state);
+    let s = guard.as_ref().expect("guaranteed Some by require_serving");
+    dispatch_batch_query(
         &s.tier2,
         "tier2",
         &body,
@@ -151,6 +185,7 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
         num_ranges: s.metadata.num_ranges,
         pir_depth: s.metadata.pir_depth,
         height: s.metadata.height,
+        supports_batch_query: true,
     };
     axum::Json(info).into_response()
 }
