@@ -545,6 +545,113 @@ Phase 1 projected **4.22 MB** (downloads unchanged at 1.80 MB).
 Either way, the **upload bandwidth gate** is unconditionally winnable
 and is the metric on which Phase 1 is principally judged.
 
+## Phase 1 post-release benchmark (`v0.0.24`)
+
+Phase 1 shipped in
+[`v0.0.24`](https://github.com/valargroup/vote-nullifier-pir/releases/tag/v0.0.24)
+from `main` (`0adc76d`). The release workflow built all platform assets,
+published the GitHub Release, distributed the Linux binary to Spaces, and
+deployed backup then primary with readiness checks passing on both hosts.
+Both `/root` endpoints advertised `supports_batch_query: true` before the
+benchmarks below were run.
+
+Raw JSON outputs:
+
+- [`baselines/primary-k5-batched-v0.0.24.json`](baselines/primary-k5-batched-v0.0.24.json)
+- [`baselines/backup-k5-batched-v0.0.24.json`](baselines/backup-k5-batched-v0.0.24.json)
+
+Commands:
+
+```bash
+./target/release/pir-test bench-server \
+    --url https://pir.valargroup.org \
+    --nullifiers /tmp/pir-bench-nullifiers.bin \
+    --iterations 30 --warmup 3 \
+    --batch-size 5 --mode batched \
+    --seed 42 \
+    --label primary-k5-batched-v0.0.24 \
+    --json-out docs/baselines/primary-k5-batched-v0.0.24.json
+
+./target/release/pir-test bench-server \
+    --url https://pir-backup.valargroup.org \
+    --nullifiers /tmp/pir-bench-nullifiers.bin \
+    --iterations 30 --warmup 3 \
+    --batch-size 5 --mode batched \
+    --seed 42 \
+    --label backup-k5-batched-v0.0.24 \
+    --json-out docs/baselines/backup-k5-batched-v0.0.24.json
+```
+
+The original production-matching `nullifiers.bin` was not present in the
+workspace during this run. The harness was driven with a tiny synthetic
+canonical-nullifier file whose generated `nf_lo + 1` probes were accepted
+by both deployed trees. This is sufficient for timing and byte-size
+characterisation of the released route, but a CI/staging rerun should use
+the production-matching `nullifiers.bin` again for exact query selection
+parity with Phase 0.
+
+### Phase 1 wall-clock
+
+| Endpoint | Mode | p50 | p90 | p95 | p99 | Errors |
+|---|---|---:|---:|---:|---:|---:|
+| primary | K=5 parallel baseline | 4.65 s | 7.89 s | 8.66 s | 8.71 s | 0 |
+| primary | **K=5 batched `v0.0.24`** | **9.65 s** | **13.16 s** | **15.96 s** | **17.53 s** | **0 / 150** |
+| backup | K=5 parallel baseline | 4.31 s | 5.20 s | 5.37 s | 7.17 s | 0 |
+| backup | **K=5 batched `v0.0.24`** | **7.78 s** | **10.07 s** | **10.35 s** | **11.44 s** | **0 / 150** |
+
+The post-release numbers match the serial-K warning in §0.5.6: Phase 1
+bundles the wire traffic but still performs K independent tier-2 matvecs
+inside one request handler. That removes duplicate upload bytes, but it
+does not preserve the old K=5 parallel request shape's server-side
+concurrency. Wall-clock therefore regresses until Phase 2 swaps in the
+K-wide server kernel.
+
+### Phase 1 bandwidth
+
+The harness reports per-query projected bytes for batched mode. Multiplying
+by K=5 gives the actual per-delegation batch upload/download:
+
+| Endpoint | Tier | Upload per K=5 batch | Gate | Download per K=5 batch |
+|---|---|---:|---:|---:|
+| primary | Tier 1 | **608.0 KB** | ≤ 700 KB | 120.0 KB |
+| primary | Tier 2 | **1808.0 KB** | ≤ 1.85 MB | 1680.0 KB |
+| backup | Tier 1 | **608.0 KB** | ≤ 700 KB | 120.0 KB |
+| backup | Tier 2 | **1808.0 KB** | ≤ 1.85 MB | 1680.0 KB |
+
+Combined upload is **2416 KB** per K=5 delegation, down from **6640 KB**
+in the K=5 parallel baseline: **−63.6 %**, exactly matching the §0.5.6
+projection. Download remains **1.80 MB**, as expected.
+
+### Phase 1 server compute
+
+| Endpoint | Tier 1 compute p50 | Tier 2 compute p50 | Tier 2 gate |
+|---|---:|---:|---:|
+| primary | 63 ms | **945 ms** | ≤ 1220 ms |
+| backup | 50 ms | **828 ms** | ≤ 1530 ms |
+
+Per-matvec server compute passes the Phase 1 gate and returns to roughly
+single-query levels. The issue is not per-matvec overhead; it is that the
+matvecs are serialized within the batched route.
+
+### Phase 1 gate verdict
+
+| Gate | Verdict | Notes |
+|---|---|---|
+| Tier 1 upload ≤ 700 KB | **Pass** | 608.0 KB on both endpoints |
+| Tier 2 upload ≤ 1.85 MB | **Pass** | 1808.0 KB on both endpoints |
+| Combined upload reduction ≥ 60 % | **Pass** | 63.6 % reduction |
+| Download bytes unchanged | **Pass** | 1.80 MB per K=5 batch |
+| Tier 2 server compute per matvec ≤ K=5 parallel p50 | **Pass** | 945 ms primary, 828 ms backup |
+| Error rate 0 | **Pass** | 0 / 150 on each endpoint |
+| Wall-clock p50 gate | **Fail** | Primary 9.65 s vs 4.65 s baseline; backup 7.78 s vs 4.31 s baseline |
+| p99 wall regression ≤ 1.0 s | **Fail** | Primary 17.53 s vs 8.71 s; backup 11.44 s vs 7.17 s |
+
+Conclusion: Phase 1 accomplished the intended upload-byte reduction and
+kept per-matvec server compute healthy, but did **not** accomplish the
+wall-clock goal. Phase 2 should be treated as latency-critical: replace
+the K serialized tier-2 matvecs with the K-wide batched server kernel
+behind the same `/tier{1,2}/batch_query` wire route.
+
 ## Phase 1 / Phase 2 success criteria
 
 These are the gates that block merging the SDK swap to the batched path
