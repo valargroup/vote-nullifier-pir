@@ -633,6 +633,73 @@ Per-matvec server compute passes the Phase 1 gate and returns to roughly
 single-query levels. The issue is not per-matvec overhead; it is that the
 matvecs are serialized within the batched route.
 
+### Phase 1.1 — Server-side K=5 parallel matvecs (env-gated)
+
+Phase 1.1 keeps the Phase 1 wire format, routes, and client decode **unchanged**.
+Inside [`pir/server/src/lib.rs`](../pir/server/src/lib.rs),
+`TierServer::answer_batch_query` can overlap the five SimplePIR online
+computations on Rayon when **all** of the following hold:
+
+- `K == 5`
+- the `pir-server` crate is built with the **`rayon`** feature (production
+  Linux builds already use `nf-server --features avx512,rayon` in
+  [`.github/workflows/release.yml`](../.github/workflows/release.yml))
+- the process environment sets  
+  **`PIR_BATCH_COMPUTE_MODE=parallel-k5`** (case-insensitive; trimmed)
+
+**Default is conservative:** unset, empty, or `serial` keeps the original
+strict in-order matvec loop. Unrecognized values fall back to serial.
+
+Operator-facing startup log (`nf-server serve`): one line emitted after tier
+load describing the effective mode (see `pir_batch_compute_mode_startup_message`).
+
+**Correctness / rollback:** `cargo test -p pir-server --features rayon` runs
+equivalence tests asserting K=5 batch wire bytes match the serial path, and
+that `K ∈ {3, 16}` is unchanged when `parallel-k5` is set. CI runs both
+`cargo test -p pir-server` and `cargo test -p pir-server --features rayon`
+(see [`.github/workflows/test.yml`](../.github/workflows/test.yml)).
+
+#### Phase 1.1 benchmark playbook (post-deploy)
+
+1. Deploy a build containing Phase 1.1 to **backup** first.
+2. Set `PIR_BATCH_COMPUTE_MODE=parallel-k5` on that host only; leave primary
+   on `serial` until p50/p99 and error rate look healthy.
+3. Re-run the batched harness (same nullifiers and `--seed 42` as Phase 1):
+
+```bash
+./target/release/pir-test bench-server \
+    --url https://pir-backup.valargroup.org \
+    --nullifiers ./nullifiers.bin \
+    --iterations 30 --warmup 3 \
+    --batch-size 5 --mode batched \
+    --seed 42 \
+    --label backup-k5-batched-parallel-k5 \
+    --json-out docs/baselines/backup-k5-batched-parallel-k5.json
+```
+
+4. Compare against **K=5 parallel** baseline (§Phase 0 wall-clock table) and
+   **Phase 1 serial batch** `v0.0.24` (table above). Acceptance targets from the
+   rollout plan: upload bytes unchanged (~2416 KB per K=5 batch); wall-clock
+   p50 improves ≥ **30 %** vs `v0.0.24` batched on both endpoints; p99 must
+   not regress vs `v0.0.24` batched (if it does, keep `serial` and continue
+   toward the true K-wide kernel).
+
+#### Phase 1.1 pre-flight backup snapshot (parallelism **off** on fleet)
+
+Immediately before merging Phase 1.1, a **sanity** `bench-server` run was taken
+against public backup with `--mode batched` (the fleet was still on the
+default serial matvec path — this is **not** the Phase 1.1 “parallel-k5”
+verdict row). Raw JSON:
+[`baselines/backup-k5-batched-pre-phase11-fleet.json`](baselines/backup-k5-batched-pre-phase11-fleet.json).
+
+| Endpoint | Mode | p50 | p90 | p95 | p99 | Errors |
+|---|---|---:|---:|---:|---:|---:|
+| backup | K=5 batched (pre-1.1 deploy check, serial path) | 8.99 s | 15.18 s | 17.76 s | 18.78 s | 0 / 150 |
+
+**Phase 1.1 wall-clock verdict vs baselines:** **Pending** — rerun the
+playbook above after backup is running Phase 1.1 with
+`PIR_BATCH_COMPUTE_MODE=parallel-k5`, then promote to primary if healthy.
+
 ### Phase 1 gate verdict
 
 | Gate | Verdict | Notes |
@@ -648,9 +715,11 @@ matvecs are serialized within the batched route.
 
 Conclusion: Phase 1 accomplished the intended upload-byte reduction and
 kept per-matvec server compute healthy, but did **not** accomplish the
-wall-clock goal. Phase 2 should be treated as latency-critical: replace
-the K serialized tier-2 matvecs with the K-wide batched server kernel
-behind the same `/tier{1,2}/batch_query` wire route.
+wall-clock goal. **Phase 1.1** (§Phase 1.1 above) restores optional in-request
+K=5 server-side concurrency behind `PIR_BATCH_COMPUTE_MODE=parallel-k5` without
+changing the wire protocol; the durable fix remains **Phase 2**: replace the
+K tier-2 matvecs with the K-wide batched server kernel behind the same
+`/tier{1,2}/batch_query` route.
 
 ## Phase 1 / Phase 2 success criteria
 
