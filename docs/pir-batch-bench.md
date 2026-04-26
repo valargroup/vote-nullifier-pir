@@ -310,32 +310,79 @@ on the YPIR `client_seed` + LWE polynomial parameters
 lever Phase 1 batching exploits: ship `pp` once per tier-batch and
 include K small `q` vectors.
 
-### 0.5.2 — YPIR API path verdict (Path C)
+### 0.5.2 — YPIR API path verdict (Path C-additive)
 
 Read-only audit of [`ypir/src/client.rs`](../../ypir/src/client.rs)
-and the underlying `valar-spiral-rs` 0.5.1 client. **Verdict: Path C
-(refactor `YClient` to cache `pack_pub_params`)** with optional
-`*_with_seed` public hooks layered on top.
+and the underlying `valar-spiral-rs` 0.5.1 client led to picking
+**Path C-additive: a separate batch path inside `valar-ypir`,
+single-query path left byte-identical**.
 
 Why neither A nor B alone works:
 
-- `YClient::generate_full_query_simplepir` (lines 510–556) **rebuilds
-  `pack_pub_params` on every call** by running
-  `raw_generate_expansion_params` (lines 83–108).
-- `raw_generate_expansion_params` seeds its `ChaCha20Rng` with
-  `from_entropy()` (lines 516–518), so even a fixed `client_seed`
-  yields **byte-different `pp` blobs** across successive calls.
+- `YClient::generate_full_query_simplepir` (originally lines 510–556)
+  **rebuilds `pack_pub_params` on every call** by running
+  `raw_generate_expansion_params`.
+- `raw_generate_expansion_params` seeds its secret `ChaCha20Rng` with
+  `from_entropy()`, so even a fixed `client_seed` yields
+  **byte-different `pp` blobs** across successive calls.
 - `YClient::new` is `pub(crate)`, and `YClient::from_seed` /
   `generate_full_query_simplepir` are private — `pir-client` cannot
   drive Path B from outside the `valar-ypir` crate even if the
   recompute-and-pray approach were acceptable.
 
-Phase 1 implication for `client_batch_query`: we will need a
-cross-repo patch to `valar-ypir` exposing either
-`generate_query_simplepir_batch(target_rows: &[usize], seed) -> (pp,
-Vec<q>)` (preferred) or a `(pub_params_once, generate_q_only_with_seed)`
-split. This adds a real dependency on a `valar-ypir` release; the plan
-risk register has been updated accordingly.
+#### What landed
+
+A new batch path was added alongside the existing single-query path.
+The single-query path's public API and wire-byte behavior are
+unchanged. The implementation lives in
+[`ypir/src/client.rs`](../../ypir/src/client.rs):
+
+- `pub type YPIRSimpleBatchQuery = (Vec<AlignedMemory64>, AlignedMemory64);`
+  — K SimplePIR `q.0` query vectors plus a single shared
+  `pack_pub_params`.
+- `pub fn YPIRClient::generate_query_simplepir_batch(&self,
+  target_rows: &[usize]) -> (YPIRSimpleBatchQuery, Seed)` — generates
+  K queries under one fresh `client_seed` (= one `s`), one shared
+  `pp`, and K independent per-row `q.0` (each drawing fresh `OsRng`
+  entropy for its LWE noise vector `e_k`).
+- `pub fn YPIRClient::decode_response_simplepir_batch(&self,
+  client_seed: Seed, responses: &[&[u8]]) -> Vec<Vec<u8>>` and the
+  raw `_batch_raw` variant — decode K independent SimplePIR responses
+  under the same shared `s`. Each chunk decodes independently of the
+  others (test:
+  `client::batch_path_tests::batch_decode_chunk_independence`).
+
+The single-query path was touched in exactly one place: the inline
+`pack_pub_params` construction was hoisted into a private
+`YClient::build_pack_pub_params` helper so both paths can share it
+without duplicating ~30 lines. The hoist is byte-faithful — given the
+same `client_seed` and the same secret RNG seed, the helper produces
+identical `pp` bytes (test:
+`client::batch_path_tests::batch_query_pp_matches_under_fixed_secret_rng`).
+
+#### Phase 1 invariants pinned in tests
+
+The new `mod batch_path_tests` in
+[`ypir/src/client.rs`](../../ypir/src/client.rs) pins:
+
+| Invariant | Test |
+|---|---|
+| Batch returns K queries + 1 `pp` of correct shape | `batch_query_returns_k_queries_and_one_pp` |
+| Hoisted `build_pack_pub_params` is byte-faithful given fixed RNGs | `batch_query_pp_matches_under_fixed_secret_rng` |
+| K independent SimplePIR responses decode to the K expected plaintexts under one `client_seed` | `batch_query_each_q_decodes_independently` |
+| Per-row `q.0` differ even for identical target rows (independent `e_k` under shared `s`) | `batch_query_distinct_secret_rngs_produce_distinct_q` |
+| Per-chunk decoding doesn't couple slots — batch decode of N chunks equals N standalone decodes | `batch_decode_chunk_independence` |
+
+Plus 39 pre-existing `client::sp_decode_pipeline_tests::*` and
+`client::malformed_response_tests::*` tests still pass, confirming the
+hoist did not regress the legacy single-query path.
+
+Risk register update: the cross-repo patch to `valar-ypir` is
+**additive**, not a refactor. No legacy callers (including the
+existing `pir-client::ypir_query` flow) need to change. Downstream
+consumers — `pir-types::serialize_ypir_batch_query`, the
+`/tier{1,2}/batch_query` server route, and `pir-client::client_batch_query`
+— can be designed against this stable API surface in follow-up PRs.
 
 ### 0.5.3 — single-TLS bench (HTTP/2 contention vs upload bandwidth)
 
