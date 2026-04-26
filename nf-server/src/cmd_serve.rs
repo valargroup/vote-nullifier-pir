@@ -288,6 +288,7 @@ pub async fn run(args: Args) -> Result<()> {
                          set SENTRY_DSN to enable alerting)"
                     );
                 }
+                eprintln!("{}", pir_server::pir_batch_compute_mode_startup_message());
                 tx.finish();
                 sentry::capture_message("nf-server ready", sentry::Level::Info);
             }
