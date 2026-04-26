@@ -60,6 +60,11 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 | `DO_ACCESS_KEY` | `release.yml` | DigitalOcean Spaces access key (optional; for artifact mirroring). |
 | `DO_SECRET_KEY` | `release.yml` | DigitalOcean Spaces secret key (optional). |
 
+`deploy.yml` also writes **`PIR_BATCH_COMPUTE_MODE=parallel-k5`** into
+`/opt/nf-ingest/.env` (same file as `SENTRY_DSN`) so Phase 1.1 batch queries
+overlap K=5 matvecs on Rayon. To roll back to serial batching, set `serial`
+or remove that line on the host and `sudo systemctl restart nullifier-query-server`.
+
 ### One-time setup on the remote host
 
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nf-ingest`.
