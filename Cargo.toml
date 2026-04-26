@@ -14,6 +14,16 @@ members = [
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.1.1" }
 
+# Source overrides (applied via the .wiring patch chain when developing in
+# shielded-vote-workspace).
+[patch.crates-io]
+# Pinned to the head of valargroup/ypir#17 ("Add additive SimplePIR batch
+# query/decode path"), which adds the YPIRClient::generate_query_simplepir_batch
+# / decode_response_simplepir_batch[_raw] surface that the workspace's batched
+# PIR path consumes. valar-spiral-rs (0.5.1) is consumed directly from
+# crates.io as a transitive dep of valar-ypir; no override is needed.
+valar-ypir = { git = "https://github.com/valargroup/ypir", rev = "ff295e962d7d77e7f922b1101bcdf5e160fc0adb" }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

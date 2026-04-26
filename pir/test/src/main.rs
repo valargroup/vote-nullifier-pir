@@ -33,9 +33,11 @@ struct Args {
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum BenchModeArg {
-    /// Issue all K queries concurrently within one iteration.
+    /// Issue all K queries concurrently within one iteration over the
+    /// **legacy single-query** endpoints.
     Parallel,
-    /// Issue K queries one at a time within one iteration.
+    /// Issue K queries one at a time within one iteration over the legacy
+    /// single-query endpoints.
     Sequential,
     /// Force K=1 (sequential of size 1).
     Single,
@@ -43,6 +45,10 @@ enum BenchModeArg {
     /// connection (no HTTP/2 stream multiplexing). Used to disambiguate
     /// HTTP/2 contention vs per-query upload bandwidth as the bottleneck.
     SingleTls,
+    /// Ship the K queries as one HTTP batch per tier
+    /// (`/tier{1,2}/batch_query`). Use this mode to diff batched timings
+    /// against the legacy `parallel`/`sequential` baselines.
+    Batched,
 }
 
 impl From<BenchModeArg> for bench_server::BenchMode {
@@ -52,6 +58,7 @@ impl From<BenchModeArg> for bench_server::BenchMode {
             BenchModeArg::Sequential => bench_server::BenchMode::Sequential,
             BenchModeArg::Single => bench_server::BenchMode::Single,
             BenchModeArg::SingleTls => bench_server::BenchMode::SingleTls,
+            BenchModeArg::Batched => bench_server::BenchMode::Batched,
         }
     }
 }
