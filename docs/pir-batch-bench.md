@@ -653,17 +653,21 @@ strict in-order matvec loop. Unrecognized values fall back to serial.
 Operator-facing startup log (`nf-server serve`): one line emitted after tier
 load describing the effective mode (see `pir_batch_compute_mode_startup_message`).
 
-**Correctness / rollback:** `cargo test -p pir-server --features rayon` runs
-equivalence tests asserting K=5 batch wire bytes match the serial path, and
-that `K ∈ {3, 16}` is unchanged when `parallel-k5` is set. CI runs both
-`cargo test -p pir-server` and `cargo test -p pir-server --features rayon`
-(see [`.github/workflows/test.yml`](../.github/workflows/test.yml)).
+**Correctness / rollback:** locally run `cargo test -p pir-server` and
+`cargo test -p pir-server --features rayon` — the latter runs equivalence
+tests for K=5 wire bytes vs serial and K∈{3,16} unchanged with `parallel-k5`.
+
+**Fleet env:** from tag [`v0.0.26`](https://github.com/valargroup/vote-nullifier-pir/releases/tag/v0.0.26),
+[`deploy.yml`](../.github/workflows/deploy.yml) writes
+`PIR_BATCH_COMPUTE_MODE=parallel-k5` into `/opt/nf-ingest/.env` next to
+`SENTRY_DSN` on every deploy (see [`ci-setup.md` runbook](runbooks/ci-setup.md)).
 
 #### Phase 1.1 benchmark playbook (post-deploy)
 
 1. Deploy a build containing Phase 1.1 to **backup** first.
-2. Set `PIR_BATCH_COMPUTE_MODE=parallel-k5` on that host only; leave primary
-   on `serial` until p50/p99 and error rate look healthy.
+2. Ensure `PIR_BATCH_COMPUTE_MODE=parallel-k5` is set (automatic on fleet from
+   **`v0.0.26`** deploy onward; for ad-hoc hosts use `/etc/default/nf-server` or
+   `/opt/nf-ingest/.env` and restart `nullifier-query-server`).
 3. Re-run the batched harness (same nullifiers and `--seed 42` as Phase 1):
 
 ```bash
@@ -696,9 +700,33 @@ verdict row). Raw JSON:
 |---|---|---:|---:|---:|---:|---:|
 | backup | K=5 batched (pre-1.1 deploy check, serial path) | 8.99 s | 15.18 s | 17.76 s | 18.78 s | 0 / 150 |
 
-**Phase 1.1 wall-clock verdict vs baselines:** **Pending** — rerun the
-playbook above after backup is running Phase 1.1 with
-`PIR_BATCH_COMPUTE_MODE=parallel-k5`, then promote to primary if healthy.
+#### Phase 1.1 fleet measurement (`v0.0.26`, parallel-k5 on both replicas)
+
+Release [`v0.0.26`](https://github.com/valargroup/vote-nullifier-pir/releases/tag/v0.0.26)
+only changes deploy to set `PIR_BATCH_COMPUTE_MODE=parallel-k5` on the hosts;
+the `nf-server` binary matches the Phase 1.1 build from `v0.0.25`. After deploy,
+`bench-server` was re-run with `./nullifiers.bin`, `--seed 42`, 30 measured +
+3 warmup iterations, `--mode batched`, K=5.
+
+Raw JSON:
+
+- [`baselines/backup-k5-batched-v0.0.26-parallel-k5.json`](baselines/backup-k5-batched-v0.0.26-parallel-k5.json)
+- [`baselines/primary-k5-batched-v0.0.26-parallel-k5.json`](baselines/primary-k5-batched-v0.0.26-parallel-k5.json)
+
+| Endpoint | Mode | Wall p50 | Wall p90 | Wall p99 | Tier 2 server p50† | Errors |
+|---|---|---:|---:|---:|---:|---:|
+| backup | K=5 batched `v0.0.26` + parallel-k5 | 8.76 s | 11.98 s | 13.83 s | **527 ms** | 0 / 150 |
+| primary | K=5 batched `v0.0.26` + parallel-k5 | 9.33 s | 11.21 s | 12.67 s | **350 ms** | 0 / 150 |
+
+†Per-query **mean** of `x-pir-server-compute-ms` over the five batch slots (harness
+output). With overlapping matvecs this drops well **below** the serial sum of
+five tier-2 matvec times (~4–5 s batch server time in the `v0.0.24` regime).
+
+**Read:** server-side batch compute is much lower, but **delegation wall p50**
+stays near `v0.0.24` batched on this link because RTT and download still dominate.
+**Primary p99 wall** improves vs `v0.0.24` batched (12.67 s vs 17.53 s); **backup
+p99** in this single run is slightly higher than the `v0.0.24` batched row
+(13.83 s vs 11.44 s). Compare always on the same observer and iteration count.
 
 ### Phase 1 gate verdict
 
