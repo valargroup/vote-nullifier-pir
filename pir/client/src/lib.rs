@@ -34,6 +34,16 @@ pub struct TierTiming {
     pub gen_ms: f64,
     /// Size of the uploaded query payload.
     pub upload_bytes: usize,
+    /// Bytes of the uploaded query attributable to the SimplePIR query
+    /// vector itself (`q.0` / `pqr` — the first arg to
+    /// [`pir_types::serialize_ypir_query`]). Phase 1 batching keeps this
+    /// per-query, so the projected upload is `pp + K * q`.
+    pub upload_q_bytes: usize,
+    /// Bytes of the uploaded query attributable to `pack_pub_params`
+    /// (the second arg to [`pir_types::serialize_ypir_query`]). Identical
+    /// across queries that share a YPIR `client_seed`, which is the
+    /// bandwidth lever Phase 1 exploits.
+    pub upload_pp_bytes: usize,
     /// Size of the downloaded encrypted response.
     pub download_bytes: usize,
     /// Wall-clock round-trip time (upload + server compute + download).
@@ -167,7 +177,15 @@ fn process_tier2_and_build(
 impl PirClient {
     /// Connect to a PIR server, downloading Tier 0 data and YPIR parameters.
     pub async fn connect(server_url: &str) -> Result<Self> {
-        let http = reqwest::Client::new();
+        Self::connect_with_http(server_url, reqwest::Client::new()).await
+    }
+
+    /// Like [`connect`](Self::connect) but with a caller-provided
+    /// [`reqwest::Client`]. Used by `pir-test bench-server --mode single-tls`
+    /// to force HTTP/1.1 with a single connection (no HTTP/2 stream
+    /// multiplexing) so we can isolate per-query upload bandwidth from
+    /// HTTP/2 contention when projecting Phase 1 wins.
+    pub async fn connect_with_http(server_url: &str, http: reqwest::Client) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
         // Download Tier 0 data, YPIR params, and root concurrently
@@ -419,7 +437,12 @@ impl PirClient {
         let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
         let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        // Serialize query
+        // Serialize query. `query.0` is the SimplePIR query vector
+        // (per-query); `query.1` is `pack_pub_params` (depends only on the
+        // client's `client_seed`, so Phase 1 batching can ship it once per
+        // tier-batch instead of once per query).
+        let upload_q_bytes = query.0.as_slice().len() * std::mem::size_of::<u64>();
+        let upload_pp_bytes = query.1.as_slice().len() * std::mem::size_of::<u64>();
         let payload = serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
         let upload_bytes = payload.len();
 
@@ -486,6 +509,8 @@ impl PirClient {
             TierTiming {
                 gen_ms,
                 upload_bytes,
+                upload_q_bytes,
+                upload_pp_bytes,
                 download_bytes: response_bytes.len(),
                 rtt_ms,
                 decode_ms,
@@ -970,7 +995,7 @@ mod tests {
     #[tokio::test]
     async fn tier2_query_sent_despite_tier1_decode_failure() {
         use ff::PrimeField as _;
-        use pir_types::{TIER1_ITEM_BITS, TIER1_ROWS, TIER2_ITEM_BITS};
+        use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -991,14 +1016,15 @@ mod tests {
         };
 
         // Use the real item_size_bits to satisfy YPIR's internal
-        // parameter constraints. num_items=TIER1_ROWS (2048) matches
-        // production tier1 and is large enough for any s1 value.
+        // parameter constraints. num_items=TIER1_YPIR_ROWS (2048) matches
+        // production tier1 (which pads TIER1_ROWS=512 up to the YPIR
+        // poly_len floor) and is large enough for any s1 value.
         let tier1_scenario = YpirScenario {
-            num_items: TIER1_ROWS,
+            num_items: TIER1_YPIR_ROWS,
             item_size_bits: TIER1_ITEM_BITS,
         };
         let tier2_scenario = YpirScenario {
-            num_items: TIER1_ROWS,
+            num_items: TIER1_YPIR_ROWS,
             item_size_bits: TIER2_ITEM_BITS,
         };
 
@@ -1064,6 +1090,134 @@ mod tests {
             tier2_hits, 1,
             "tier2 query must still be sent when tier1 decode fails \
              (error-oracle mitigation)"
+        );
+    }
+
+    /// Batch-level analog of [`tier2_query_sent_despite_tier1_decode_failure`].
+    ///
+    /// Phase 0.5.5: this test is the failing-spec for Phase 1 batching. It
+    /// asserts the **batch granularity** of the error-oracle mitigation: when
+    /// `fetch_proofs(K=5)` is called and **every** tier 1 response is
+    /// corrupted, the server must still observe **K tier 1 POSTs and
+    /// K tier 2 POSTs**. A naive Phase 1 batch route that aborts the tier 2
+    /// dispatch the moment any tier 1 decode fails would re-introduce the
+    /// "K vs K' tier-2 requests" oracle the per-note mitigation closes.
+    ///
+    /// Today (per-note, fresh `s` per query) this passes by transitivity of
+    /// the per-note mitigation. After Phase 1 lands, the new
+    /// `/<tier>/batch_query` route must keep this green even though all K
+    /// queries within a tier-batch share one `client_seed`.
+    ///
+    /// The 50 ms tier 2 delay is a coarse-grained guard against
+    /// `try_join_all` cancellation: it ensures all five fetch_proof_inner
+    /// futures dispatch their tier 2 POST before the first one resolves
+    /// to `Err`, so wiremock's request log is deterministic.
+    #[tokio::test]
+    async fn batched_tier2_queries_all_sent_despite_tier1_decode_failure() {
+        use ff::PrimeField as _;
+        use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const K: usize = 5;
+
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let ranges = build_ranges_with_sentinels(&raw_nfs);
+        let tree = pir_export::build_pir_tree(ranges).unwrap();
+        let tier0_data =
+            pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+
+        let root_info = pir_types::RootInfo {
+            root29: hex::encode(tree.root29.to_repr()),
+            root25: hex::encode(tree.root25.to_repr()),
+            num_ranges: tree.ranges.len(),
+            pir_depth: PIR_DEPTH,
+            height: None,
+        };
+
+        let tier1_scenario = YpirScenario {
+            num_items: TIER1_YPIR_ROWS,
+            item_size_bits: TIER1_ITEM_BITS,
+        };
+        let tier2_scenario = YpirScenario {
+            num_items: TIER1_YPIR_ROWS,
+            item_size_bits: TIER2_ITEM_BITS,
+        };
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/tier0"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(tier0_data))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/params/tier1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&tier1_scenario))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/params/tier2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&tier2_scenario))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/root"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&root_info))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/tier1/query"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xDE; 65536]))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/tier2/query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![0xAD; 65536])
+                    .set_delay(Duration::from_millis(50)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = PirClient::connect(&server.uri()).await.unwrap();
+
+        let nullifiers: Vec<Fp> = tree
+            .ranges
+            .iter()
+            .take(K)
+            .map(|r| r[0] + Fp::one())
+            .collect();
+        assert_eq!(nullifiers.len(), K);
+
+        let result = client.fetch_proofs(&nullifiers).await;
+        assert!(
+            result.is_err(),
+            "fetch_proofs should fail with corrupted tier1 responses"
+        );
+
+        let received = server.received_requests().await.unwrap();
+        let tier1_hits = received
+            .iter()
+            .filter(|r| r.url.path() == "/tier1/query")
+            .count();
+        let tier2_hits = received
+            .iter()
+            .filter(|r| r.url.path() == "/tier2/query")
+            .count();
+
+        assert_eq!(
+            tier1_hits, K,
+            "all K tier1 queries should have been sent (got {})",
+            tier1_hits,
+        );
+        assert_eq!(
+            tier2_hits, K,
+            "all K tier2 queries must still be sent when their tier1 \
+             decodes fail (batch-level error-oracle mitigation)",
         );
     }
 }
