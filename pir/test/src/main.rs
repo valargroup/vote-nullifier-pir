@@ -39,6 +39,10 @@ enum BenchModeArg {
     Sequential,
     /// Force K=1 (sequential of size 1).
     Single,
+    /// Issue K queries one at a time over a single HTTP/1.1 TCP/TLS
+    /// connection (no HTTP/2 stream multiplexing). Used to disambiguate
+    /// HTTP/2 contention vs per-query upload bandwidth as the bottleneck.
+    SingleTls,
 }
 
 impl From<BenchModeArg> for bench_server::BenchMode {
@@ -47,6 +51,7 @@ impl From<BenchModeArg> for bench_server::BenchMode {
             BenchModeArg::Parallel => bench_server::BenchMode::Parallel,
             BenchModeArg::Sequential => bench_server::BenchMode::Sequential,
             BenchModeArg::Single => bench_server::BenchMode::Single,
+            BenchModeArg::SingleTls => bench_server::BenchMode::SingleTls,
         }
     }
 }

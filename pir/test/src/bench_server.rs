@@ -35,6 +35,13 @@ pub enum BenchMode {
     Sequential,
     /// `batch_size` is forced to 1 — same flow as `Sequential` with K=1.
     Single,
+    /// Issue K queries one at a time, all riding the same single
+    /// HTTP/1.1 TCP/TLS connection (no HTTP/2 multiplexing, no concurrent
+    /// streams). Used by Phase 0.5.3 to test whether today's K=5 parallel
+    /// upload p50 is HTTP/2-contention-bound (this mode would match it)
+    /// vs. per-query upload-bandwidth-bound (this mode would still pay
+    /// `K * upload_bytes` over the wire).
+    SingleTls,
 }
 
 impl BenchMode {
@@ -43,6 +50,7 @@ impl BenchMode {
             BenchMode::Parallel => "parallel",
             BenchMode::Sequential => "sequential",
             BenchMode::Single => "single",
+            BenchMode::SingleTls => "single-tls",
         }
     }
 }
@@ -93,6 +101,14 @@ pub struct TierSummary {
     pub client_gen_ms: HistogramSummary,
     pub client_decode_ms: HistogramSummary,
     pub upload_bytes: BytesSummary,
+    /// Per-query bytes attributable to the SimplePIR query vector
+    /// (`q.0` / `pqr`). Phase 1 keeps this per-query.
+    pub upload_q_bytes: BytesSummary,
+    /// Per-query bytes attributable to `pack_pub_params`. Phase 1
+    /// ships this **once per tier-batch** under a shared `client_seed`,
+    /// so projected Phase 1 upload per batch is
+    /// `pp + K * q ≈ upload_pp_bytes.mean + K * upload_q_bytes.mean`.
+    pub upload_pp_bytes: BytesSummary,
     pub download_bytes: BytesSummary,
 }
 
@@ -212,6 +228,8 @@ struct TierAggregator {
     client_gen: Option<Histogram<u64>>,
     client_decode: Option<Histogram<u64>>,
     upload_bytes: BytesAggregator,
+    upload_q_bytes: BytesAggregator,
+    upload_pp_bytes: BytesAggregator,
     download_bytes: BytesAggregator,
 }
 
@@ -229,6 +247,8 @@ impl TierAggregator {
             client_gen: Some(new_us_histogram()),
             client_decode: Some(new_us_histogram()),
             upload_bytes: BytesAggregator::default(),
+            upload_q_bytes: BytesAggregator::default(),
+            upload_pp_bytes: BytesAggregator::default(),
             download_bytes: BytesAggregator::default(),
         }
     }
@@ -260,6 +280,8 @@ impl TierAggregator {
             record_ms(self.upload_to_server.as_mut().unwrap(), v);
         }
         self.upload_bytes.record(t.upload_bytes);
+        self.upload_q_bytes.record(t.upload_q_bytes);
+        self.upload_pp_bytes.record(t.upload_pp_bytes);
         self.download_bytes.record(t.download_bytes);
     }
 
@@ -288,6 +310,8 @@ impl TierAggregator {
                 self.client_decode.as_ref().unwrap(),
             ),
             upload_bytes: self.upload_bytes.into_summary(),
+            upload_q_bytes: self.upload_q_bytes.into_summary(),
+            upload_pp_bytes: self.upload_pp_bytes.into_summary(),
             download_bytes: self.download_bytes.into_summary(),
         }
     }
@@ -329,7 +353,7 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
 
     eprintln!("  Connecting to PIR server...");
     let connect_start = Instant::now();
-    let client = Arc::new(PirClient::connect(&cfg.url).await?);
+    let client = Arc::new(connect_client(cfg.mode, &cfg.url).await?);
     eprintln!(
         "  Connected in {:.2}s\n",
         connect_start.elapsed().as_secs_f64()
@@ -455,7 +479,7 @@ async fn run_iteration(
             });
             futures::future::join_all(futs).await
         }
-        BenchMode::Sequential | BenchMode::Single => {
+        BenchMode::Sequential | BenchMode::Single | BenchMode::SingleTls => {
             let mut out = Vec::with_capacity(test_values.len());
             for &v in test_values {
                 let res = client
@@ -466,6 +490,25 @@ async fn run_iteration(
             }
             out
         }
+    }
+}
+
+/// Build a [`PirClient`] for `mode`. For everything except
+/// [`BenchMode::SingleTls`] this uses the default reqwest client (HTTP/2,
+/// connection pooling). [`BenchMode::SingleTls`] forces HTTP/1.1 with at
+/// most one idle connection per host so each query rides the same TCP/TLS
+/// session sequentially.
+async fn connect_client(mode: BenchMode, url: &str) -> Result<PirClient> {
+    match mode {
+        BenchMode::SingleTls => {
+            let http = reqwest::Client::builder()
+                .http1_only()
+                .pool_max_idle_per_host(1)
+                .build()
+                .context("building http1-only reqwest client")?;
+            PirClient::connect_with_http(url, http).await
+        }
+        _ => PirClient::connect(url).await,
     }
 }
 
@@ -605,9 +648,11 @@ fn print_tier(name: &str, t: &TierSummary) {
         fmt_ms(t.client_decode_ms.p50),
     );
     eprintln!(
-        "  {:>5} bytes      up={} dn={}  (per query, mean over n={})",
+        "  {:>5} bytes      up={} (pp={} + q={})  dn={}  (per query, mean over n={})",
         name,
         fmt_bytes(t.upload_bytes.mean),
+        fmt_bytes(t.upload_pp_bytes.mean),
+        fmt_bytes(t.upload_q_bytes.mean),
         fmt_bytes(t.download_bytes.mean),
         t.upload_bytes.n,
     );

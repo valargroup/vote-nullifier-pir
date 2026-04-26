@@ -42,6 +42,17 @@ mise exec -- cargo build --release -p pir-test
     --json-out docs/baselines/primary-k5-sequential.json
 
 # Same triplet against pir-backup.valargroup.org.
+
+# Phase 0.5.3: K=5 single-tls (HTTP/1.1, single TCP, sequential — used to
+# isolate HTTP/2 contention from per-query upload bandwidth).
+./target/release/pir-test bench-server \
+    --url https://pir.valargroup.org \
+    --nullifiers ./nullifiers.bin \
+    --iterations 30 --warmup 3 \
+    --batch-size 5 --mode single-tls \
+    --seed 42 \
+    --label primary-k5-single-tls \
+    --json-out docs/baselines/primary-k5-single-tls.json
 ```
 
 ## Methodology
@@ -67,6 +78,9 @@ mise exec -- cargo build --release -p pir-test
       which uses `try_join_all`; we use `join_all` so a single per-note
       error doesn't drop timings for the rest of the batch).
     - `sequential` — K awaits in a `for` loop. Useful as a naive upper bound.
+    - `single-tls` (added in §0.5.3) — K awaits over one HTTP/1.1 TCP/TLS
+      connection (`http1_only()`, `pool_max_idle_per_host(1)`).
+      Disambiguates HTTP/2 contention vs per-query upload bandwidth.
 - **Sampling**:
     - Wall-clock (per-iteration): K=1/K=5 parallel use 30 measured iterations
       after 3 warmup iterations. K=5 sequential uses 15 measured iterations
@@ -269,6 +283,221 @@ single-query baseline above). The only way to actually shrink download
 bytes would be a follow-up that pushes the Tier 2 row hint set down to
 the client up-front, which is out of scope for this batching effort.
 
+## Phase 0.5 — Pre-implementation experiments
+
+Five read-only / harness-side experiments run on top of the Phase 0
+baseline to convert Phase 1's success criteria from *inferred* to
+*measured* and to lock in regression spec for the upcoming batched
+route. Outcomes summarised in this section drive the gates in the next
+section.
+
+### 0.5.1 — `pack_pub_params` vs. `q.0` byte split
+
+The harness now records `upload_pp_bytes` (`query.1` —
+`pack_pub_params`) and `upload_q_bytes` (`query.0` — the SimplePIR
+query vector / `pqr`) per tier per query. They are deterministic given
+`(num_items, item_size_bits)` so the K=1 single run on primary is
+sufficient (see [`baselines/primary-k1-single.json`](baselines/primary-k1-single.json)).
+
+| Tier | `pp` (per query) | `q` (per query) | Upload | `pp` share |
+|---|---:|---:|---:|---:|
+| Tier 1 | **528.0 KB** |  16.0 KB | 544.0 KB | **97.0 %** |
+| Tier 2 | **528.0 KB** | 256.0 KB | 784.0 KB | **67.3 %** |
+
+`pp` is **identical between tier 1 and tier 2** because it depends only
+on the YPIR `client_seed` + LWE polynomial parameters
+(`poly_len = 2048`), not on database geometry. This is the bandwidth
+lever Phase 1 batching exploits: ship `pp` once per tier-batch and
+include K small `q` vectors.
+
+### 0.5.2 — YPIR API path verdict (Path C)
+
+Read-only audit of [`ypir/src/client.rs`](../../ypir/src/client.rs)
+and the underlying `valar-spiral-rs` 0.5.1 client. **Verdict: Path C
+(refactor `YClient` to cache `pack_pub_params`)** with optional
+`*_with_seed` public hooks layered on top.
+
+Why neither A nor B alone works:
+
+- `YClient::generate_full_query_simplepir` (lines 510–556) **rebuilds
+  `pack_pub_params` on every call** by running
+  `raw_generate_expansion_params` (lines 83–108).
+- `raw_generate_expansion_params` seeds its `ChaCha20Rng` with
+  `from_entropy()` (lines 516–518), so even a fixed `client_seed`
+  yields **byte-different `pp` blobs** across successive calls.
+- `YClient::new` is `pub(crate)`, and `YClient::from_seed` /
+  `generate_full_query_simplepir` are private — `pir-client` cannot
+  drive Path B from outside the `valar-ypir` crate even if the
+  recompute-and-pray approach were acceptable.
+
+Phase 1 implication for `client_batch_query`: we will need a
+cross-repo patch to `valar-ypir` exposing either
+`generate_query_simplepir_batch(target_rows: &[usize], seed) -> (pp,
+Vec<q>)` (preferred) or a `(pub_params_once, generate_q_only_with_seed)`
+split. This adds a real dependency on a `valar-ypir` release; the plan
+risk register has been updated accordingly.
+
+### 0.5.3 — single-TLS bench (HTTP/2 contention vs upload bandwidth)
+
+New `--mode single-tls` issues K queries one at a time over a single
+HTTP/1.1 TCP/TLS connection (`http1_only()`,
+`pool_max_idle_per_host(1)`). Comparison to the existing K=1 single
+mode disambiguates whether today's K=5 parallel upload p50 is bounded
+by HTTP/2 stream multiplexing contention (then single-tls per-query
+upload should match K=1 single) or by raw per-query upload bandwidth
+on the observer's uplink (then single-tls would still pay
+`K × upload_bytes`, just spread across K serial RTTs).
+
+Per-query upload p50 (n=30 for K=1 single, n=150 for K=5 single-tls):
+
+| Endpoint | Mode    | T1 upload p50 | T2 upload p50 | T1 RTT p50 | T2 RTT p50 |
+|---|---|---:|---:|---:|---:|
+| primary | K=1 single        | 225 ms | 228 ms |  290 ms | 2950 ms |
+| primary | **K=5 single-tls**| **225 ms** | **228 ms** | **287 ms** | **2700 ms** |
+| primary | K=5 parallel      | 229 ms | 233 ms |  508 ms | 3220 ms |
+| backup  | K=1 single        | 221 ms | 224 ms |  275 ms | 2760 ms |
+| backup  | **K=5 single-tls**| **224 ms** | **224 ms** | **278 ms** | **2830 ms** |
+| backup  | K=5 parallel      | 236 ms | 754 ms |  341 ms | 3140 ms |
+
+Wall-clock (per K=5 delegation) p50:
+
+| Endpoint | K=1 single (×5) | K=5 single-tls | **K=5 parallel** |
+|---|---:|---:|---:|
+| primary | 16.5 s | **15.97 s** | **4.65 s** |
+| backup  | 15.8 s | **16.08 s** | **4.31 s** |
+
+Findings:
+
+- **Per-query upload time is nearly identical across single-tls and
+  K=1**, confirming that today's K=5 parallel **does not** bottleneck
+  on per-query upload bandwidth on this observer link — most queries
+  upload in ~225 ms regardless of how many are in flight.
+- The one exception is **backup K=5 parallel tier 2 upload p50 = 754 ms**
+  (3.4× single-query). That is HTTP/2 stream multiplexing contention
+  on the backup uplink path, exactly the case where 5 simultaneous
+  784 KB pub_params blobs share a single TCP window.
+- K=5 parallel wall-clock is dramatically lower than K=5 single-tls
+  (4.65 s vs 15.97 s on primary, 4.31 s vs 16.08 s on backup). The
+  delta is not contention; it's **server-side parallelism** —
+  parallel mode lets 5 concurrent requests use the server's Rayon
+  pool concurrently, while single-tls forces strict serialisation on
+  the server.
+
+This reframes the Phase 1 wall-clock projection: **Phase 1 alone
+(serial K matvecs in one request handler) will not match today's K=5
+parallel wall-clock unless the Phase 1 server route does its K matvecs
+under Rayon parallelism inside one request.** The bandwidth wins are
+real and large; the wall-clock wins depend on how the batched route
+schedules work server-side. Phase 2's batched matmul recovers the rest
+by streaming the DB once per K queries.
+
+### 0.5.4 — Post-decode side-channel audit
+
+Inventory of all observables in the post-decode path of
+[`fetch_proof_inner`](../pir/client/src/lib.rs) and
+[`process_tier2_and_build`](../pir/client/src/lib.rs), plus downstream
+consumers in
+[`zcash_voting/src/storage/operations.rs`](../../zcash_voting/zcash_voting/src/storage/operations.rs)
+and the Halo2 prover at
+[`zcash_voting/src/zkp1.rs`](../../zcash_voting/zcash_voting/src/zkp1.rs).
+
+| Classification | Count | Examples |
+|---|---:|---|
+| **safe** (plaintext-derived, `s`-independent under correct decryption) | 12 | `process_tier1` / `process_tier2_and_build` branches; `tier1_outcome` accept/reject; `t2_bounds_err` clamp |
+| **safe-because-public** (witnesses the verifier must re-derive anyway) | 4 | `nf_bounds`, `path`, `leaf_pos` in `ImtProofData`; circuit packing |
+| **flag-for-Phase-1** (`s`-correlated timing) | 4 | `TierTiming.gen_ms`, `TierTiming.decode_ms`, `print_timing_table` log emissions, `NoteTiming.total_ms` |
+
+The four flagged items are all **timing channels** that include
+secret-dependent crypto work (`generate_query_simplepir`,
+`decode_response_simplepir`). They are exposed to callers via the
+public `fetch_proof_with_timing` API and to logs at `Debug` /
+`Trace` level. They were already soft side-channels under per-query
+`s`; under Phase 1's shared-`s`-per-batch they leak about a single key
+material instead of K independent secrets — a strict downgrade of
+adversary advantage relative to per-query `s` only if the channel is
+exploited within one batch lifetime. Action items for Phase 1:
+
+- Treat `gen_ms` / `decode_ms` as batch-level observables and gate
+  the `print_timing_table` Trace logging behind a non-production
+  feature flag (or strip those columns under shared-`s` mode).
+- Document `fetch_proof_with_timing` as diagnostic-only when the
+  client uses the batched route.
+
+**Important correction to plan §0.5.4**: the
+`decryption_outcome_independent_of_secret_key` invariant tests cited
+in the plan at `pir-client/src/lib.rs:964/1055/1080/1104` actually
+live in `ypir/src/client.rs` (`decode_simplepir_random_response_same_outcome_different_keys`,
+~line 1200). The `pir-client` side has only the structural
+`tier2_query_sent_despite_tier1_decode_failure` test (~line 970).
+Phase 1 must keep both sets green.
+
+The audit also surfaced an **inter-tier client timing channel that
+predates this work**: `process_tier1` runs between the tier 1 and
+tier 2 HTTP requests, and its branch-data-dependent steps (binary
+search depth, Poseidon walk) run for `s`-independent but
+nullifier-dependent durations. A server that times the tier-1 →
+tier-2 gap can learn something about the queried index. This is a
+client privacy concern, not an `s`-oracle, and is unchanged by
+Phase 1 batching (in Phase 1 the gap is amortised across K queries,
+which strictly weakens the channel).
+
+### 0.5.5 — Batched error-oracle test
+
+New test
+[`batched_tier2_queries_all_sent_despite_tier1_decode_failure`](../pir/client/src/lib.rs)
+asserts the **batch-level** analogue of the existing
+`tier2_query_sent_despite_tier1_decode_failure`: when `fetch_proofs(K=5)`
+encounters corrupted tier-1 responses for **every** note, the wiremock
+server must record **K tier 1 POSTs and K tier 2 POSTs**.
+
+Today (per-query fresh `s`, parallel `try_join_all`) it passes by
+transitivity of the per-note mitigation — verified on
+`bench/pir-batch-phase0`. Phase 1's `/tier{1,2}/batch_query` route
+must keep this green even though all K queries share one `client_seed`;
+this is an explicit gate before merge.
+
+While adding the test, we discovered that the existing
+`tier2_query_sent_despite_tier1_decode_failure` was using
+`num_items: TIER1_ROWS` (= 512), which is below the YPIR
+`poly_len = 2048` floor and triggered an arithmetic underflow in
+`valar-ypir` `params.rs:130`. Both tests now use `TIER1_YPIR_ROWS`
+(= 2048), matching what
+[`pir_server::tier1_scenario()`](../pir/server/src/lib.rs) emits in
+production.
+
+### 0.5.6 — Refined Phase 1 / Phase 2 projections
+
+With the byte split and contention measurements above, the Phase 1
+projected upload table tightens from inferred to measured:
+
+| Tier | `pp` once | K × `q` | Phase 1 batch upload | K=5 today | Reduction |
+|---|---:|---:|---:|---:|---:|
+| Tier 1 | 528.0 KB | 5 × 16.0 KB =  80 KB | **608 KB**  | 2720 KB | **−77.6 %** |
+| Tier 2 | 528.0 KB | 5 × 256.0 KB = 1280 KB | **1808 KB** | 3920 KB | **−53.9 %** |
+| **Total** | — | — | **2416 KB** | **6640 KB** | **−63.6 %** |
+
+Total bytes (upload + download) per delegation: today **8.44 MB**,
+Phase 1 projected **4.22 MB** (downloads unchanged at 1.80 MB).
+
+**Phase 1 wall-clock projection (revised, single-tls-aware)**:
+
+- *If* the Phase 1 server route dispatches its K matvecs under
+  Rayon parallelism within one request handler: wall-clock matches
+  today's K=5 parallel **plus** removes the backup-uplink upload
+  contention spike (754 ms → ~225 ms tier-2 upload p50 on backup).
+  Expected p50 wall delta: **−400 to −800 ms on backup, −0 to
+  −200 ms on primary.** Bandwidth still drops by 4.2 MB.
+- *If* the Phase 1 server route does its K matvecs **serially**:
+  per-query tier-2 server compute returns to single-query (~919 ms
+  primary, ~833 ms backup), but K matvecs run in series, so the
+  tier-2 server time per K=5 batch is ~4.6 s — a **wall-clock
+  regression** vs. today's K=5 parallel (~3.2 s tier-2 RTT). This
+  case wins on bandwidth only; it would gate Phase 2 to ship
+  immediately after to recover wall.
+
+Either way, the **upload bandwidth gate** is unconditionally winnable
+and is the metric on which Phase 1 is principally judged.
+
 ## Phase 1 / Phase 2 success criteria
 
 These are the gates that block merging the SDK swap to the batched path
@@ -277,28 +506,49 @@ above for the same endpoint, measured with the same harness from a
 fixed observer host (CI runner, region tagged in JSON). All numbers are
 **p50 unless a stronger percentile is named**.
 
-### Phase 1 (HTTP/wire batching, K independent matvecs server-side)
+### Phase 1 (HTTP/wire batching, K matvecs server-side)
 
-Must hit at least:
+All gates derive from §0.5.x measured numbers, not estimates.
 
-- **Wall-clock**: ≥ 1.0 s reduction at p50 vs. K=5 parallel (one tier-2
-  RTT class equivalent) on the slowest of {primary, backup}. p99 must
-  not regress.
-- **Tier 2 upload bytes**: drop from 5 × 784 KB ≈ 3.92 MB to ≤ 1.0 MB
-  per K=5 batch — i.e. one shared `pack_pub_params` plus K small `q.0`
-  vectors.
-- **Tier 1 upload bytes**: drop from 5 × 544 KB ≈ 2.72 MB to ≤ 0.7 MB.
-- **Download bytes**: must not regress (expected unchanged at 5 × 24 KB
-  tier 1 + 5 × 336 KB tier 2 = 1.80 MB per K=5 batch — Phase 1 keeps
-  per-query response shape identical and just bundles the K responses
-  into one HTTP body).
-- **Server compute**: must not regress (Phase 1 still does K matvecs;
-  this is just a sanity check that the wire format change didn't add
-  new server-side work).
-- **Error rate**: 0 across `iterations × batch_size` for both endpoints.
-- **Capability/fallback**: SDK paths older than the rollout flip
-  cleanly fall back to the legacy `/tier{1,2}/query` route — verified
-  by integration test, not bench gate.
+- **Tier 1 upload bytes per K=5 batch ≤ 700 KB**
+  (= `pp` 528 KB + 5 × `q` 16 KB + small framing = **608 KB
+  measured** projection from §0.5.1; gate has 92 KB headroom for
+  serialization framing). Today: 2720 KB.
+- **Tier 2 upload bytes per K=5 batch ≤ 1.85 MB**
+  (= `pp` 528 KB + 5 × `q` 256 KB + framing = **1808 KB measured**
+  projection from §0.5.1). Today: 3920 KB.
+- **Combined upload reduction ≥ 60 %** at K=5
+  (target: ~63.6 % from §0.5.6 projection).
+- **Wall-clock at p50** must satisfy **at least one** of:
+  - **Primary** p50 ≤ today's K=5 parallel p50 (4.65 s) **and**
+    **backup** p50 ≤ today's K=5 parallel p50 − 300 ms (4.31 s →
+    ≤ 4.0 s) — captures the backup-uplink contention recovery
+    measured in §0.5.3 (754 ms → 225 ms tier-2 upload on backup).
+  - p50 wall regression ≤ 500 ms on either endpoint **and**
+    Phase 2 ships in the same release window — accepts the
+    serial-K-matvec case identified in §0.5.6 with explicit
+    Phase 2 follow-up commitment.
+- **p99 wall** must not regress by more than 1.0 s on either endpoint.
+- **Download bytes**: unchanged (5 × 24 KB tier 1 + 5 × 336 KB tier 2
+  = 1.80 MB per K=5 batch — per-query response shape preserved;
+  Phase 1 just bundles the K responses).
+- **Server compute per K matvec**: tier-2 ≤ today's K=5 parallel
+  tier-2 server compute p50 (1220 ms primary, 1530 ms backup) —
+  Phase 1 must not introduce new per-query server overhead.
+- **Error rate**: 0 across `iterations × batch_size` for both
+  endpoints in the bench harness.
+- **Security regression gate**:
+  `tier2_query_sent_despite_tier1_decode_failure` (per-note,
+  pre-existing) **and**
+  `batched_tier2_queries_all_sent_despite_tier1_decode_failure`
+  (batch, added in §0.5.5) **and** the existing
+  `decode_simplepir_random_response_same_outcome_different_keys`
+  test in `valar-ypir` must all pass against the new
+  `/tier{1,2}/batch_query` route under shared-`s` batching. New
+  test in this PR: `pir-client/src/lib.rs::tests::batched_tier2_queries_all_sent_despite_tier1_decode_failure`.
+- **Capability/fallback**: SDK builds older than the rollout flip
+  fall back to the legacy `/tier{1,2}/query` route — verified by
+  integration test, not bench gate.
 
 ### Phase 2 (server-side batched matmul, same wire route)
 
@@ -317,9 +567,32 @@ Must hit at least:
 
 ### Phase 0 (this doc)
 
-- All six baselines committed under [`baselines/`](baselines/) with
-  3-iteration warmup, 30 / 30 / 15 measured iterations and matching
-  `--seed 42`.
-- `pir-test bench-server --help` documents the harness.
+- All six original baselines + two `single-tls` baselines committed
+  under [`baselines/`](baselines/) with 3-iteration warmup,
+  30 / 30 / 15 / 30 measured iterations (single / parallel /
+  sequential / single-tls) and matching `--seed 42`.
+- `pir-test bench-server --help` documents the harness, including
+  the `single-tls` mode added in §0.5.3.
 - Wall-clock and per-tier server_compute summarised in the tables
   above with the same percentile shape used for the Phase 1 / 2 gates.
+
+### Phase 0.5 (this doc)
+
+- §0.5.1 instrumentation landed in
+  [`pir/client/src/lib.rs`](../pir/client/src/lib.rs)
+  (`TierTiming.{upload_q_bytes, upload_pp_bytes}`) and surfaces in
+  the bench JSON. Re-ran `primary-k1-single` to capture the split.
+- §0.5.2 audit committed inline above; Path C dependency on
+  `valar-ypir` documented.
+- §0.5.3 `--mode single-tls` shipped in
+  [`pir/test/src/bench_server.rs`](../pir/test/src/bench_server.rs)
+  via a new `connect_with_http` constructor on `PirClient`. Two new
+  baselines committed.
+- §0.5.4 audit committed inline above; four timing observables
+  flagged for Phase 1 hygiene work.
+- §0.5.5 batched regression test
+  `batched_tier2_queries_all_sent_despite_tier1_decode_failure`
+  added and green; pre-existing test fixed for `valar-ypir`'s
+  `poly_len = 2048` floor.
+- §0.5.6 success criteria for Phase 1 rewritten on top of measured
+  data — see "Phase 1 / Phase 2 success criteria" above.
