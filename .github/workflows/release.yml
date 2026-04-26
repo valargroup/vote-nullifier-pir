@@ -30,14 +30,10 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-amd64
-            rust_target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             platform: linux-arm64
           - os: macos-latest
             platform: darwin-arm64
-          # Cross-compile from arm64 host: YPIR's C++ build uses -march=native,
-          # so we cannot enable `serve`/`rayon` here (would mismatch target CPU).
-          # This artifact is doctor+sync only, not the PIR HTTP server binary.
           - os: macos-latest
             platform: darwin-amd64
             cross: true
@@ -65,25 +61,27 @@ jobs:
       - name: Build release binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            # Cross-compile without serve/rayon: YPIR's C++ build uses
+            # Cross-compile without serve feature: YPIR's C++ build uses
             # -march=native which fails when host and target arch differ.
             cargo build --release --manifest-path nf-server/Cargo.toml \
               --target ${{ matrix.rust_target }}
             mkdir -p target/release
             cp target/${{ matrix.rust_target }}/release/nf-server target/release/
-          elif [ "${{ matrix.platform }}" = "linux-amd64" ]; then
-            # Production fleet target: AVX-512 kernel + Rayon (`pir-server/rayon`
-            # + nested kernel parallelism). `rayon` feature implies `serve`.
-            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v4" \
-              cargo build --release \
-              --manifest-path nf-server/Cargo.toml --features avx512,rayon \
-              --target x86_64-unknown-linux-gnu
-            mkdir -p target/release
-            cp target/x86_64-unknown-linux-gnu/release/nf-server target/release/
           else
-            # linux-arm64 / darwin-arm64: full `serve` + `pir-server/rayon`.
-            cargo build --release --manifest-path nf-server/Cargo.toml \
-              --features serve,rayon
+            if [ "${{ matrix.platform }}" = "linux-amd64" ]; then
+              # Production fleet target: AVX-512 kernel + rayon parallelism.
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v4" \
+                cargo build --release \
+                --manifest-path nf-server/Cargo.toml --features avx512,rayon \
+                --target x86_64-unknown-linux-gnu
+              mkdir -p target/release
+              cp target/x86_64-unknown-linux-gnu/release/nf-server target/release/
+            else
+              # linux-arm64 / darwin-arm64: no AVX-512, but rayon still
+              # parallelises the kernel across cores.
+              cargo build --release --manifest-path nf-server/Cargo.toml \
+                --features serve,rayon
+            fi
           fi
 
       - name: Upload artifacts

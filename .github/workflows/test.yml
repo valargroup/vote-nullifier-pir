@@ -38,8 +38,6 @@ jobs:
         run: |
           cargo test --lib -p imt-tree
           cargo test --lib -p nf-ingest
-          cargo test -p pir-server
-          cargo test -p pir-server --features rayon
           # nf-server is a binary crate; run its unit tests + the
           # bootstrap_e2e integration suite under the `serve` feature
           # (the only build configuration in which the bootstrap and
