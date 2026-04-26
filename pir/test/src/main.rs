@@ -1,18 +1,20 @@
 //! PIR E2E test harness.
 //!
 //! Modes:
-//!   small   — Synthetic 1000-nullifier tree, full round-trip (~5s)
-//!   local   — Full in-process test with real nullifiers (no HTTP, no YPIR crypto)
-//!   server  — Test against a running pir-server instance (HTTP + YPIR crypto)
-//!   load    — Drive concurrent PIR traffic for load testing
+//!   small         — Synthetic 1000-nullifier tree, full round-trip (~5s)
+//!   local         — Full in-process test with real nullifiers (no HTTP, no YPIR crypto)
+//!   server        — Test against a running pir-server instance (HTTP + YPIR crypto)
+//!   bench-server  — Closed-loop iteration-bounded RTT/bandwidth/server-compute baseline
+//!   load          — Drive concurrent PIR traffic for load testing
 
+mod bench_server;
 mod load;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use ff::{Field, PrimeField as _};
 use pasta_curves::Fp;
 use rand::Rng;
@@ -27,6 +29,26 @@ use pir_types::{
 struct Args {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum BenchModeArg {
+    /// Issue all K queries concurrently within one iteration.
+    Parallel,
+    /// Issue K queries one at a time within one iteration.
+    Sequential,
+    /// Force K=1 (sequential of size 1).
+    Single,
+}
+
+impl From<BenchModeArg> for bench_server::BenchMode {
+    fn from(v: BenchModeArg) -> Self {
+        match v {
+            BenchModeArg::Parallel => bench_server::BenchMode::Parallel,
+            BenchModeArg::Sequential => bench_server::BenchMode::Sequential,
+            BenchModeArg::Single => bench_server::BenchMode::Single,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -86,6 +108,48 @@ enum Command {
         config: Option<String>,
     },
 
+    /// Closed-loop, iteration-bounded latency / bandwidth / server-compute
+    /// baseline against a running pir-server. Emits a JSON summary intended
+    /// to be checked into the repo as a baseline for diff later (e.g.
+    /// before/after PIR batch-query rollout).
+    BenchServer {
+        /// Server URL (e.g., https://pir.valargroup.org).
+        #[arg(long)]
+        url: String,
+
+        /// Path to nullifiers.bin (used to pick `nf_lo + 1` query values).
+        #[arg(long)]
+        nullifiers: PathBuf,
+
+        /// Number of measured iterations.
+        #[arg(long, default_value = "30")]
+        iterations: usize,
+
+        /// Number of warmup iterations whose timings are discarded.
+        #[arg(long, default_value = "3")]
+        warmup: usize,
+
+        /// Number of PIR proofs to fetch per iteration (K).
+        #[arg(long, default_value = "5")]
+        batch_size: usize,
+
+        /// How to issue the K queries within an iteration.
+        #[arg(long, default_value = "parallel")]
+        mode: BenchModeArg,
+
+        /// Deterministic RNG seed for query selection.
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Write JSON summary to this path.
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+
+        /// Free-form label used in the JSON output and stdout summary.
+        #[arg(long)]
+        label: Option<String>,
+    },
+
     /// Drive concurrent PIR traffic against a running server for load testing.
     Load {
         /// Server URL (e.g., http://localhost:3000).
@@ -139,6 +203,14 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    if std::env::var_os("RUST_LOG").is_none() {
+        std::env::set_var("RUST_LOG", "info");
+    }
+    env_logger::Builder::from_default_env()
+        .format_timestamp_millis()
+        .try_init()
+        .ok();
+
     let args = Args::parse();
 
     match args.command {
@@ -159,6 +231,34 @@ fn main() -> Result<()> {
         Command::VerifyYpir => run_verify_ypir(),
         Command::Bench { num_queries } => run_bench(num_queries),
         Command::BenchSplits { num_queries, config } => run_bench_splits(num_queries, config),
+        Command::BenchServer {
+            url,
+            nullifiers,
+            iterations,
+            warmup,
+            batch_size,
+            mode,
+            seed,
+            json_out,
+            label,
+        } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(bench_server::run(bench_server::BenchConfig {
+                url,
+                nullifiers_path: nullifiers,
+                iterations,
+                warmup,
+                batch_size: if matches!(mode, BenchModeArg::Single) {
+                    1
+                } else {
+                    batch_size
+                },
+                mode: mode.into(),
+                seed,
+                json_out,
+                label,
+            }))
+        }
         Command::Load {
             url,
             nullifiers,
