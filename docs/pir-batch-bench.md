@@ -713,20 +713,48 @@ Raw JSON:
 - [`baselines/backup-k5-batched-v0.0.26-parallel-k5.json`](baselines/backup-k5-batched-v0.0.26-parallel-k5.json)
 - [`baselines/primary-k5-batched-v0.0.26-parallel-k5.json`](baselines/primary-k5-batched-v0.0.26-parallel-k5.json)
 
-| Endpoint | Mode | Wall p50 | Wall p90 | Wall p99 | Tier 2 server p50† | Errors |
-|---|---|---:|---:|---:|---:|---:|
-| backup | K=5 batched `v0.0.26` + parallel-k5 | 8.76 s | 11.98 s | 13.83 s | **527 ms** | 0 / 150 |
-| primary | K=5 batched `v0.0.26` + parallel-k5 | 9.33 s | 11.21 s | 12.67 s | **350 ms** | 0 / 150 |
+Measured percentiles from the baseline JSON (same observer, `nullifiers.bin`,
+`--seed 42`, 30 iterations + 3 warmup, K=5 batched). Times in **ms** except
+delegation wall in **s** (harness `wall_clock_ms` ÷ 1000).
 
-†Per-query **mean** of `x-pir-server-compute-ms` over the five batch slots (harness
-output). With overlapping matvecs this drops well **below** the serial sum of
-five tier-2 matvec times (~4–5 s batch server time in the `v0.0.24` regime).
+**Delegation wall-clock** (`wall_clock_ms`):
 
-**Read:** server-side batch compute is much lower, but **delegation wall p50**
-stays near `v0.0.24` batched on this link because RTT and download still dominate.
-**Primary p99 wall** improves vs `v0.0.24` batched (12.67 s vs 17.53 s); **backup
-p99** in this single run is slightly higher than the `v0.0.24` batched row
-(13.83 s vs 11.44 s). Compare always on the same observer and iteration count.
+| Baseline | Endpoint | p50 (s) | p90 (s) | p99 (s) | errors |
+|---|---|---:|---:|---:|---:|
+| [`backup-k5-batched-v0.0.24.json`](baselines/backup-k5-batched-v0.0.24.json) | backup | 7.78 | 10.07 | 11.44 | 0 / 150 |
+| [`primary-k5-batched-v0.0.24.json`](baselines/primary-k5-batched-v0.0.24.json) | primary | 9.65 | 13.16 | 17.53 | 0 / 150 |
+| [`backup-k5-batched-v0.0.26-parallel-k5.json`](baselines/backup-k5-batched-v0.0.26-parallel-k5.json) | backup | 8.76 | 11.98 | 13.83 | 0 / 150 |
+| [`primary-k5-batched-v0.0.26-parallel-k5.json`](baselines/primary-k5-batched-v0.0.26-parallel-k5.json) | primary | 9.33 | 11.21 | 12.67 | 0 / 150 |
+
+**Tier 1** — RTT (`rtt_ms`) and response download (`download_from_server_ms`), p50 in **ms**:
+
+| Baseline | Endpoint | T1 RTT p50 | T1 download p50 |
+|---|---|---:|---:|
+| `v0.0.24` | backup | 683 | 212 |
+| `v0.0.24` | primary | 752 | 214 |
+| `v0.0.26` + parallel-k5 | backup | 596 | 223 |
+| `v0.0.26` + parallel-k5 | primary | 774 | 434 |
+
+**Tier 2** — RTT, download, and server-reported compute (`server_compute_ms`), p50 in **ms**:
+
+| Baseline | Endpoint | T2 RTT p50 | T2 download p50 | T2 server compute p50† |
+|---|---|---:|---:|---:|
+| `v0.0.24` | backup | 6 722 | 2 142 | 828 |
+| `v0.0.24` | primary | 8 237 | 3 215 | 945 |
+| `v0.0.26` + parallel-k5 | backup | 7 660 | 4 772 | 527 |
+| `v0.0.26` + parallel-k5 | primary | 8 040 | 5 661 | 350 |
+
+†`server_compute_ms` in the JSON is the **per-note share**: the server sends one
+`x-pir-server-compute-ms` for the **whole batch** online step; the client divides
+by K=5 so per-note samples sum back to the batch total. Implied **batch** online
+time ≈ **5 ×** this column (~4.1–4.7 s for `v0.0.24`, ~1.7–2.6 s for `v0.0.26`).
+
+**Read:** tier-2 **server** share drops with Rayon overlap, but tier-2 **RTT**
+and **download p50** often **rise** in these runs (one fat response stream vs
+the serial-batch profile on the same link), so delegation **wall p50** does not
+track server ms 1:1. **Primary wall p99** improves vs `v0.0.24`; **backup wall
+p99** is slightly worse in this pair of runs — compare on the same observer and
+iteration count only.
 
 ### Phase 1 gate verdict
 
