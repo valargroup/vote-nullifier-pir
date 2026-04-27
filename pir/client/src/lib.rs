@@ -36,13 +36,11 @@ pub struct TierTiming {
     pub upload_bytes: usize,
     /// Bytes of the uploaded query attributable to the SimplePIR query
     /// vector itself (`q.0` / `pqr` — the first arg to
-    /// [`pir_types::serialize_ypir_query`]). Phase 1 batching keeps this
-    /// per-query, so the projected upload is `pp + K * q`.
+    /// [`pir_types::serialize_ypir_query`]).
     pub upload_q_bytes: usize,
     /// Bytes of the uploaded query attributable to `pack_pub_params`
     /// (the second arg to [`pir_types::serialize_ypir_query`]). Identical
-    /// across queries that share a YPIR `client_seed`, which is the
-    /// bandwidth lever Phase 1 exploits.
+    /// across queries that share a YPIR `client_seed`.
     pub upload_pp_bytes: usize,
     /// Size of the downloaded encrypted response.
     pub download_bytes: usize,
@@ -184,7 +182,7 @@ impl PirClient {
     /// [`reqwest::Client`]. Used by `pir-test bench-server --mode single-tls`
     /// to force HTTP/1.1 with a single connection (no HTTP/2 stream
     /// multiplexing) so we can isolate per-query upload bandwidth from
-    /// HTTP/2 contention when projecting Phase 1 wins.
+    /// HTTP/2 stream contention.
     pub async fn connect_with_http(server_url: &str, http: reqwest::Client) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
@@ -438,9 +436,8 @@ impl PirClient {
         let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         // Serialize query. `query.0` is the SimplePIR query vector
-        // (per-query); `query.1` is `pack_pub_params` (depends only on the
-        // client's `client_seed`, so Phase 1 batching can ship it once per
-        // tier-batch instead of once per query).
+        // (per-query); `query.1` is `pack_pub_params` (depends only on
+        // the client's `client_seed`).
         let upload_q_bytes = query.0.as_slice().len() * std::mem::size_of::<u64>();
         let upload_pp_bytes = query.1.as_slice().len() * std::mem::size_of::<u64>();
         let payload = serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
@@ -1093,20 +1090,14 @@ mod tests {
         );
     }
 
-    /// Batch-level analog of [`tier2_query_sent_despite_tier1_decode_failure`].
+    /// Multi-note analog of [`tier2_query_sent_despite_tier1_decode_failure`].
     ///
-    /// Phase 0.5.5: this test is the failing-spec for Phase 1 batching. It
-    /// asserts the **batch granularity** of the error-oracle mitigation: when
-    /// `fetch_proofs(K=5)` is called and **every** tier 1 response is
+    /// Asserts the **K-note granularity** of the error-oracle mitigation:
+    /// when `fetch_proofs(K=5)` is called and **every** tier 1 response is
     /// corrupted, the server must still observe **K tier 1 POSTs and
-    /// K tier 2 POSTs**. A naive Phase 1 batch route that aborts the tier 2
-    /// dispatch the moment any tier 1 decode fails would re-introduce the
-    /// "K vs K' tier-2 requests" oracle the per-note mitigation closes.
-    ///
-    /// Today (per-note, fresh `s` per query) this passes by transitivity of
-    /// the per-note mitigation. After Phase 1 lands, the new
-    /// `/<tier>/batch_query` route must keep this green even though all K
-    /// queries within a tier-batch share one `client_seed`.
+    /// K tier 2 POSTs**. Aborting tier 2 dispatch the moment any tier 1
+    /// decode fails would re-introduce the "K vs K' tier-2 requests"
+    /// oracle the per-note mitigation closes.
     ///
     /// The 50 ms tier 2 delay is a coarse-grained guard against
     /// `try_join_all` cancellation: it ensures all five fetch_proof_inner

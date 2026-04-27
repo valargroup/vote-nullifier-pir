@@ -115,8 +115,7 @@ enum Command {
 
     /// Closed-loop, iteration-bounded latency / bandwidth / server-compute
     /// baseline against a running pir-server. Emits a JSON summary intended
-    /// to be checked into the repo as a baseline for diff later (e.g.
-    /// before/after PIR batch-query rollout).
+    /// to be checked into the repo as a baseline for diff later.
     BenchServer {
         /// Server URL (e.g., https://pir.valargroup.org).
         #[arg(long)]

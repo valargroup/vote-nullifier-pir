@@ -37,10 +37,10 @@ pub enum BenchMode {
     Single,
     /// Issue K queries one at a time, all riding the same single
     /// HTTP/1.1 TCP/TLS connection (no HTTP/2 multiplexing, no concurrent
-    /// streams). Used by Phase 0.5.3 to test whether today's K=5 parallel
-    /// upload p50 is HTTP/2-contention-bound (this mode would match it)
-    /// vs. per-query upload-bandwidth-bound (this mode would still pay
-    /// `K * upload_bytes` over the wire).
+    /// streams). Useful for isolating per-query upload bandwidth from
+    /// HTTP/2 stream contention: this mode pays `K * upload_bytes`
+    /// serialized over one TCP connection, so its upload p50 reflects
+    /// link bandwidth alone rather than concurrent-stream behavior.
     SingleTls,
 }
 
@@ -102,12 +102,10 @@ pub struct TierSummary {
     pub client_decode_ms: HistogramSummary,
     pub upload_bytes: BytesSummary,
     /// Per-query bytes attributable to the SimplePIR query vector
-    /// (`q.0` / `pqr`). Phase 1 keeps this per-query.
+    /// itself (`q.0` / `pqr`).
     pub upload_q_bytes: BytesSummary,
-    /// Per-query bytes attributable to `pack_pub_params`. Phase 1
-    /// ships this **once per tier-batch** under a shared `client_seed`,
-    /// so projected Phase 1 upload per batch is
-    /// `pp + K * q ≈ upload_pp_bytes.mean + K * upload_q_bytes.mean`.
+    /// Per-query bytes attributable to `pack_pub_params`. Identical
+    /// across queries that share a YPIR `client_seed`.
     pub upload_pp_bytes: BytesSummary,
     pub download_bytes: BytesSummary,
 }
