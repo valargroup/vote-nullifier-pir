@@ -40,7 +40,20 @@ fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
         }
     }
     std::fs::create_dir_all(tier_dir)?;
-    for name in ["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"] {
+    for name in [
+        "tier0.bin",
+        "tier1.bin",
+        "tier2.bin",
+        "pir_root.json",
+        // Precompute caches are derived from tier files; reset wipes them
+        // too. Eviction at write-sites covers the common case; this catches
+        // any cache files left behind from a prior sync that crashed before
+        // the next eviction could fire.
+        "tier1.precompute",
+        "tier1.precompute.tmp",
+        "tier2.precompute",
+        "tier2.precompute.tmp",
+    ] {
         let p = tier_dir.join(name);
         if p.exists() {
             std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;

@@ -424,6 +424,30 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
                 to.display(),
             )
         })?;
+        // Any tier{N}.bin replacement invalidates the corresponding
+        // tier{N}.precompute cache. Best-effort eviction here keeps stale
+        // cache files from sitting on disk between snapshot rotation and the
+        // next `serve` restart. The next `serve` would reject the stale
+        // cache via tier-source-hash mismatch anyway, but eviction frees the
+        // disk sooner. NotFound is the desired post-condition either way.
+        if name.ends_with(".bin") {
+            let cache = to.with_extension("precompute");
+            let tmp_cache = cache.with_extension("precompute.tmp");
+            for cache_path in [&cache, &tmp_cache] {
+                match std::fs::remove_file(cache_path) {
+                    Ok(()) => tracing::info!(
+                        cache = %cache_path.display(),
+                        "evicted stale precompute cache after bootstrap rename"
+                    ),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => tracing::warn!(
+                        cache = %cache_path.display(),
+                        error = %e,
+                        "failed to evict stale precompute cache (next serve will reject via hash)"
+                    ),
+                }
+            }
+        }
     }
     Ok(())
 }

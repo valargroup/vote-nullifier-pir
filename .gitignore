@@ -7,3 +7,4 @@ nullifiers.index
 pir-data/
 rust-toolchain.toml
 .vscode/
+.claude/
