@@ -26,13 +26,12 @@ use pir_client::{NoteTiming, PirClient, TierTiming};
 
 #[derive(Clone, Copy, Debug)]
 pub enum BenchMode {
-    /// Issue all K queries concurrently with `futures::join_all` against the
-    /// **legacy single-query** endpoints (`/tier{1,2}/query`). Mirrors the
-    /// pre-batching wire shape; useful as a baseline for diffs against the
-    /// batched mode.
+    /// Issue all K queries concurrently with `futures::join_all` (mirrors what
+    /// `PirClient::fetch_proofs` does today; `try_join_all` is replaced with
+    /// `join_all` so a single per-note error doesn't drop timings for the
+    /// remaining queries).
     Parallel,
-    /// Issue K queries one at a time inside a single iteration against the
-    /// legacy single-query endpoints.
+    /// Issue K queries one at a time inside a single iteration.
     Sequential,
     /// `batch_size` is forced to 1 — same flow as `Sequential` with K=1.
     Single,
@@ -43,15 +42,6 @@ pub enum BenchMode {
     /// vs. per-query upload-bandwidth-bound (this mode would still pay
     /// `K * upload_bytes` over the wire).
     SingleTls,
-    /// Ship the K queries as one **HTTP batch** per tier
-    /// (`/tier{1,2}/batch_query`) under a single shared `client_seed` and
-    /// `pack_pub_params`. The per-note `NoteTiming` records returned by
-    /// `PirClient::fetch_proofs_with_timing` are projections of one
-    /// `BatchTierTiming` (shared client gen, upload, and server stages
-    /// divided by K; per-query download bytes / decode time / RTT
-    /// retained). Use this mode to diff against the legacy
-    /// `parallel`/`sequential` baselines.
-    Batched,
 }
 
 impl BenchMode {
@@ -61,7 +51,6 @@ impl BenchMode {
             BenchMode::Sequential => "sequential",
             BenchMode::Single => "single",
             BenchMode::SingleTls => "single-tls",
-            BenchMode::Batched => "batched",
         }
     }
 }
@@ -113,11 +102,11 @@ pub struct TierSummary {
     pub client_decode_ms: HistogramSummary,
     pub upload_bytes: BytesSummary,
     /// Per-query bytes attributable to the SimplePIR query vector
-    /// (`q.0` / `pqr`). The batched protocol keeps this per-query.
+    /// (`q.0` / `pqr`). Phase 1 keeps this per-query.
     pub upload_q_bytes: BytesSummary,
-    /// Per-query bytes attributable to `pack_pub_params`. The batched
-    /// protocol ships this **once per tier-batch** under a shared
-    /// `client_seed`, so the projected upload per batch is
+    /// Per-query bytes attributable to `pack_pub_params`. Phase 1
+    /// ships this **once per tier-batch** under a shared `client_seed`,
+    /// so projected Phase 1 upload per batch is
     /// `pp + K * q ≈ upload_pp_bytes.mean + K * upload_q_bytes.mean`.
     pub upload_pp_bytes: BytesSummary,
     pub download_bytes: BytesSummary,
@@ -500,22 +489,6 @@ async fn run_iteration(
                 out.push(res);
             }
             out
-        }
-        BenchMode::Batched => {
-            // Single batched fetch — one HTTP POST per tier carrying all K
-            // queries. We propagate per-note errors as `Err` so the
-            // aggregator can still classify them; an HTTP-level batch
-            // failure becomes K identical errors so success/error counts
-            // remain in K-units (matching the other modes).
-            match client.fetch_proofs_with_timing(test_values).await {
-                Ok(pairs) => pairs.into_iter().map(|(_p, t)| Ok(t)).collect(),
-                Err(e) => {
-                    let msg = format!("{e:#}");
-                    (0..test_values.len())
-                        .map(|_| Err(anyhow::anyhow!("{msg}")))
-                        .collect()
-                }
-            }
         }
     }
 }
