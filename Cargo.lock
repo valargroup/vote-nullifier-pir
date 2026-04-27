@@ -2225,7 +2225,6 @@ dependencies = [
  "ff",
  "pasta_curves",
  "pir-types",
- "rayon",
  "serde",
  "serde_json",
  "tokio",

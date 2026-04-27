@@ -26,61 +26,6 @@ pub use pir_types::{
 const U64_BYTES: usize = std::mem::size_of::<u64>();
 const AVX512_ALIGN: usize = 64;
 
-/// Environment variable controlling server-side batch SimplePIR scheduling.
-///
-/// - Unset, empty, or `serial` (case-insensitive): run K matvecs strictly
-///   in query order (default).
-/// - `parallel-k5` (case-insensitive): when this crate is built with the
-///   `rayon` feature and the batch has `K == 5`, run up to five concurrent
-///   matvecs inside one batch request while preserving response order.
-pub const PIR_BATCH_COMPUTE_MODE_ENV: &str = "PIR_BATCH_COMPUTE_MODE";
-
-/// Whether `parallel-k5` batch scheduling is active for this process.
-///
-/// Requires both the `rayon` crate feature and
-/// `PIR_BATCH_COMPUTE_MODE=parallel-k5`.
-pub fn pir_batch_parallel_k5_env_active() -> bool {
-    batch_parallel_k5_enabled()
-}
-
-/// Short label for operator logs / health output.
-pub fn pir_batch_compute_mode_label() -> &'static str {
-    if !cfg!(feature = "rayon") {
-        return "serial (build without rayon)";
-    }
-    match std::env::var(PIR_BATCH_COMPUTE_MODE_ENV) {
-        Ok(v) => {
-            let t = v.trim();
-            if t.eq_ignore_ascii_case("parallel-k5") {
-                "parallel-k5"
-            } else if t.is_empty() || t.eq_ignore_ascii_case("serial") {
-                "serial"
-            } else {
-                "serial (unrecognized PIR_BATCH_COMPUTE_MODE; using serial)"
-            }
-        }
-        Err(_) => "serial (default)",
-    }
-}
-
-/// One-line status for startup logs (`nf-server serve`).
-pub fn pir_batch_compute_mode_startup_message() -> String {
-    format!(
-        "PIR batch matvec: {} (env {} — set to `parallel-k5` for K=5 Rayon overlap when built with `--features rayon`)",
-        pir_batch_compute_mode_label(),
-        PIR_BATCH_COMPUTE_MODE_ENV
-    )
-}
-
-fn batch_parallel_k5_enabled() -> bool {
-    if !cfg!(feature = "rayon") {
-        return false;
-    }
-    std::env::var(PIR_BATCH_COMPUTE_MODE_ENV)
-        .map(|v| v.trim().eq_ignore_ascii_case("parallel-k5"))
-        .unwrap_or(false)
-}
-
 /// 64-byte aligned u64 buffer for AVX-512 operations.
 struct Aligned64 {
     ptr: *mut u64,
@@ -114,13 +59,6 @@ impl Drop for Aligned64 {
         unsafe { dealloc(self.ptr as *mut u8, self.layout) }
     }
 }
-
-// `Aligned64` uses a raw pointer for an owned heap allocation. Rayon batch
-// compute only performs concurrent *read-only* `as_slice()` access at disjoint
-// indices; the owning `TierServer::answer_batch_query` does not mutate these
-// buffers until after the parallel section completes.
-unsafe impl Send for Aligned64 {}
-unsafe impl Sync for Aligned64 {}
 
 /// Tier 1 YPIR scenario (padded to YPIR minimum row count).
 pub fn tier1_scenario() -> YpirScenario {
@@ -342,52 +280,6 @@ impl<'a> TierServer<'a> {
         })
     }
 
-    /// Run K SimplePIR online computations in strict query order.
-    fn compute_batch_responses_serial(
-        &self,
-        pqrs_aligned: &[Aligned64],
-        pp_aligned: &Aligned64,
-    ) -> Vec<Vec<u8>> {
-        let pp_slice = pp_aligned.as_slice();
-        pqrs_aligned
-            .iter()
-            .map(|q| {
-                self.server.perform_online_computation_simplepir(
-                    q.as_slice(),
-                    &self.offline,
-                    &[pp_slice],
-                    None,
-                )
-            })
-            .collect()
-    }
-
-    /// Same as [`Self::compute_batch_responses_serial`] but overlaps the K=5
-    /// matvecs on Rayon when enabled via [`PIR_BATCH_COMPUTE_MODE_ENV`].
-    #[cfg(feature = "rayon")]
-    fn compute_batch_responses_parallel_k5(
-        &self,
-        pqrs_aligned: &[Aligned64],
-        pp_aligned: &Aligned64,
-    ) -> Vec<Vec<u8>> {
-        use rayon::prelude::*;
-        debug_assert_eq!(pqrs_aligned.len(), 5);
-        let pp_slice = pp_aligned.as_slice();
-        let offline = &*self.offline;
-        let server = &*self.server;
-        (0..pqrs_aligned.len())
-            .into_par_iter()
-            .map(|i| {
-                server.perform_online_computation_simplepir(
-                    pqrs_aligned[i].as_slice(),
-                    offline,
-                    &[pp_slice],
-                    None,
-                )
-            })
-            .collect()
-    }
-
     /// Answer K YPIR+SP queries served as one HTTP batch.
     ///
     /// Wire format (see [`pir_types::serialize_ypir_batch_query`]):
@@ -395,13 +287,11 @@ impl<'a> TierServer<'a> {
     /// All K `q.0` vectors share one `pack_pub_params` (`pp`) — that is the
     /// upload bandwidth lever the batching protocol exploits.
     ///
-    /// Server-side compute is *additive*: we call
-    /// [`YServer::perform_online_computation_simplepir`] once per `q.0`,
-    /// sharing the same `pp`. When `K == 5`, this crate is built with the
-    /// `rayon` feature, and `PIR_BATCH_COMPUTE_MODE=parallel-k5`, those five
-    /// calls run concurrently while preserving response order. Otherwise the
-    /// serial loop is used. A future iteration may replace this with a single
-    /// K-wide kernel call (Phase 2).
+    /// Server-side compute here is deliberately *additive*: we call
+    /// [`YServer::perform_online_computation_simplepir`] K times in a loop,
+    /// once per `q.0`, sharing the same `pp`. There is no batched
+    /// matrix-multiply yet — a follow-up iteration will replace this loop
+    /// with a single K-wide kernel call.
     pub fn answer_batch_query(&self, query_bytes: &[u8]) -> Result<BatchQueryAnswer> {
         let total_start = Instant::now();
 
@@ -445,20 +335,16 @@ impl<'a> TierServer<'a> {
 
         // Per-query online computation, sharing the same pack_pub_params.
         let compute_start = Instant::now();
-        let responses = {
-            #[cfg(feature = "rayon")]
-            {
-                if k == 5 && batch_parallel_k5_enabled() {
-                    self.compute_batch_responses_parallel_k5(&pqrs_aligned, &pp_aligned)
-                } else {
-                    self.compute_batch_responses_serial(&pqrs_aligned, &pp_aligned)
-                }
-            }
-            #[cfg(not(feature = "rayon"))]
-            {
-                self.compute_batch_responses_serial(&pqrs_aligned, &pp_aligned)
-            }
-        };
+        let mut responses: Vec<Vec<u8>> = Vec::with_capacity(k);
+        for q in &pqrs_aligned {
+            let resp = self.server.perform_online_computation_simplepir(
+                q.as_slice(),
+                &self.offline,
+                &[pp_aligned.as_slice()],
+                None,
+            );
+            responses.push(resp);
+        }
         let online_compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
 
         // YPIR responses are deterministic-length for a given scenario;
@@ -879,13 +765,6 @@ mod tests {
     use super::*;
     use ypir::client::YPIRClient;
 
-    #[cfg(feature = "rayon")]
-    use std::sync::Mutex;
-
-    /// Serialize tests that mutate `PIR_BATCH_COMPUTE_MODE` (global process env).
-    #[cfg(feature = "rayon")]
-    static BATCH_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
     /// Smallest valid YPIR SimplePIR scenario.
     /// `params_for_scenario_simplepir` asserts `item_size_bits >= 2048 * 14`.
     /// Picking the minimum keeps the offline precomputation fast (~a few
@@ -1076,81 +955,5 @@ mod tests {
         let decoded =
             ypir_client.decode_response_simplepir(seed, chunks[0].as_slice());
         assert!(decoded.len() >= TEST_ROW_BYTES);
-    }
-
-    /// `PIR_BATCH_COMPUTE_MODE=parallel-k5` must yield the same batch wire bytes
-    /// as the default serial path for K=5 (order-preserving, deterministic server).
-    #[test]
-    #[cfg(feature = "rayon")]
-    fn batch_k5_parallel_env_wire_matches_serial_default() {
-        let _g = BATCH_ENV_TEST_LOCK.lock().expect("env test lock poisoned");
-        let (state, ypir_client, _db) = setup_test_server();
-        let server = state.server();
-
-        let k = 5usize;
-        let target_rows: Vec<usize> =
-            (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&target_rows);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
-
-        std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
-        let serial = server.answer_batch_query(&payload).expect("serial batch");
-
-        std::env::set_var(PIR_BATCH_COMPUTE_MODE_ENV, "parallel-k5");
-        let parallel = server.answer_batch_query(&payload).expect("parallel batch");
-        std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
-
-        assert_eq!(parallel.response, serial.response);
-        assert_eq!(parallel.timing.k, serial.timing.k);
-    }
-
-    /// K≠5 must ignore `parallel-k5` and stay on the serial path (same bytes as default).
-    #[test]
-    #[cfg(feature = "rayon")]
-    fn batch_k3_parallel_env_matches_default_serial_path() {
-        let _g = BATCH_ENV_TEST_LOCK.lock().expect("env test lock poisoned");
-        let (state, ypir_client, _db) = setup_test_server();
-        let server = state.server();
-
-        let k = 3usize;
-        let target_rows: Vec<usize> =
-            (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&target_rows);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
-
-        std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
-        let default = server.answer_batch_query(&payload).expect("default batch");
-
-        std::env::set_var(PIR_BATCH_COMPUTE_MODE_ENV, "parallel-k5");
-        let with_env = server.answer_batch_query(&payload).expect("with parallel-k5 env");
-        std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
-
-        assert_eq!(with_env.response, default.response);
-    }
-
-    #[test]
-    #[cfg(feature = "rayon")]
-    fn batch_k16_parallel_env_matches_default_serial_path() {
-        let _g = BATCH_ENV_TEST_LOCK.lock().expect("env test lock poisoned");
-        let (state, ypir_client, _db) = setup_test_server();
-        let server = state.server();
-
-        let k = 16usize;
-        let target_rows: Vec<usize> =
-            (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&target_rows);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
-
-        std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
-        let default = server.answer_batch_query(&payload).expect("default batch");
-
-        std::env::set_var(PIR_BATCH_COMPUTE_MODE_ENV, "parallel-k5");
-        let with_env = server.answer_batch_query(&payload).expect("with parallel-k5 env");
-        std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
-
-        assert_eq!(with_env.response, default.response);
     }
 }
