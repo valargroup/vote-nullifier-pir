@@ -10,7 +10,7 @@ rayon = ["dep:rayon", "ypir/rayon"]
 
 [dependencies]
 pir-types  = { path = "../types" }
-ypir = { version = "0.2", package = "valar-ypir", default-features = false, features = ["server"] }
+ypir = { version = "0.1.4", package = "valar-ypir", default-features = false, features = ["server"] }
 rayon = { version = "1", optional = true }
 spiral-rs = { version = "0.5", package = "valar-spiral-rs" }
 axum = "0.7"

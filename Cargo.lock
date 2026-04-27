@@ -3896,8 +3896,9 @@ dependencies = [
 
 [[package]]
 name = "valar-ypir"
-version = "0.2.0"
-source = "git+https://github.com/valargroup/ypir?branch=adam%2Fzca-253-precompute-dump#7bfd2cb1a5cf614a0f96c7f1ada49bd992fbaf03"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3d40a4fa4d8064798a835891fa9c5ebc872c951867e8a6f8a2c50b5da1eaf9d"
 dependencies = [
  "cc",
  "clap",

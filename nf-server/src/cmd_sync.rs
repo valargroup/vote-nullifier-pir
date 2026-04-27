@@ -50,7 +50,9 @@ fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
         // any cache files left behind from a prior sync that crashed before
         // the next eviction could fire.
         "tier1.precompute",
+        "tier1.precompute.tmp",
         "tier2.precompute",
+        "tier2.precompute.tmp",
     ] {
         let p = tier_dir.join(name);
         if p.exists() {

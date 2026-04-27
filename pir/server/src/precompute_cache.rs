@@ -429,65 +429,86 @@ pub fn write_cache(
 ) -> Result<()> {
     let tmp_path = cache_path.with_extension("precompute.tmp");
 
-    // Open the tmp file with read+write (we'll seek back to rewrite the
-    // header after streaming the payload).
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&tmp_path)
-        .with_context(|| format!("create {}", tmp_path.display()))?;
+    let write_result = (|| -> Result<()> {
+        // Open the tmp file with read+write (we'll seek back to rewrite the
+        // header after streaming the payload).
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .with_context(|| format!("create {}", tmp_path.display()))?;
 
-    // Write a placeholder header (zero hash, zero length). Header is
-    // fixed-size so we can seek back to offset 0 after the payload is
-    // written and overwrite with the real values.
-    let placeholder = CacheHeader {
-        schema_version: SCHEMA_V2,
-        target_hash: target_hash(),
-        scenario_hash: hash_scenario(scenario),
-        tier_source_hash: *tier_source_hash,
-        payload_hash: [0u8; 32],
-        payload_len: 0,
-    };
+        // Write a placeholder header (zero hash, zero length). Header is
+        // fixed-size so we can seek back to offset 0 after the payload is
+        // written and overwrite with the real values.
+        let placeholder = CacheHeader {
+            schema_version: SCHEMA_V2,
+            target_hash: target_hash(),
+            scenario_hash: hash_scenario(scenario),
+            tier_source_hash: *tier_source_hash,
+            payload_hash: [0u8; 32],
+            payload_len: 0,
+        };
 
-    // Stream payload through BufWriter (1 MiB) → HashingWriter → underlying
-    // file. The BufWriter amortizes the upstream's small writes (length
-    // prefixes, dim u32s) into kernel-friendly chunks; the bulk u64-slice
-    // writes go through it without re-buffering. The HashingWriter computes
-    // the payload hash and counts bytes as they pass.
-    let (payload_hash, payload_len, mut file) = {
-        let mut bw = BufWriter::with_capacity(1 << 20, file);
-        placeholder.write_to(&mut bw)?;
-        let mut hw = HashingWriter::new(&mut bw);
-        server.dump_into(&mut hw)?;
-        offline.dump_into(&mut hw)?;
-        let (h, n) = hw.finalize();
-        bw.flush()?;
-        let inner = bw
-            .into_inner()
-            .map_err(|e| anyhow::anyhow!("flush BufWriter: {e}"))?;
-        (h, n, inner)
-    };
+        // Stream payload through BufWriter (1 MiB) → HashingWriter → underlying
+        // file. The BufWriter amortizes the upstream's small writes (length
+        // prefixes, dim u32s) into kernel-friendly chunks; the bulk u64-slice
+        // writes go through it without re-buffering. The HashingWriter computes
+        // the payload hash and counts bytes as they pass.
+        let (payload_hash, payload_len, mut file) = {
+            let mut bw = BufWriter::with_capacity(1 << 20, file);
+            placeholder.write_to(&mut bw)?;
+            let mut hw = HashingWriter::new(&mut bw);
+            server.dump_into(&mut hw)?;
+            offline.dump_into(&mut hw)?;
+            let (h, n) = hw.finalize();
+            bw.flush()?;
+            let inner = bw
+                .into_inner()
+                .map_err(|e| anyhow::anyhow!("flush BufWriter: {e}"))?;
+            (h, n, inner)
+        };
 
-    // Seek back to offset 0 and rewrite the header with the real values.
-    file.seek(SeekFrom::Start(0))
-        .with_context(|| format!("seek to header in {}", tmp_path.display()))?;
-    let final_header = CacheHeader {
-        schema_version: SCHEMA_V2,
-        target_hash: target_hash(),
-        scenario_hash: hash_scenario(scenario),
-        tier_source_hash: *tier_source_hash,
-        payload_hash,
-        payload_len,
-    };
-    final_header.write_to(&mut file)?;
-    file.sync_all()
-        .with_context(|| format!("fsync {}", tmp_path.display()))?;
-    drop(file);
+        // Seek back to offset 0 and rewrite the header with the real values.
+        file.seek(SeekFrom::Start(0))
+            .with_context(|| format!("seek to header in {}", tmp_path.display()))?;
+        let final_header = CacheHeader {
+            schema_version: SCHEMA_V2,
+            target_hash: target_hash(),
+            scenario_hash: hash_scenario(scenario),
+            tier_source_hash: *tier_source_hash,
+            payload_hash,
+            payload_len,
+        };
+        final_header.write_to(&mut file)?;
+        file.sync_all()
+            .with_context(|| format!("fsync {}", tmp_path.display()))?;
+        drop(file);
 
-    std::fs::rename(&tmp_path, cache_path)
-        .with_context(|| format!("rename {} -> {}", tmp_path.display(), cache_path.display()))?;
+        std::fs::rename(&tmp_path, cache_path).with_context(|| {
+            format!("rename {} -> {}", tmp_path.display(), cache_path.display())
+        })?;
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        match std::fs::remove_file(&tmp_path) {
+            Ok(()) => debug!(
+                cache = %tmp_path.display(),
+                "removed incomplete precompute cache temp file after failed write"
+            ),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => warn!(
+                cache = %tmp_path.display(),
+                error = %e,
+                "failed to remove incomplete precompute cache temp file"
+            ),
+        }
+        return Err(err);
+    }
+
     Ok(())
 }
 
@@ -497,23 +518,26 @@ pub fn write_cache(
 /// the desired post-condition either way.
 pub fn evict_cache_for_tier(tier_path: &Path) {
     let cache_path = cache_path_for_tier(tier_path);
-    match std::fs::remove_file(&cache_path) {
-        Ok(()) => {
-            info!(
-                cache = %cache_path.display(),
-                "evicted stale precompute cache after tier rewrite"
-            );
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            // Normal: cache may not exist on first sync or if previously evicted.
-            debug!(cache = %cache_path.display(), "no precompute cache to evict");
-        }
-        Err(e) => {
-            warn!(
-                cache = %cache_path.display(),
-                error = %e,
-                "failed to evict stale precompute cache; next serve will reject it via hash"
-            );
+    let tmp_path = cache_path.with_extension("precompute.tmp");
+    for path in [&cache_path, &tmp_path] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                info!(
+                    cache = %path.display(),
+                    "evicted stale precompute cache after tier rewrite"
+                );
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // Normal: cache may not exist on first sync or if previously evicted.
+                debug!(cache = %path.display(), "no precompute cache to evict");
+            }
+            Err(e) => {
+                warn!(
+                    cache = %path.display(),
+                    error = %e,
+                    "failed to evict stale precompute cache; next serve will reject it via hash"
+                );
+            }
         }
     }
 }
@@ -618,10 +642,14 @@ mod test {
         let dir = tmpdir();
         let tier = dir.path().join("tier1.bin");
         let cache = cache_path_for_tier(&tier);
+        let tmp_cache = cache.with_extension("precompute.tmp");
         std::fs::write(&cache, b"dummy cache").unwrap();
+        std::fs::write(&tmp_cache, b"partial dummy cache").unwrap();
         assert!(cache.exists());
+        assert!(tmp_cache.exists());
         evict_cache_for_tier(&tier);
         assert!(!cache.exists());
+        assert!(!tmp_cache.exists());
     }
 
     #[test]
@@ -817,6 +845,38 @@ mod test {
             CacheLoadError::Io(ref e) if e.kind() == std::io::ErrorKind::InvalidData => {}
             other => panic!("expected Io(InvalidData) for trailing bytes, got {other:?}"),
         }
+    }
+
+    /// If the streaming write fails after creating `tierN.precompute.tmp`,
+    /// the partial temp file must be removed so ENOSPC failures don't leave
+    /// behind multi-GB garbage that blocks the next retry.
+    #[test]
+    fn write_cache_removes_tmp_after_failure() {
+        let dir = tmpdir();
+        let fix = build_fixture(dir.path());
+        let cache_target_dir = dir.path().join("cache_target_dir");
+        std::fs::create_dir(&cache_target_dir).expect("create directory target");
+        let tmp_path = cache_target_dir.with_extension("precompute.tmp");
+
+        let err = write_cache(
+            &cache_target_dir,
+            &fix.tier_source_hash,
+            &fix.scenario,
+            &fix.server,
+            &fix.offline,
+        )
+        .err()
+        .expect("write_cache should fail when final target is a directory");
+
+        assert!(
+            err.to_string().contains("rename"),
+            "expected rename failure, got {err:#}"
+        );
+        assert!(
+            !tmp_path.exists(),
+            "failed write left temp cache behind at {}",
+            tmp_path.display()
+        );
     }
 
     /// Modifying the underlying tier file invalidates the cache via the

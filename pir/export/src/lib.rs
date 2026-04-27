@@ -351,14 +351,17 @@ pub fn build_and_export_with_progress(
 /// stale cache via tier-source-hash mismatch anyway).
 fn evict_stale_precompute(tier_path: &std::path::Path) {
     let cache_path = tier_path.with_extension("precompute");
-    match std::fs::remove_file(&cache_path) {
-        Ok(()) => info!(cache = %cache_path.display(), "evicted stale precompute cache"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!(
-            cache = %cache_path.display(),
-            error = %e,
-            "failed to evict stale precompute cache (next serve will reject via hash)"
-        ),
+    let tmp_path = cache_path.with_extension("precompute.tmp");
+    for path in [&cache_path, &tmp_path] {
+        match std::fs::remove_file(path) {
+            Ok(()) => info!(cache = %path.display(), "evicted stale precompute cache"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                cache = %path.display(),
+                error = %e,
+                "failed to evict stale precompute cache (next serve will reject via hash)"
+            ),
+        }
     }
 }
 

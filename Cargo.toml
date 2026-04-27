@@ -14,13 +14,6 @@ members = [
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.1.1" }
 
-# Pre-publish: point valar-ypir at the upstream PR branch so CI can clone
-# and build against it before `valar-ypir 0.2.0` ships to crates.io.
-# REMOVE THIS BLOCK before merging; bump the consumer constraints to
-# "0.2" once the registry version is published.
-[patch.crates-io]
-valar-ypir = { git = "https://github.com/valargroup/ypir", branch = "adam/zca-253-precompute-dump" }
-
 [profile.release]
 lto = "fat"
 codegen-units = 1
