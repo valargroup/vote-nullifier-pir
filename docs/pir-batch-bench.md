@@ -330,11 +330,9 @@ Why neither A nor B alone works:
   drive Path B from outside the `valar-ypir` crate even if the
   recompute-and-pray approach were acceptable.
 
-#### What landed
+#### What landed (superseded)
 
-A new batch path was added alongside the existing single-query path.
-The single-query path's public API and wire-byte behavior are
-unchanged. The implementation lives in
+The first batch path added a shared-secret API in
 [`ypir/src/client.rs`](../../ypir/src/client.rs):
 
 - `pub type YPIRSimpleBatchQuery = (Vec<AlignedMemory64>, AlignedMemory64);`
@@ -377,12 +375,14 @@ Plus 39 pre-existing `client::sp_decode_pipeline_tests::*` and
 `client::malformed_response_tests::*` tests still pass, confirming the
 hoist did not regress the legacy single-query path.
 
-Risk register update: the cross-repo patch to `valar-ypir` is
-**additive**, not a refactor. No legacy callers (including the
-existing `pir-client::ypir_query` flow) need to change. Downstream
-consumers — `pir-types::serialize_ypir_batch_query`, the
-`/tier{1,2}/batch_query` server route, and `pir-client::client_batch_query`
-— can be designed against this stable API surface in follow-up PRs.
+This API was later found unsafe. With deterministic public randomness, two
+queries under the same Regev secret let the server subtract ciphertexts and
+cancel the `a * s` term, leaving a sparse plaintext difference plus error. The
+current salvage path keeps the batch HTTP route but moves batching back into
+`vote-nullifier-pir`: `pir-client` calls the existing public
+`YPIRClient::generate_query_simplepir` API K times and the wire payload carries
+K independent `(q_k, pp_k)` pairs. The projected shared-`pp` bandwidth saving in
+this section is therefore historical and no longer a merge criterion.
 
 ### 0.5.3 — single-TLS bench (HTTP/2 contention vs upload bandwidth)
 
@@ -517,14 +517,17 @@ production.
 With the byte split and contention measurements above, the Phase 1
 projected upload table tightens from inferred to measured:
 
-| Tier | `pp` once | K × `q` | Phase 1 batch upload | K=5 today | Reduction |
+| Tier | `pp` once | K × `q` | Historical shared-`pp` upload | K=5 today | Reduction |
 |---|---:|---:|---:|---:|---:|
 | Tier 1 | 528.0 KB | 5 × 16.0 KB =  80 KB | **608 KB**  | 2720 KB | **−77.6 %** |
 | Tier 2 | 528.0 KB | 5 × 256.0 KB = 1280 KB | **1808 KB** | 3920 KB | **−53.9 %** |
 | **Total** | — | — | **2416 KB** | **6640 KB** | **−63.6 %** |
 
-Total bytes (upload + download) per delegation: today **8.44 MB**,
-Phase 1 projected **4.22 MB** (downloads unchanged at 1.80 MB).
+Total bytes (upload + download) per delegation under the historical shared-`pp`
+design: today **8.44 MB**, Phase 1 projected **4.22 MB** (downloads unchanged at
+1.80 MB). This projection is retracted for the fixed design: upload returns to
+roughly today's K independent `pp_k` cost while the single HTTP request per tier
+is preserved.
 
 **Phase 1 wall-clock projection (revised, single-tls-aware)**:
 
@@ -532,8 +535,8 @@ Phase 1 projected **4.22 MB** (downloads unchanged at 1.80 MB).
   Rayon parallelism within one request handler: wall-clock matches
   today's K=5 parallel **plus** removes the backup-uplink upload
   contention spike (754 ms → ~225 ms tier-2 upload p50 on backup).
-  Expected p50 wall delta: **−400 to −800 ms on backup, −0 to
-  −200 ms on primary.** Bandwidth still drops by 4.2 MB.
+  Expected p50 wall delta after the secret-reuse fix: **−400 to −800 ms on
+  backup, −0 to −200 ms on primary.** The bandwidth drop no longer applies.
 - *If* the Phase 1 server route does its K matvecs **serially**:
   per-query tier-2 server compute returns to single-query (~919 ms
   primary, ~833 ms backup), but K matvecs run in series, so the
@@ -542,8 +545,9 @@ Phase 1 projected **4.22 MB** (downloads unchanged at 1.80 MB).
   case wins on bandwidth only; it would gate Phase 2 to ship
   immediately after to recover wall.
 
-Either way, the **upload bandwidth gate** is unconditionally winnable
-and is the metric on which Phase 1 is principally judged.
+After the secret-reuse fix, Phase 1 is judged on the HTTP collapse and
+server-compute shape, not on upload bandwidth. The upload bandwidth gate is
+retracted because each slot now carries its own `pp_k`.
 
 ## Phase 1 post-release benchmark (`v0.0.24`)
 
@@ -554,6 +558,11 @@ published the GitHub Release, distributed the Linux binary to Spaces, and
 deployed backup then primary with readiness checks passing on both hosts.
 Both `/root` endpoints advertised `supports_batch_query: true` before the
 benchmarks below were run.
+
+Security note: `v0.0.24` used the now-retracted shared-secret/shared-`pp` batch
+format. The fixed implementation keeps the `/tier{1,2}/batch_query` route but
+sends K independent `(q_k, pp_k)` slots, so the bandwidth numbers below are
+historical rather than targets for the fixed rollout.
 
 Raw JSON outputs:
 
@@ -606,10 +615,10 @@ does not preserve the old K=5 parallel request shape's server-side
 concurrency. Wall-clock therefore regresses until Phase 2 swaps in the
 K-wide server kernel.
 
-### Phase 1 bandwidth
+### Phase 1 bandwidth (historical shared-`pp` release)
 
-The harness reports per-query projected bytes for batched mode. Multiplying
-by K=5 gives the actual per-delegation batch upload/download:
+The harness reports per-query projected bytes for the `v0.0.24` batched mode.
+Multiplying by K=5 gives that release's per-delegation batch upload/download:
 
 | Endpoint | Tier | Upload per K=5 batch | Gate | Download per K=5 batch |
 |---|---|---:|---:|---:|
@@ -618,9 +627,10 @@ by K=5 gives the actual per-delegation batch upload/download:
 | backup | Tier 1 | **608.0 KB** | ≤ 700 KB | 120.0 KB |
 | backup | Tier 2 | **1808.0 KB** | ≤ 1.85 MB | 1680.0 KB |
 
-Combined upload is **2416 KB** per K=5 delegation, down from **6640 KB**
+Combined upload was **2416 KB** per K=5 delegation, down from **6640 KB**
 in the K=5 parallel baseline: **−63.6 %**, exactly matching the §0.5.6
-projection. Download remains **1.80 MB**, as expected.
+projection. This saving came from shared `pp` and is intentionally removed by
+the fixed design. Download remains **1.80 MB**, as expected.
 
 ### Phase 1 server compute
 
@@ -635,7 +645,9 @@ matvecs are serialized within the batched route.
 
 ### Phase 1.1 — Server-side K=5 parallel matvecs (env-gated)
 
-Phase 1.1 keeps the Phase 1 wire format, routes, and client decode **unchanged**.
+Phase 1.1 was measured against the historical shared-`pp` Phase 1 wire format.
+The secret-reuse fix changes the request body to K independent `(q_k, pp_k)`
+slots, but the route, response format, and server scheduling knob stay the same.
 Inside [`pir/server/src/lib.rs`](../pir/server/src/lib.rs),
 `TierServer::answer_batch_query` can overlap the five SimplePIR online
 computations on Rayon when **all** of the following hold:

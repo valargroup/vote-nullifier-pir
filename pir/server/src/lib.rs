@@ -346,16 +346,16 @@ impl<'a> TierServer<'a> {
     fn compute_batch_responses_serial(
         &self,
         pqrs_aligned: &[Aligned64],
-        pp_aligned: &Aligned64,
+        pps_aligned: &[Aligned64],
     ) -> Vec<Vec<u8>> {
-        let pp_slice = pp_aligned.as_slice();
         pqrs_aligned
             .iter()
-            .map(|q| {
+            .zip(pps_aligned.iter())
+            .map(|(q, pp)| {
                 self.server.perform_online_computation_simplepir(
                     q.as_slice(),
                     &self.offline,
-                    &[pp_slice],
+                    &[pp.as_slice()],
                     None,
                 )
             })
@@ -368,11 +368,11 @@ impl<'a> TierServer<'a> {
     fn compute_batch_responses_parallel_k5(
         &self,
         pqrs_aligned: &[Aligned64],
-        pp_aligned: &Aligned64,
+        pps_aligned: &[Aligned64],
     ) -> Vec<Vec<u8>> {
         use rayon::prelude::*;
         debug_assert_eq!(pqrs_aligned.len(), 5);
-        let pp_slice = pp_aligned.as_slice();
+        debug_assert_eq!(pps_aligned.len(), 5);
         let offline = &*self.offline;
         let server = &*self.server;
         (0..pqrs_aligned.len())
@@ -381,7 +381,7 @@ impl<'a> TierServer<'a> {
                 server.perform_online_computation_simplepir(
                     pqrs_aligned[i].as_slice(),
                     offline,
-                    &[pp_slice],
+                    &[pps_aligned[i].as_slice()],
                     None,
                 )
             })
@@ -391,13 +391,12 @@ impl<'a> TierServer<'a> {
     /// Answer K YPIR+SP queries served as one HTTP batch.
     ///
     /// Wire format (see [`pir_types::serialize_ypir_batch_query`]):
-    /// `[8 bytes K][8 bytes pqr_byte_len][K * pqr_byte_len bytes][8 bytes pp_byte_len][pp bytes]`.
-    /// All K `q.0` vectors share one `pack_pub_params` (`pp`) — that is the
-    /// upload bandwidth lever the batching protocol exploits.
+    /// `[8 bytes K][8 bytes pqr_byte_len][8 bytes pp_byte_len][K * (q || pp)]`.
+    /// Each `q.0` vector carries its own `pack_pub_params`.
     ///
     /// Server-side compute is *additive*: we call
-    /// [`YServer::perform_online_computation_simplepir`] once per `q.0`,
-    /// sharing the same `pp`. When `K == 5`, this crate is built with the
+    /// [`YServer::perform_online_computation_simplepir`] once per `(q.0, pp)`
+    /// pair. When `K == 5`, this crate is built with the
     /// `rayon` feature, and `PIR_BATCH_COMPUTE_MODE=parallel-k5`, those five
     /// calls run concurrently while preserving response order. Otherwise the
     /// serial loop is used. A future iteration may replace this with a single
@@ -406,9 +405,9 @@ impl<'a> TierServer<'a> {
         let total_start = Instant::now();
 
         let validate_start = Instant::now();
-        let (pqrs, pp) = parse_ypir_batch_query(query_bytes)
+        let pairs = parse_ypir_batch_query(query_bytes)
             .map_err(|e| anyhow::anyhow!("malformed batch query: {e}"))?;
-        let k = pqrs.len();
+        let k = pairs.len();
         anyhow::ensure!(
             k <= MAX_BATCH_K,
             "batch K = {k} exceeds MAX_BATCH_K = {MAX_BATCH_K}"
@@ -417,7 +416,7 @@ impl<'a> TierServer<'a> {
         // anything inconsistent with the loaded server params before we
         // touch the database.
         let expected_pqr_u64 = self._params.db_rows_padded_simplepir();
-        for (i, q) in pqrs.iter().enumerate() {
+        for (i, (q, _pp)) in pairs.iter().enumerate() {
             anyhow::ensure!(
                 q.len() == expected_pqr_u64,
                 "batch q[{i}] has {} u64s, expected {}",
@@ -428,35 +427,36 @@ impl<'a> TierServer<'a> {
         let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
 
         let decode_start = Instant::now();
-        // Copy each q.0 and the shared pp into 64-byte aligned buffers for
-        // AVX-512 operations. This mirrors `answer_query` but allocates K
-        // pqr buffers and one shared pp buffer.
-        let pp_u64_len = pp.len();
-        let mut pp_aligned = Aligned64::new(pp_u64_len);
-        pp_aligned.as_mut_slice().copy_from_slice(&pp);
-
+        // Copy each q.0 and pp into 64-byte aligned buffers for AVX-512
+        // operations. This mirrors `answer_query`, but repeats both payloads K
+        // times because each slot has an independent client secret.
         let mut pqrs_aligned: Vec<Aligned64> = Vec::with_capacity(k);
-        for q in &pqrs {
+        let mut pps_aligned: Vec<Aligned64> = Vec::with_capacity(k);
+        for (q, pp) in &pairs {
             let mut buf = Aligned64::new(q.len());
             buf.as_mut_slice().copy_from_slice(q);
             pqrs_aligned.push(buf);
+
+            let mut pp_buf = Aligned64::new(pp.len());
+            pp_buf.as_mut_slice().copy_from_slice(pp);
+            pps_aligned.push(pp_buf);
         }
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Per-query online computation, sharing the same pack_pub_params.
+        // Per-query online computation, each with its matching pack_pub_params.
         let compute_start = Instant::now();
         let responses = {
             #[cfg(feature = "rayon")]
             {
                 if k == 5 && batch_parallel_k5_enabled() {
-                    self.compute_batch_responses_parallel_k5(&pqrs_aligned, &pp_aligned)
+                    self.compute_batch_responses_parallel_k5(&pqrs_aligned, &pps_aligned)
                 } else {
-                    self.compute_batch_responses_serial(&pqrs_aligned, &pp_aligned)
+                    self.compute_batch_responses_serial(&pqrs_aligned, &pps_aligned)
                 }
             }
             #[cfg(not(feature = "rayon"))]
             {
-                self.compute_batch_responses_serial(&pqrs_aligned, &pp_aligned)
+                self.compute_batch_responses_serial(&pqrs_aligned, &pps_aligned)
             }
         };
         let online_compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
@@ -877,7 +877,8 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ypir::client::YPIRClient;
+    use ypir::client::{YPIRClient, YPIRSimpleQuery};
+    use ypir::seed::Seed;
 
     #[cfg(feature = "rayon")]
     use std::sync::Mutex;
@@ -885,6 +886,27 @@ mod tests {
     /// Serialize tests that mutate `PIR_BATCH_COMPUTE_MODE` (global process env).
     #[cfg(feature = "rayon")]
     static BATCH_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    type TestBatch = Vec<(YPIRSimpleQuery, Seed)>;
+
+    fn build_simplepir_batch(ypir_client: &YPIRClient, target_rows: &[usize]) -> TestBatch {
+        target_rows
+            .iter()
+            .map(|&row| ypir_client.generate_query_simplepir(row))
+            .collect()
+    }
+
+    fn serialize_simplepir_batch(batch: &TestBatch) -> Vec<u8> {
+        let pairs: Vec<(&[u64], &[u64])> = batch
+            .iter()
+            .map(|((q, pp), _seed)| (q.as_slice(), pp.as_slice()))
+            .collect();
+        pir_types::serialize_ypir_batch_query(&pairs)
+    }
+
+    fn batch_seeds(batch: &TestBatch) -> Vec<Seed> {
+        batch.iter().map(|(_, seed)| *seed).collect()
+    }
 
     /// Smallest valid YPIR SimplePIR scenario.
     /// `params_for_scenario_simplepir` asserts `item_size_bits >= 2048 * 14`.
@@ -967,13 +989,11 @@ mod tests {
                 sequential_decoded.push(decoded[..TEST_ROW_BYTES].to_vec());
             }
 
-            // Batched path: one shared `pack_pub_params` and `client_seed`
-            // for K queries, dispatched through `answer_batch_query`.
-            let ((q_vec, pp), seed) =
-                ypir_client.generate_query_simplepir_batch(&target_rows);
-            let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-            let payload =
-                pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
+            // Batched path: K independent `(q, pp, seed)` tuples, dispatched
+            // through one `answer_batch_query`.
+            let batch = build_simplepir_batch(&ypir_client, &target_rows);
+            let seeds = batch_seeds(&batch);
+            let payload = serialize_simplepir_batch(&batch);
             let answer = server
                 .answer_batch_query(&payload)
                 .expect("answer_batch_query");
@@ -987,12 +1007,17 @@ mod tests {
                 "K={k}: batch response should carry exactly K chunks"
             );
             let chunk_refs: Vec<&[u8]> = chunks.iter().map(|c| c.as_slice()).collect();
-            let batch_decoded =
-                ypir_client.decode_response_simplepir_batch(seed, &chunk_refs);
+            let batch_decoded: Vec<Vec<u8>> = seeds
+                .iter()
+                .zip(chunk_refs.iter())
+                .map(|(seed, chunk)| ypir_client.decode_response_simplepir(*seed, chunk))
+                .collect();
             assert_eq!(batch_decoded.len(), k);
 
-            for (i, (b, s)) in
-                batch_decoded.iter().zip(sequential_decoded.iter()).enumerate()
+            for (i, (b, s)) in batch_decoded
+                .iter()
+                .zip(sequential_decoded.iter())
+                .enumerate()
             {
                 assert!(
                     b.len() >= TEST_ROW_BYTES,
@@ -1034,13 +1059,16 @@ mod tests {
         // `MAX_BATCH_K + 1` slots in the wire body. The client APIs do
         // not directly produce K = 17 batches, so we splice the payload.
         let allowed: Vec<usize> = target_rows[..MAX_BATCH_K].to_vec();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&allowed);
-        let mut pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
+        let batch = build_simplepir_batch(&ypir_client, &allowed);
+        let mut pairs: Vec<(&[u64], &[u64])> = batch
+            .iter()
+            .map(|((q, pp), _seed)| (q.as_slice(), pp.as_slice()))
+            .collect();
         // Duplicate slot 0 to push K over the limit.
-        pqr_refs.push(q_vec[0].as_slice());
-        assert_eq!(pqr_refs.len(), MAX_BATCH_K + 1);
+        pairs.push((batch[0].0 .0.as_slice(), batch[0].0 .1.as_slice()));
+        assert_eq!(pairs.len(), MAX_BATCH_K + 1);
 
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
+        let payload = pir_types::serialize_ypir_batch_query(&pairs);
         let err = server
             .answer_batch_query(&payload)
             .expect_err("K > MAX_BATCH_K must be rejected");
@@ -1061,11 +1089,9 @@ mod tests {
         let server = state.server();
 
         let target_row = 42usize;
-        let ((q_vec, pp), seed) =
-            ypir_client.generate_query_simplepir_batch(&[target_row]);
-        assert_eq!(q_vec.len(), 1);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
+        let batch = build_simplepir_batch(&ypir_client, &[target_row]);
+        assert_eq!(batch.len(), 1);
+        let payload = serialize_simplepir_batch(&batch);
         let answer = server.answer_batch_query(&payload).expect("answer_batch_query");
         assert_eq!(answer.timing.k, 1);
 
@@ -1073,8 +1099,7 @@ mod tests {
             .expect("parse_ypir_batch_response");
         assert_eq!(chunks.len(), 1);
 
-        let decoded =
-            ypir_client.decode_response_simplepir(seed, chunks[0].as_slice());
+        let decoded = ypir_client.decode_response_simplepir(batch[0].1, chunks[0].as_slice());
         assert!(decoded.len() >= TEST_ROW_BYTES);
     }
 
@@ -1090,9 +1115,8 @@ mod tests {
         let k = 5usize;
         let target_rows: Vec<usize> =
             (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&target_rows);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
+        let batch = build_simplepir_batch(&ypir_client, &target_rows);
+        let payload = serialize_simplepir_batch(&batch);
 
         std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
         let serial = server.answer_batch_query(&payload).expect("serial batch");
@@ -1116,9 +1140,8 @@ mod tests {
         let k = 3usize;
         let target_rows: Vec<usize> =
             (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&target_rows);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
+        let batch = build_simplepir_batch(&ypir_client, &target_rows);
+        let payload = serialize_simplepir_batch(&batch);
 
         std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
         let default = server.answer_batch_query(&payload).expect("default batch");
@@ -1140,9 +1163,8 @@ mod tests {
         let k = 16usize;
         let target_rows: Vec<usize> =
             (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
-        let ((q_vec, pp), _seed) = ypir_client.generate_query_simplepir_batch(&target_rows);
-        let pqr_refs: Vec<&[u64]> = q_vec.iter().map(|q| q.as_slice()).collect();
-        let payload = pir_types::serialize_ypir_batch_query(&pqr_refs, pp.as_slice());
+        let batch = build_simplepir_batch(&ypir_client, &target_rows);
+        let payload = serialize_simplepir_batch(&batch);
 
         std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
         let default = server.answer_batch_query(&payload).expect("default batch");
