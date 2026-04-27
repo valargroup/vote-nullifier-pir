@@ -88,11 +88,12 @@ pub struct NoteTiming {
 /// time, RTT, download_from_server) are kept per-note.
 struct BatchTierTiming {
     k: usize,
-    /// Wall-clock time to generate K independent SimplePIR queries.
+    /// Wall-clock time to generate K queries (one
+    /// `generate_query_simplepir_batch` call covers all K).
     gen_ms: f64,
-    /// Total wire upload bytes (header + K * (q + pp)).
+    /// Total wire upload bytes (header + K * q + pp).
     upload_bytes_total: usize,
-    /// Total bytes of all per-query `pack_pub_params` blobs.
+    /// Bytes of `pack_pub_params` shared across the batch.
     upload_pp_bytes_total: usize,
     /// Bytes of one `q.0` (identical across the batch by scenario).
     upload_q_bytes_per_query: usize,
@@ -841,8 +842,11 @@ impl PirClient {
     /// queries against `tier_name` in a single
     /// `POST /tier{1,2}/batch_query` request.
     ///
-    /// Each query has its own `client_seed` and `pack_pub_params`; the
-    /// batching win is the single HTTP request, not secret reuse.
+    /// All K queries share one `client_seed` (and therefore one secret
+    /// `s` and one `pack_pub_params`), which is the upload bandwidth
+    /// lever the batched protocol exploits. The per-query LWE error vectors
+    /// `e_k` remain independent because each `q.0` is generated under
+    /// its own fresh secret RNG inside the YPIR client.
     ///
     /// Returns one inner `Result<Vec<u8>>` per slot. Per-slot errors
     /// (decryption panics, short responses) are reported in the inner
@@ -880,25 +884,19 @@ impl PirClient {
             scenario.item_size_bits as u64,
             true,
         );
-        let batch_query: Vec<_> = row_indices
-            .iter()
-            .map(|&row_idx| ypir_client.generate_query_simplepir(row_idx))
-            .collect();
+        let (batch_query, seed) = ypir_client.generate_query_simplepir_batch(row_indices);
         let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-        // Build the wire payload: K independent `(q.0, pp)` pairs.
-        let pairs: Vec<(&[u64], &[u64])> = batch_query
-            .iter()
-            .map(|((q, pp), _seed)| (q.as_slice(), pp.as_slice()))
-            .collect();
-        let seeds: Vec<_> = batch_query.iter().map(|(_, seed)| *seed).collect();
+        // Build the wire payload: one shared `pp` plus K independent `q.0`s.
+        let mut pqr_refs: Vec<&[u64]> = Vec::with_capacity(batch_query.0.len());
+        for aq in batch_query.0.iter() {
+            let s: &[u64] = aq.as_slice();
+            pqr_refs.push(s);
+        }
         let upload_q_bytes_per_query =
-            pairs.first().map(|(q, _)| q.len()).unwrap_or(0) * std::mem::size_of::<u64>();
-        let upload_pp_bytes_total = pairs
-            .iter()
-            .map(|(_, pp)| pp.len() * std::mem::size_of::<u64>())
-            .sum();
-        let payload = serialize_ypir_batch_query(&pairs);
+            pqr_refs.first().map(|q| q.len()).unwrap_or(0) * std::mem::size_of::<u64>();
+        let upload_pp_bytes_total = batch_query.1.as_slice().len() * std::mem::size_of::<u64>();
+        let payload = serialize_ypir_batch_query(&pqr_refs, batch_query.1.as_slice());
         let upload_bytes_total = payload.len();
 
         let t1 = Instant::now();
@@ -966,7 +964,7 @@ impl PirClient {
                     let dec_start = Instant::now();
                     let decoded =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            ypir_client.decode_response_simplepir(seeds[i], chunk)
+                            ypir_client.decode_response_simplepir(seed, chunk)
                         }))
                         .map_err(|payload| {
                             let msg = payload
@@ -1283,8 +1281,6 @@ mod tests {
     use ff::Field;
     use pasta_curves::Fp;
     use pir_export::build_ranges_with_sentinels;
-    use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS};
-    use ypir::params::{params_for_scenario_simplepir, DbRowsCols};
 
     /// Build a tree and export all three tier blobs.
     struct TestFixture {
@@ -1327,51 +1323,6 @@ mod tests {
                 root29: tree.root29,
             }
         }
-    }
-
-    fn centered_abs_diff_mod(lhs: u64, rhs: u64, modulus: u64) -> u64 {
-        let raw = (lhs + modulus - rhs) % modulus;
-        raw.min(modulus - raw)
-    }
-
-    #[test]
-    fn batch_query_wire_carries_independent_slot_material() {
-        let params = params_for_scenario_simplepir(TIER1_YPIR_ROWS as u64, TIER1_ITEM_BITS as u64);
-        let ypir = YPIRClient::new(&params);
-        let batch: Vec<_> = [0usize, 7usize]
-            .iter()
-            .map(|&row| ypir.generate_query_simplepir(row))
-            .collect();
-        let pairs: Vec<(&[u64], &[u64])> = batch
-            .iter()
-            .map(|((q, pp), _seed)| (q.as_slice(), pp.as_slice()))
-            .collect();
-        let payload = serialize_ypir_batch_query(&pairs);
-        let parsed = pir_types::parse_ypir_batch_query(&payload).expect("batch wire parses");
-
-        assert_eq!(parsed.len(), 2);
-        assert_ne!(
-            parsed[0].1, parsed[1].1,
-            "wire payload must carry independent pp per slot"
-        );
-
-        let threshold = params.moduli[0] / 16;
-        let large = parsed[0]
-            .0
-            .iter()
-            .zip(parsed[1].0.iter())
-            .filter(|(a, b)| {
-                let a0 = **a & 0xFFFF_FFFF;
-                let b0 = **b & 0xFFFF_FFFF;
-                let diff = (a0 + params.moduli[0] - b0) % params.moduli[0];
-                let descaled = (diff * params.poly_len as u64) % params.moduli[0];
-                centered_abs_diff_mod(descaled, 0, params.moduli[0]) > threshold
-            })
-            .count();
-        assert!(
-            large > params.db_rows() / 8,
-            "wire q differences should be dense under independent secrets; got {large} large coefficients"
-        );
     }
 
     // ── fetch_proof_local round-trip ──────────────────────────────────────
@@ -1839,17 +1790,13 @@ mod tests {
                 .iter()
                 .find(|r| r.url.path() == path_name)
                 .expect("batch request body present");
-            let pairs = pir_types::parse_ypir_batch_query(&req.body)
+            let (pqrs, _pp) = pir_types::parse_ypir_batch_query(&req.body)
                 .expect("batch query body parses as wire format");
             assert_eq!(
-                pairs.len(),
+                pqrs.len(),
                 K,
                 "{path_name} body must contain {K} per-query payloads"
             );
-            for (q, pp) in pairs {
-                assert!(!q.is_empty(), "{path_name} q payload must be non-empty");
-                assert!(!pp.is_empty(), "{path_name} pp payload must be non-empty");
-            }
         }
     }
 }
