@@ -75,10 +75,7 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           envs: SENTRY_DSN
           script: |
-            # systemd loads /opt/nf-ingest/.env (see nullifier-query-server.service).
-            # PIR_BATCH_COMPUTE_MODE enables Phase 1.1 K=5 Rayon overlap in batch_query.
-            printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" "PIR_BATCH_COMPUTE_MODE=parallel-k5" \
-              | sudo tee /opt/nf-ingest/.env > /dev/null
+            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
             sudo chmod 600 /opt/nf-ingest/.env
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
@@ -155,8 +152,7 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           envs: SENTRY_DSN
           script: |
-            printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" "PIR_BATCH_COMPUTE_MODE=parallel-k5" \
-              | sudo tee /opt/nf-ingest/.env > /dev/null
+            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
             sudo chmod 600 /opt/nf-ingest/.env
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service

@@ -19,9 +19,8 @@ use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
 use pir_types::tier2::Tier2Row;
 use pir_types::{
-    parse_ypir_batch_response, serialize_ypir_batch_query, serialize_ypir_query, RootInfo,
-    YpirScenario, MAX_BATCH_K, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS, TIER1_LEAVES,
-    TIER1_ROW_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES,
+    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
+    TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES,
 };
 
 use ypir::client::YPIRClient;
@@ -37,13 +36,11 @@ pub struct TierTiming {
     pub upload_bytes: usize,
     /// Bytes of the uploaded query attributable to the SimplePIR query
     /// vector itself (`q.0` / `pqr` — the first arg to
-    /// [`pir_types::serialize_ypir_query`]). The batched protocol keeps
-    /// this per-query, so the projected upload is `pp + K * q`.
+    /// [`pir_types::serialize_ypir_query`]).
     pub upload_q_bytes: usize,
     /// Bytes of the uploaded query attributable to `pack_pub_params`
     /// (the second arg to [`pir_types::serialize_ypir_query`]). Identical
-    /// across queries that share a YPIR `client_seed`, which is the
-    /// bandwidth lever the batched protocol exploits.
+    /// across queries that share a YPIR `client_seed`.
     pub upload_pp_bytes: usize,
     /// Size of the downloaded encrypted response.
     pub download_bytes: usize,
@@ -77,101 +74,7 @@ pub struct NoteTiming {
     pub total_ms: f64,
 }
 
-/// Aggregate timing for a single batched `POST /tier{1,2}/batch_query`.
-///
-/// Fields named `*_total` are batch totals; per-query fields capture the
-/// (deterministic) per-query payload sizes. The
-/// [`BatchTierTiming::per_note`] projection maps these to a per-note
-/// [`TierTiming`] using the convention: shared costs (upload / server
-/// stages / net-queue) are divided by `k` so summing across notes
-/// recovers the batch totals; per-query metrics (download bytes, decode
-/// time, RTT, download_from_server) are kept per-note.
-struct BatchTierTiming {
-    k: usize,
-    /// Wall-clock time to generate K independent SimplePIR queries.
-    gen_ms: f64,
-    /// Total wire upload bytes (header + K * (q + pp)).
-    upload_bytes_total: usize,
-    /// Total bytes of all per-query `pack_pub_params` blobs.
-    upload_pp_bytes_total: usize,
-    /// Bytes of one `q.0` (identical across the batch by scenario).
-    upload_q_bytes_per_query: usize,
-    /// Bytes of one decoded response chunk (identical across the batch).
-    download_bytes_per_query: usize,
-    /// Wall-clock RTT for the batched HTTP request (upload + server +
-    /// download).
-    rtt_ms: f64,
-    /// Per-note decryption wall-clock time, captured outside the
-    /// shared-by-K accounting so each note retains its own decode cost.
-    per_note_decode_ms: Vec<f64>,
-    server_req_id: Option<u64>,
-    server_total_ms: Option<f64>,
-    server_validate_ms: Option<f64>,
-    server_decode_copy_ms: Option<f64>,
-    server_compute_ms: Option<f64>,
-    /// `x-pir-batch-k` header echoed back by the server. Used in tests
-    /// to assert the round trip matched the requested batch size; the
-    /// field is otherwise informational and only consumed at debug time.
-    #[allow(dead_code)]
-    server_batch_k: Option<u64>,
-    upload_to_server_ms: Option<f64>,
-    /// Wall-clock time for response body download (after server compute).
-    /// Per-batch quantity, identical for every note in the batch.
-    download_from_server_ms: f64,
-}
-
-impl BatchTierTiming {
-    /// Project to a per-note [`TierTiming`].
-    ///
-    /// Convention:
-    /// - **Per-query (unchanged)**: `upload_q_bytes`, `download_bytes`,
-    ///   `decode_ms`, `rtt_ms`, `download_from_server_ms`.
-    /// - **Shared / divided by K**: `gen_ms`, `upload_bytes`,
-    ///   `upload_pp_bytes`, `server_*_ms`, `upload_to_server_ms`,
-    ///   `net_queue_ms`.
-    ///
-    /// Summing per-note shared metrics across the batch recovers the
-    /// batch-level total; percentile metrics on per-note RTT match the
-    /// batch RTT (every note in the batch saw the same wall-clock RTT).
-    fn per_note(&self, i: usize) -> TierTiming {
-        let k = self.k.max(1) as f64;
-        TierTiming {
-            gen_ms: self.gen_ms / k,
-            upload_bytes: self.upload_bytes_total / self.k.max(1),
-            upload_q_bytes: self.upload_q_bytes_per_query,
-            upload_pp_bytes: self.upload_pp_bytes_total / self.k.max(1),
-            download_bytes: self.download_bytes_per_query,
-            rtt_ms: self.rtt_ms,
-            decode_ms: self.per_note_decode_ms[i],
-            server_req_id: self.server_req_id,
-            server_total_ms: self.server_total_ms.map(|m| m / k),
-            server_validate_ms: self.server_validate_ms.map(|m| m / k),
-            server_decode_copy_ms: self.server_decode_copy_ms.map(|m| m / k),
-            server_compute_ms: self.server_compute_ms.map(|m| m / k),
-            net_queue_ms: self
-                .server_total_ms
-                .map(|server_ms| ((self.rtt_ms - server_ms).max(0.0)) / k),
-            upload_to_server_ms: self.upload_to_server_ms.map(|m| m / k),
-            download_from_server_ms: self.download_from_server_ms,
-        }
-    }
-}
-
 // ── HTTP-based PIR client ────────────────────────────────────────────────────
-
-/// Client-side options for [`PirClient`].
-#[derive(Clone, Debug)]
-pub struct PirClientConfig {
-    /// When `true`, never use `POST /tier{1,2}/batch_query` for multi-fetch;
-    /// use the same per-note fan-out as when the server omits batch support.
-    pub disable_batch: bool,
-}
-
-impl Default for PirClientConfig {
-    fn default() -> Self {
-        Self { disable_batch: false }
-    }
-}
 
 /// PIR client that connects to a `pir-server` instance over HTTP.
 ///
@@ -186,11 +89,6 @@ pub struct PirClient {
     num_ranges: usize,
     empty_hashes: [Fp; TREE_DEPTH],
     root29: Fp,
-    /// Capability flag mirrored from `RootInfo.supports_batch_query`.
-    /// When `true` we use `POST /tier{1,2}/batch_query`; when `false` we
-    /// fall back to the per-note single-query endpoints (`/tier{1,2}/query`).
-    supports_batch_query: bool,
-    config: PirClientConfig,
 }
 
 /// Return the number of populated leaves in a Tier 2 row, clamped to
@@ -277,31 +175,15 @@ fn process_tier2_and_build(
 impl PirClient {
     /// Connect to a PIR server, downloading Tier 0 data and YPIR parameters.
     pub async fn connect(server_url: &str) -> Result<Self> {
-        Self::connect_with_http_and_config(
-            server_url,
-            reqwest::Client::new(),
-            PirClientConfig::default(),
-        )
-        .await
+        Self::connect_with_http(server_url, reqwest::Client::new()).await
     }
 
     /// Like [`connect`](Self::connect) but with a caller-provided
     /// [`reqwest::Client`]. Used by `pir-test bench-server --mode single-tls`
     /// to force HTTP/1.1 with a single connection (no HTTP/2 stream
     /// multiplexing) so we can isolate per-query upload bandwidth from
-    /// HTTP/2 contention when projecting batching wins.
+    /// HTTP/2 stream contention.
     pub async fn connect_with_http(server_url: &str, http: reqwest::Client) -> Result<Self> {
-        Self::connect_with_http_and_config(server_url, http, PirClientConfig::default()).await
-    }
-
-    /// Like [`connect_with_http`](Self::connect_with_http) but with explicit
-    /// [`PirClientConfig`] (e.g. [`PirClientConfig::disable_batch`] to force
-    /// per-note fan-out even when the server advertises batch support).
-    pub async fn connect_with_http_and_config(
-        server_url: &str,
-        http: reqwest::Client,
-        config: PirClientConfig,
-    ) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
         // Download Tier 0 data, YPIR params, and root concurrently
@@ -366,19 +248,7 @@ impl PirClient {
             num_ranges: root_info.num_ranges,
             empty_hashes,
             root29,
-            supports_batch_query: root_info.supports_batch_query,
-            config,
         })
-    }
-
-    /// Returns `true` when the server advertised batch query support
-    /// in `GET /root`. Exposed so tests / the bench harness can verify the
-    /// capability handshake.
-    ///
-    /// This reflects the server only; multi-fetch may still use per-note
-    /// fan-out when [`PirClientConfig::disable_batch`] is set.
-    pub fn supports_batch_query(&self) -> bool {
-        self.supports_batch_query
     }
 
     /// Perform private Merkle path retrieval for a nullifier.
@@ -399,55 +269,13 @@ impl PirClient {
         self.fetch_proof_inner(nullifier).await
     }
 
-    /// Perform private Merkle path retrieval for multiple nullifiers.
+    /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
     ///
-    /// When the server advertises batch support
-    /// ([`PirClient::supports_batch_query`]) and
-    /// [`PirClientConfig::disable_batch`] is `false`, we ship one tier-1 batch
-    /// followed by one tier-2 batch (each in a single HTTP POST). Otherwise
-    /// we use a parallel `try_join_all` of per-note `fetch_proof_inner` calls
-    /// (fan-out to `/tier{1,2}/query`).
+    /// All queries run concurrently via `try_join_all`, sharing the same
+    /// `PirClient` (and thus the same HTTP client and Tier 0 data).
     pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
-        let pairs = self.fetch_proofs_with_timing(nullifiers).await?;
-        Ok(pairs.into_iter().map(|(p, _)| p).collect())
-    }
-
-    /// Like [`fetch_proofs`](Self::fetch_proofs) but also returns the
-    /// per-note client+server timing breakdown.
-    ///
-    /// Batching vs fan-out follows [`fetch_proofs`](Self::fetch_proofs)
-    /// (server `supports_batch_query` and [`PirClientConfig::disable_batch`]).
-    pub async fn fetch_proofs_with_timing(
-        &self,
-        nullifiers: &[Fp],
-    ) -> Result<Vec<(ImtProofData, NoteTiming)>> {
-        if nullifiers.is_empty() {
-            return Ok(Vec::new());
-        }
-        let use_batch = self.supports_batch_query && !self.config.disable_batch;
-        if !use_batch {
-            return self.fetch_proofs_fanout(nullifiers).await;
-        }
-        // K is bounded by the wire format DoS guard.
-        if nullifiers.len() > MAX_BATCH_K {
-            anyhow::bail!(
-                "fetch_proofs called with {} nullifiers (MAX_BATCH_K = {})",
-                nullifiers.len(),
-                MAX_BATCH_K
-            );
-        }
-        self.fetch_proofs_batched(nullifiers).await
-    }
-
-    /// Fan-out: one HTTP POST per tier per note, all running concurrently.
-    /// Used when the server does not advertise batch support or when
-    /// [`PirClientConfig::disable_batch`] is set.
-    async fn fetch_proofs_fanout(
-        &self,
-        nullifiers: &[Fp],
-    ) -> Result<Vec<(ImtProofData, NoteTiming)>> {
         log::debug!(
-            "[PIR] Starting parallel fetch for {} notes (fan-out)...",
+            "[PIR] Starting parallel fetch for {} notes...",
             nullifiers.len()
         );
         let wall_start = Instant::now();
@@ -463,155 +291,14 @@ impl PirClient {
 
         let results_with_timing = futures::future::try_join_all(futures).await?;
         let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
-        print_timing_table_fanout(&results_with_timing, wall_ms);
 
-        Ok(results_with_timing
+        print_timing_table(&results_with_timing, wall_ms);
+
+        let proofs = results_with_timing
             .into_iter()
-            .map(|(_, proof, t)| (proof, t))
-            .collect())
-    }
-
-    /// Batched fetch: one POST per tier (`/tier{1,2}/batch_query`).
-    ///
-    /// **Error-oracle invariant**: regardless of how the tier-1 batch
-    /// resolves per slot, the tier-2 batch is *always* sent. Per-slot
-    /// tier-1 failures populate the corresponding tier-2 query with a
-    /// dummy index 0 so the server cannot use the presence/absence of a
-    /// tier-2 query as an oracle bit. This is exactly the invariant
-    /// enforced per-note by [`fetch_proof_inner`](Self::fetch_proof_inner)
-    /// — the batched path lifts it to the batch granularity (the
-    /// failing-spec `batched_oracle` test in this crate verifies it
-    /// end-to-end).
-    async fn fetch_proofs_batched(
-        &self,
-        nullifiers: &[Fp],
-    ) -> Result<Vec<(ImtProofData, NoteTiming)>> {
-        let k = nullifiers.len();
-        log::debug!("[PIR] Starting batched fetch for {k} notes...");
-        let wall_start = Instant::now();
-
-        // ── Tier 0 (plaintext) ───────────────────────────────────────
-        let mut paths = vec![[Fp::default(); TREE_DEPTH]; k];
-        let mut s1s = vec![0usize; k];
-        let mut tier0_errs: Vec<Option<anyhow::Error>> = (0..k).map(|_| None).collect();
-        for i in 0..k {
-            match process_tier0(&self.tier0, nullifiers[i], &mut paths[i]) {
-                Ok(s1) => s1s[i] = s1,
-                Err(e) => tier0_errs[i] = Some(e),
-            }
-        }
-
-        // Substitute dummy index 0 for tier-0 failures so the tier-1
-        // batch always carries K well-formed queries.
-        let t1_indices: Vec<usize> = (0..k)
-            .map(|i| if tier0_errs[i].is_some() { 0 } else { s1s[i] })
+            .map(|(_, proof, _)| proof)
             .collect();
-
-        // ── Tier 1 batch ────────────────────────────────────────────
-        let (t1_results, t1_timing) = self
-            .ypir_batch_query(&self.tier1_scenario, "tier1", &t1_indices, TIER1_ROW_BYTES)
-            .await?;
-
-        // Per-note tier-1 outcome: the global tier-2 row index on success,
-        // or an Err carrying the failure reason. Any error here will
-        // be surfaced *after* the tier-2 batch is sent.
-        let mut tier1_outcomes: Vec<Result<usize>> = Vec::with_capacity(k);
-        let mut t2_indices: Vec<usize> = Vec::with_capacity(k);
-        for i in 0..k {
-            if let Some(e) = tier0_errs[i].take() {
-                tier1_outcomes.push(Err(e));
-                t2_indices.push(0);
-                continue;
-            }
-            match t1_results[i].as_ref() {
-                Ok(row) => {
-                    let mut_path = &mut paths[i];
-                    let nf = nullifiers[i];
-                    let s2_outcome =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            process_tier1(row, nf, mut_path)
-                        }))
-                        .unwrap_or_else(|payload| {
-                            let msg = payload
-                                .downcast_ref::<String>()
-                                .map(|s| s.as_str())
-                                .or_else(|| payload.downcast_ref::<&str>().copied())
-                                .unwrap_or("unknown panic");
-                            Err(anyhow::anyhow!("process_tier1 panicked: {msg}"))
-                        });
-                    match s2_outcome {
-                        Ok(s2) => {
-                            let global = s1s[i] * TIER1_LEAVES + s2;
-                            if global >= self.tier2_scenario.num_items {
-                                tier1_outcomes.push(Err(anyhow::anyhow!(
-                                    "tier2 row_idx {global} >= num_items {}",
-                                    self.tier2_scenario.num_items
-                                )));
-                                t2_indices.push(0);
-                            } else {
-                                tier1_outcomes.push(Ok(global));
-                                t2_indices.push(global);
-                            }
-                        }
-                        Err(e) => {
-                            tier1_outcomes.push(Err(e));
-                            t2_indices.push(0);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tier1_outcomes.push(Err(anyhow::anyhow!(
-                        "tier1 batch slot {i}: {e}"
-                    )));
-                    t2_indices.push(0);
-                }
-            }
-        }
-
-        // ── Tier 2 batch (always sent) ──────────────────────────────
-        let (t2_results, t2_timing) = self
-            .ypir_batch_query(&self.tier2_scenario, "tier2", &t2_indices, TIER2_ROW_BYTES)
-            .await?;
-
-        // ── Per-note proof assembly ─────────────────────────────────
-        let mut out = Vec::with_capacity(k);
-        for i in 0..k {
-            // Surface tier-1 errors first (after both batches sent).
-            let s_global = match &tier1_outcomes[i] {
-                Ok(v) => *v,
-                Err(e) => return Err(anyhow::anyhow!("note {i}: {e:#}")),
-            };
-            let row = match t2_results[i].as_ref() {
-                Ok(r) => r,
-                Err(e) => return Err(anyhow::anyhow!("note {i} tier2: {e:#}")),
-            };
-            let nf = nullifiers[i];
-            let proof = process_tier2_and_build(
-                row,
-                s_global,
-                self.num_ranges,
-                nf,
-                &mut paths[i],
-                &self.empty_hashes,
-                self.root29,
-            )?;
-            let total_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
-            let note_timing = NoteTiming {
-                tier1: t1_timing.per_note(i),
-                tier2: t2_timing.per_note(i),
-                total_ms,
-            };
-            out.push((proof, note_timing));
-        }
-
-        let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
-        let view: Vec<(usize, &NoteTiming)> = out
-            .iter()
-            .enumerate()
-            .map(|(i, (_, t))| (i, t))
-            .collect();
-        print_timing_table(&view, wall_ms);
-        Ok(out)
+        Ok(proofs)
     }
 
     /// Fetch proof and return timing breakdown.
@@ -749,9 +436,8 @@ impl PirClient {
         let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         // Serialize query. `query.0` is the SimplePIR query vector
-        // (per-query); `query.1` is `pack_pub_params` (depends only on the
-        // client's `client_seed`, so the batched protocol can ship it once
-        // per tier-batch instead of once per query).
+        // (per-query); `query.1` is `pack_pub_params` (depends only on
+        // the client's `client_seed`).
         let upload_q_bytes = query.0.as_slice().len() * std::mem::size_of::<u64>();
         let upload_pp_bytes = query.1.as_slice().len() * std::mem::size_of::<u64>();
         let payload = serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
@@ -836,202 +522,6 @@ impl PirClient {
             },
         ))
     }
-
-    /// Batched analogue of [`ypir_query`](Self::ypir_query). Issues K YPIR
-    /// queries against `tier_name` in a single
-    /// `POST /tier{1,2}/batch_query` request.
-    ///
-    /// Each query has its own `client_seed` and `pack_pub_params`; the
-    /// batching win is the single HTTP request, not secret reuse.
-    ///
-    /// Returns one inner `Result<Vec<u8>>` per slot. Per-slot errors
-    /// (decryption panics, short responses) are reported in the inner
-    /// result so the *other* slots can still succeed; HTTP-level errors
-    /// (connect failures, malformed batch wire format) propagate via
-    /// the outer `Result` and abort the whole batch. Each per-slot
-    /// decode is wrapped in `catch_unwind` so an LWE-decode panic on
-    /// one note cannot prevent decoding of the other notes — the
-    /// error-oracle invariant of [`fetch_proof_inner`](Self::fetch_proof_inner)
-    /// extends to the whole batch.
-    async fn ypir_batch_query(
-        &self,
-        scenario: &YpirScenario,
-        tier_name: &str,
-        row_indices: &[usize],
-        expected_row_bytes: usize,
-    ) -> Result<(Vec<Result<Vec<u8>>>, BatchTierTiming)> {
-        let k = row_indices.len();
-        anyhow::ensure!(k >= 1, "{tier_name} batch must have at least 1 query");
-        anyhow::ensure!(
-            k <= MAX_BATCH_K,
-            "{tier_name} batch K = {k} exceeds MAX_BATCH_K = {MAX_BATCH_K}"
-        );
-        for (i, &row_idx) in row_indices.iter().enumerate() {
-            anyhow::ensure!(
-                row_idx < scenario.num_items,
-                "{tier_name} batch[{i}] row_idx {row_idx} >= num_items {}",
-                scenario.num_items
-            );
-        }
-
-        let t0 = Instant::now();
-        let ypir_client = YPIRClient::from_db_sz(
-            scenario.num_items as u64,
-            scenario.item_size_bits as u64,
-            true,
-        );
-        let batch_query: Vec<_> = row_indices
-            .iter()
-            .map(|&row_idx| ypir_client.generate_query_simplepir(row_idx))
-            .collect();
-        let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
-
-        // Build the wire payload: K independent `(q.0, pp)` pairs.
-        let pairs: Vec<(&[u64], &[u64])> = batch_query
-            .iter()
-            .map(|((q, pp), _seed)| (q.as_slice(), pp.as_slice()))
-            .collect();
-        let seeds: Vec<_> = batch_query.iter().map(|(_, seed)| *seed).collect();
-        let upload_q_bytes_per_query =
-            pairs.first().map(|(q, _)| q.len()).unwrap_or(0) * std::mem::size_of::<u64>();
-        let upload_pp_bytes_total = pairs
-            .iter()
-            .map(|(_, pp)| pp.len() * std::mem::size_of::<u64>())
-            .sum();
-        let payload = serialize_ypir_batch_query(&pairs);
-        let upload_bytes_total = payload.len();
-
-        let t1 = Instant::now();
-        let url = format!("{}/{}/batch_query", self.server_url, tier_name);
-        let send_result = self.http.post(&url).body(payload).send().await;
-        let send_ms = t1.elapsed().as_secs_f64() * 1000.0;
-        let resp = match send_result {
-            Ok(r) => r,
-            Err(e) => {
-                log::warn!("YPIR {tier_name} batch send error: {e:?}");
-                return Err(e.into());
-            }
-        };
-        let server_req_id = parse_header_u64(resp.headers(), "x-pir-req-id");
-        let server_batch_k = parse_header_u64(resp.headers(), "x-pir-batch-k");
-        let server_total_ms = parse_header_f64(resp.headers(), "x-pir-server-total-ms");
-        let server_validate_ms = parse_header_f64(resp.headers(), "x-pir-server-validate-ms");
-        let server_decode_copy_ms = parse_header_f64(resp.headers(), "x-pir-server-decode-copy-ms");
-        let server_compute_ms = parse_header_f64(resp.headers(), "x-pir-server-compute-ms");
-        let status = resp.status();
-        let response_bytes = resp.bytes().await?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "{tier_name} batch query failed: HTTP {status} body={}",
-                String::from_utf8_lossy(&response_bytes)
-            );
-        }
-        let rtt_ms = t1.elapsed().as_secs_f64() * 1000.0;
-        let download_from_server_ms = (rtt_ms - send_ms).max(0.0);
-        let upload_to_server_ms = server_total_ms.map(|s| (send_ms - s).max(0.0));
-
-        // Sanity-check the round trip: the server should echo back our K.
-        if let Some(echoed) = server_batch_k {
-            anyhow::ensure!(
-                echoed as usize == k,
-                "{tier_name} batch K mismatch: sent {k}, server echoed {echoed}"
-            );
-        }
-
-        // Wire-format parse failures (and per-slot decode panics) become
-        // per-slot `Err`s inside the returned vector — this keeps the
-        // error-oracle invariant: even if every tier-1 slot fails to
-        // decode, the caller still sees `Ok((vec![Err; K], _))` and
-        // can dispatch the next-tier batch. HTTP-level errors above
-        // still bail the outer `Result` because the server would have
-        // been able to gate based on retry behaviour anyway (the
-        // single-query path has the same property).
-        let mut per_note_results: Vec<Result<Vec<u8>>> = Vec::with_capacity(k);
-        let mut per_note_decode_ms: Vec<f64> = vec![0.0; k];
-        let download_bytes_per_query;
-
-        match parse_ypir_batch_response(&response_bytes) {
-            Ok(chunks) if chunks.len() == k => {
-                download_bytes_per_query = chunks.first().map(|c| c.len()).unwrap_or(0);
-                // Decode each response one at a time, wrapped in
-                // `catch_unwind` for per-slot error isolation. The YPIR
-                // `decode_response_simplepir_batch` API decodes K
-                // responses inside a single call sharing one `YClient`
-                // — but a panic in any one slot poisons the whole
-                // result, which would defeat the error-oracle
-                // mitigation. Single-shot decode rebuilds the YClient
-                // K times; that is cheap compared to one LWE decode
-                // pass.
-                for (i, chunk) in chunks.iter().enumerate() {
-                    let dec_start = Instant::now();
-                    let decoded =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            ypir_client.decode_response_simplepir(seeds[i], chunk)
-                        }))
-                        .map_err(|payload| {
-                            let msg = payload
-                                .downcast_ref::<String>()
-                                .map(|s| s.as_str())
-                                .or_else(|| payload.downcast_ref::<&str>().copied())
-                                .unwrap_or("unknown panic");
-                            anyhow::anyhow!(
-                                "{tier_name} batch[{i}] response decryption panicked: {msg}"
-                            )
-                        });
-                    per_note_decode_ms[i] = dec_start.elapsed().as_secs_f64() * 1000.0;
-                    let row_result = decoded.and_then(|d| {
-                        anyhow::ensure!(
-                            d.len() >= expected_row_bytes,
-                            "{tier_name} batch[{i}] decoded response too short: {} bytes, expected >= {}",
-                            d.len(),
-                            expected_row_bytes
-                        );
-                        Ok(d[..expected_row_bytes].to_vec())
-                    });
-                    per_note_results.push(row_result);
-                }
-            }
-            Ok(chunks) => {
-                // K mismatch — fail every slot so the caller still
-                // dispatches the next-tier batch.
-                let actual = chunks.len();
-                download_bytes_per_query = 0;
-                for i in 0..k {
-                    per_note_results.push(Err(anyhow::anyhow!(
-                        "{tier_name} batch[{i}] response had {actual} chunks, expected {k}"
-                    )));
-                }
-            }
-            Err(e) => {
-                download_bytes_per_query = 0;
-                for i in 0..k {
-                    per_note_results.push(Err(anyhow::anyhow!(
-                        "{tier_name} batch[{i}] response parse: {e}"
-                    )));
-                }
-            }
-        }
-
-        let timing = BatchTierTiming {
-            k,
-            gen_ms,
-            upload_bytes_total,
-            upload_pp_bytes_total,
-            upload_q_bytes_per_query,
-            download_bytes_per_query,
-            rtt_ms,
-            per_note_decode_ms,
-            server_req_id,
-            server_total_ms,
-            server_validate_ms,
-            server_decode_copy_ms,
-            server_compute_ms,
-            server_batch_k,
-            upload_to_server_ms,
-            download_from_server_ms,
-        };
-        Ok((per_note_results, timing))
-    }
 }
 
 fn fmt_time(ms: f64) -> String {
@@ -1049,17 +539,8 @@ fn fmt_opt_time(ms: Option<f64>) -> String {
     }
 }
 
-/// Print a detailed timing breakdown table for fan-out (per-note) PIR fetches.
-fn print_timing_table_fanout(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f64) {
-    let view: Vec<(usize, &NoteTiming)> = results.iter().map(|(i, _, t)| (*i, t)).collect();
-    print_timing_table(&view, wall_ms);
-}
-
 /// Print a detailed timing breakdown table for a batch of PIR proof fetches.
-///
-/// Borrowed-view variant so the batched path can reuse the formatting
-/// without cloning [`NoteTiming`] for every slot.
-fn print_timing_table(results: &[(usize, &NoteTiming)], wall_ms: f64) {
+fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f64) {
     if !log::log_enabled!(log::Level::Debug) {
         return;
     }
@@ -1068,7 +549,7 @@ fn print_timing_table(results: &[(usize, &NoteTiming)], wall_ms: f64) {
     log::debug!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ T2 keygen│ T2 upload+  │ T2 decode│ Total  │");
     log::debug!("[PIR] │     │ (client) │ server+down │ (client) │ (client) │ server+down │ (client) │        │");
     log::debug!("[PIR] ├─────┼──────────┼─────────────┼──────────┼──────────┼─────────────┼──────────┼────────┤");
-    for &(i, t) in results {
+    for &(i, _, ref t) in results {
         log::debug!(
             "[PIR] │  {i:>2} │  {:>6} │   {:>7}   │  {:>6} │  {:>6} │   {:>7}   │  {:>6} │{} │",
             fmt_time(t.tier1.gen_ms),
@@ -1085,18 +566,18 @@ fn print_timing_table(results: &[(usize, &NoteTiming)], wall_ms: f64) {
         "[PIR] Upload per note: T1={:.0}KB T2={:.1}MB  |  Wall clock: {:.2}s",
         results
             .first()
-            .map(|(_, t)| t.tier1.upload_bytes)
+            .map(|(_, _, t)| t.tier1.upload_bytes)
             .unwrap_or(0) as f64
             / 1024.0,
         results
             .first()
-            .map(|(_, t)| t.tier2.upload_bytes)
+            .map(|(_, _, t)| t.tier2.upload_bytes)
             .unwrap_or(0) as f64
             / (1024.0 * 1024.0),
         wall_ms / 1000.0,
     );
 
-    for &(i, t) in results {
+    for &(i, _, ref t) in results {
         log::trace!(
             "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB | T2 up={:.1}MB down={:.0}KB",
             t.tier1.upload_bytes as f64 / 1024.0,
@@ -1172,29 +653,6 @@ impl PirClientBlocking {
         Ok(Self { inner, rt })
     }
 
-    /// Like [`connect`](Self::connect) but with explicit [`PirClientConfig`].
-    pub fn connect_with_config(server_url: &str, config: PirClientConfig) -> Result<Self> {
-        let rt = tokio::runtime::Runtime::new()?;
-        let inner = rt.block_on(PirClient::connect_with_http_and_config(
-            server_url,
-            reqwest::Client::new(),
-            config,
-        ))?;
-        Ok(Self { inner, rt })
-    }
-
-    /// Like [`PirClient::connect_with_http_and_config`] but synchronous.
-    pub fn connect_with_http_and_config(
-        server_url: &str,
-        http: reqwest::Client,
-        config: PirClientConfig,
-    ) -> Result<Self> {
-        let rt = tokio::runtime::Runtime::new()?;
-        let inner =
-            rt.block_on(PirClient::connect_with_http_and_config(server_url, http, config))?;
-        Ok(Self { inner, rt })
-    }
-
     /// Perform a private Merkle path retrieval for a nullifier (blocking).
     pub fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
         self.rt.block_on(self.inner.fetch_proof(nullifier))
@@ -1203,15 +661,6 @@ impl PirClientBlocking {
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel (blocking).
     pub fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
         self.rt.block_on(self.inner.fetch_proofs(nullifiers))
-    }
-
-    /// Like [`PirClient::fetch_proofs_with_timing`] but synchronous.
-    pub fn fetch_proofs_with_timing(
-        &self,
-        nullifiers: &[Fp],
-    ) -> Result<Vec<(ImtProofData, NoteTiming)>> {
-        self.rt
-            .block_on(self.inner.fetch_proofs_with_timing(nullifiers))
     }
 
     /// The depth-29 root (PIR depth 25 padded to tree depth 29).
@@ -1283,8 +732,6 @@ mod tests {
     use ff::Field;
     use pasta_curves::Fp;
     use pir_export::build_ranges_with_sentinels;
-    use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS};
-    use ypir::params::{params_for_scenario_simplepir, DbRowsCols};
 
     /// Build a tree and export all three tier blobs.
     struct TestFixture {
@@ -1327,51 +774,6 @@ mod tests {
                 root29: tree.root29,
             }
         }
-    }
-
-    fn centered_abs_diff_mod(lhs: u64, rhs: u64, modulus: u64) -> u64 {
-        let raw = (lhs + modulus - rhs) % modulus;
-        raw.min(modulus - raw)
-    }
-
-    #[test]
-    fn batch_query_wire_carries_independent_slot_material() {
-        let params = params_for_scenario_simplepir(TIER1_YPIR_ROWS as u64, TIER1_ITEM_BITS as u64);
-        let ypir = YPIRClient::new(&params);
-        let batch: Vec<_> = [0usize, 7usize]
-            .iter()
-            .map(|&row| ypir.generate_query_simplepir(row))
-            .collect();
-        let pairs: Vec<(&[u64], &[u64])> = batch
-            .iter()
-            .map(|((q, pp), _seed)| (q.as_slice(), pp.as_slice()))
-            .collect();
-        let payload = serialize_ypir_batch_query(&pairs);
-        let parsed = pir_types::parse_ypir_batch_query(&payload).expect("batch wire parses");
-
-        assert_eq!(parsed.len(), 2);
-        assert_ne!(
-            parsed[0].1, parsed[1].1,
-            "wire payload must carry independent pp per slot"
-        );
-
-        let threshold = params.moduli[0] / 16;
-        let large = parsed[0]
-            .0
-            .iter()
-            .zip(parsed[1].0.iter())
-            .filter(|(a, b)| {
-                let a0 = **a & 0xFFFF_FFFF;
-                let b0 = **b & 0xFFFF_FFFF;
-                let diff = (a0 + params.moduli[0] - b0) % params.moduli[0];
-                let descaled = (diff * params.poly_len as u64) % params.moduli[0];
-                centered_abs_diff_mod(descaled, 0, params.moduli[0]) > threshold
-            })
-            .count();
-        assert!(
-            large > params.db_rows() / 8,
-            "wire q differences should be dense under independent secrets; got {large} large coefficients"
-        );
     }
 
     // ── fetch_proof_local round-trip ──────────────────────────────────────
@@ -1608,7 +1010,6 @@ mod tests {
             num_ranges: tree.ranges.len(),
             pir_depth: PIR_DEPTH,
             height: None,
-            supports_batch_query: true,
         };
 
         // Use the real item_size_bits to satisfy YPIR's internal
@@ -1689,23 +1090,24 @@ mod tests {
         );
     }
 
-    /// Batch-level analog of [`tier2_query_sent_despite_tier1_decode_failure`].
+    /// Multi-note analog of [`tier2_query_sent_despite_tier1_decode_failure`].
     ///
-    /// With `supports_batch_query: true` the client sends one
-    /// `POST /tier1/batch_query` and one `POST /tier2/batch_query`
-    /// regardless of K. The error-oracle invariant adapted to batching
-    /// becomes: **the tier 2 batch query MUST be sent even when the
-    /// tier 1 batch response cannot be decoded**, so the server cannot
-    /// use "did the client retry tier 2?" as a single-bit oracle on
-    /// the client's secret material.
+    /// Asserts the **K-note granularity** of the error-oracle mitigation:
+    /// when `fetch_proofs(K=5)` is called and **every** tier 1 response is
+    /// corrupted, the server must still observe **K tier 1 POSTs and
+    /// K tier 2 POSTs**. Aborting tier 2 dispatch the moment any tier 1
+    /// decode fails would re-introduce the "K vs K' tier-2 requests"
+    /// oracle the per-note mitigation closes.
     ///
-    /// We assert exactly one POST on each batch endpoint (independent
-    /// of K), and zero POSTs on the legacy single-query endpoints (the
-    /// server advertised batching support).
+    /// The 50 ms tier 2 delay is a coarse-grained guard against
+    /// `try_join_all` cancellation: it ensures all five fetch_proof_inner
+    /// futures dispatch their tier 2 POST before the first one resolves
+    /// to `Err`, so wiremock's request log is deterministic.
     #[tokio::test]
-    async fn batched_tier2_query_sent_despite_tier1_decode_failure() {
+    async fn batched_tier2_queries_all_sent_despite_tier1_decode_failure() {
         use ff::PrimeField as _;
         use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+        use std::time::Duration;
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1723,7 +1125,6 @@ mod tests {
             num_ranges: tree.ranges.len(),
             pir_depth: PIR_DEPTH,
             height: None,
-            supports_batch_query: true,
         };
 
         let tier1_scenario = YpirScenario {
@@ -1758,25 +1159,22 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Corrupted batch responses: the wire-format parser will fail
-        // (since the K header is bogus), surfacing per-slot Errs. The
-        // client must still dispatch the tier-2 batch.
         Mock::given(method("POST"))
-            .and(path("/tier1/batch_query"))
+            .and(path("/tier1/query"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xDE; 65536]))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/tier2/batch_query"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xAD; 65536]))
+            .and(path("/tier2/query"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![0xAD; 65536])
+                    .set_delay(Duration::from_millis(50)),
+            )
             .mount(&server)
             .await;
 
         let client = PirClient::connect(&server.uri()).await.unwrap();
-        assert!(
-            client.supports_batch_query(),
-            "test setup requires server to advertise batching support",
-        );
 
         let nullifiers: Vec<Fp> = tree
             .ranges
@@ -1789,67 +1187,28 @@ mod tests {
         let result = client.fetch_proofs(&nullifiers).await;
         assert!(
             result.is_err(),
-            "fetch_proofs should fail with corrupted tier1 batch response"
+            "fetch_proofs should fail with corrupted tier1 responses"
         );
 
         let received = server.received_requests().await.unwrap();
-        let tier1_batch_hits = received
-            .iter()
-            .filter(|r| r.url.path() == "/tier1/batch_query")
-            .count();
-        let tier2_batch_hits = received
-            .iter()
-            .filter(|r| r.url.path() == "/tier2/batch_query")
-            .count();
-        let tier1_legacy_hits = received
+        let tier1_hits = received
             .iter()
             .filter(|r| r.url.path() == "/tier1/query")
             .count();
-        let tier2_legacy_hits = received
+        let tier2_hits = received
             .iter()
             .filter(|r| r.url.path() == "/tier2/query")
             .count();
 
         assert_eq!(
-            tier1_batch_hits, 1,
-            "exactly one tier1 batch query must be sent (got {})",
-            tier1_batch_hits,
+            tier1_hits, K,
+            "all K tier1 queries should have been sent (got {})",
+            tier1_hits,
         );
         assert_eq!(
-            tier2_batch_hits, 1,
-            "tier2 batch query must still be sent when tier1 batch \
-             decode fails (batch-level error-oracle mitigation)",
+            tier2_hits, K,
+            "all K tier2 queries must still be sent when their tier1 \
+             decodes fail (batch-level error-oracle mitigation)",
         );
-        assert_eq!(
-            tier1_legacy_hits, 0,
-            "client should not fall back to per-note tier1 endpoint when \
-             server advertises batching"
-        );
-        assert_eq!(
-            tier2_legacy_hits, 0,
-            "client should not fall back to per-note tier2 endpoint when \
-             server advertises batching"
-        );
-
-        // The body of each batch POST should parse as a wire-format
-        // batch query of exactly K entries — the client must not have
-        // sent a malformed payload.
-        for path_name in ["/tier1/batch_query", "/tier2/batch_query"] {
-            let req = received
-                .iter()
-                .find(|r| r.url.path() == path_name)
-                .expect("batch request body present");
-            let pairs = pir_types::parse_ypir_batch_query(&req.body)
-                .expect("batch query body parses as wire format");
-            assert_eq!(
-                pairs.len(),
-                K,
-                "{path_name} body must contain {K} per-query payloads"
-            );
-            for (q, pp) in pairs {
-                assert!(!q.is_empty(), "{path_name} q payload must be non-empty");
-                assert!(!pp.is_empty(), "{path_name} pp payload must be non-empty");
-            }
-        }
     }
 }
