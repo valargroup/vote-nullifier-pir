@@ -15,13 +15,16 @@
 //! <precomputed_base_url>/snapshots/<height>/tier1.bin
 //! <precomputed_base_url>/snapshots/<height>/tier2.bin
 //! <precomputed_base_url>/snapshots/<height>/pir_root.json
+//! <precomputed_base_url>/snapshots/<height>/precompute/linux-amd64-avx512/tier1.precompute
+//! <precomputed_base_url>/snapshots/<height>/precompute/linux-amd64-avx512/tier2.precompute
 //! ```
 //!
 //! `manifest.json` may list additional objects (for example
 //! `nullifiers.bin`, `nullifiers.checkpoint`, `nullifiers.tree`) when
-//! operators publish them alongside a snapshot. **`nf-server serve`
-//! ignores those extras** and only downloads [`SNAPSHOT_FILES`]; other
-//! tooling may fetch them from the same prefix using the manifest hashes.
+//! operators publish them alongside a snapshot. `nf-server serve` requires
+//! only [`SNAPSHOT_FILES`]. Published precompute caches are optional: matching
+//! production linux-amd64 AVX-512 builds download them for faster first boot,
+//! while every other target computes local caches after loading the tier files.
 //!
 //! ## Atomicity
 //!
@@ -70,6 +73,21 @@ pub const PIR_SNAPSHOTS_PATH: &str = "/snapshots";
 /// that its presence at the canonical height implies the tier blobs are
 /// already in place.
 const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"];
+
+/// Published precompute caches are target-specific because their header binds
+/// to the build target. V1 only publishes the production fleet target.
+pub const PRECOMPUTE_CACHE_TARGET: &str = "linux-amd64-avx512";
+
+const PRECOMPUTE_CACHE_FILES: &[(&str, &str)] = &[
+    (
+        "precompute/linux-amd64-avx512/tier1.precompute",
+        "tier1.precompute",
+    ),
+    (
+        "precompute/linux-amd64-avx512/tier2.precompute",
+        "tier2.precompute",
+    ),
+];
 
 /// Subset of `pir_root.json` that the bootstrap reads to decide whether
 /// the local snapshot is already at the right height. We deliberately
@@ -120,6 +138,11 @@ pub struct Config {
     /// (multi-GB); 30 minutes is generous for slow links and lines up
     /// with how long the publisher CI itself takes.
     pub http_timeout: Duration,
+    /// Whether startup bootstrap should opportunistically download published
+    /// precompute caches for this build target when present in the manifest.
+    pub precompute_bootstrap: bool,
+    #[cfg(test)]
+    pub precompute_cache_target_override: Option<&'static str>,
 }
 
 impl Config {
@@ -326,7 +349,21 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         total_bytes = total_bytes.saturating_add(written);
     }
 
-    install_from_staging(&staging, &cfg.pir_data_dir)?;
+    let mut precompute_to_install = Vec::new();
+    match fetch_optional_precompute_caches(cfg, &client, &snapshot_dir, &staging, &manifest).await {
+        Ok((downloaded, bytes)) => {
+            precompute_to_install = downloaded;
+            total_bytes = total_bytes.saturating_add(bytes);
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                "published precompute cache download failed; continuing with local recompute"
+            );
+        }
+    }
+
+    install_from_staging(&staging, &cfg.pir_data_dir, &precompute_to_install)?;
 
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         warn!(error = %e, dir = %staging.display(), "failed to clean staging dir");
@@ -360,6 +397,12 @@ async fn download_and_verify(
         .error_for_status()
         .with_context(|| format!("GET {url} (non-2xx)"))?;
 
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create {}", parent.display()))?;
+    }
+
     let mut file = tokio::fs::File::create(dest)
         .await
         .with_context(|| format!("create {}", dest.display()))?;
@@ -389,9 +432,7 @@ async fn download_and_verify(
     let actual_sha = hex::encode(hasher.finalize());
     if !actual_sha.eq_ignore_ascii_case(expected_sha256) {
         let _ = std::fs::remove_file(dest);
-        bail!(
-            "{url}: sha256 mismatch (expected {expected_sha256}, got {actual_sha})"
-        );
+        bail!("{url}: sha256 mismatch (expected {expected_sha256}, got {actual_sha})");
     }
 
     info!(
@@ -403,12 +444,94 @@ async fn download_and_verify(
     Ok(written)
 }
 
+/// Return the published precompute cache target for this build, if any.
+///
+/// Caches are not portable across target identity. The cache loader enforces
+/// this again via `target_hash`, but skipping non-production targets avoids
+/// downloading multi-GB files that cannot be used.
+pub fn current_precompute_cache_target() -> Option<&'static str> {
+    if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") && cfg!(target_feature = "avx512f")
+    {
+        Some(PRECOMPUTE_CACHE_TARGET)
+    } else {
+        None
+    }
+}
+
+fn selected_precompute_cache_target(_cfg: &Config) -> Option<&'static str> {
+    #[cfg(test)]
+    if let Some(target) = _cfg.precompute_cache_target_override {
+        return Some(target);
+    }
+
+    current_precompute_cache_target()
+}
+
+async fn fetch_optional_precompute_caches(
+    cfg: &Config,
+    client: &reqwest::Client,
+    snapshot_dir: &str,
+    staging: &Path,
+    manifest: &PublishedManifest,
+) -> Result<(Vec<(&'static str, &'static str)>, u64)> {
+    if !cfg.precompute_bootstrap {
+        info!("published precompute cache bootstrap disabled");
+        return Ok((Vec::new(), 0));
+    }
+
+    let Some(target) = selected_precompute_cache_target(cfg) else {
+        info!("no published precompute cache target for this build; skipping");
+        return Ok((Vec::new(), 0));
+    };
+
+    if target != PRECOMPUTE_CACHE_TARGET {
+        info!(
+            target,
+            "unsupported published precompute cache target; skipping"
+        );
+        return Ok((Vec::new(), 0));
+    }
+
+    for (remote_name, _) in PRECOMPUTE_CACHE_FILES {
+        if !manifest.files.contains_key(*remote_name) {
+            info!(
+                target,
+                file = *remote_name,
+                "published precompute cache missing from manifest; skipping remote caches"
+            );
+            return Ok((Vec::new(), 0));
+        }
+    }
+
+    let mut total_bytes: u64 = 0;
+    let mut downloaded = Vec::with_capacity(PRECOMPUTE_CACHE_FILES.len());
+    for (remote_name, local_name) in PRECOMPUTE_CACHE_FILES {
+        let entry = &manifest.files[*remote_name];
+        let url = format!("{snapshot_dir}/{remote_name}");
+        let dest = staging.join(remote_name);
+        let written = download_and_verify(&client, &url, &dest, &entry.sha256, entry.size).await?;
+        total_bytes = total_bytes.saturating_add(written);
+        downloaded.push((*remote_name, *local_name));
+    }
+
+    info!(
+        target,
+        bytes = total_bytes,
+        "published precompute caches downloaded and verified"
+    );
+    Ok((downloaded, total_bytes))
+}
+
 /// Move staged files into `pir_data_dir` in the order defined by
 /// [`SNAPSHOT_FILES`] (tier blobs first, `pir_root.json` last) so that
 /// a half-applied install is idempotent — the absent or stale
 /// `pir_root.json` will simply trigger another bootstrap on the next
 /// startup.
-fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
+fn install_from_staging(
+    staging: &Path,
+    pir_data_dir: &Path,
+    precompute_to_install: &[(&str, &str)],
+) -> Result<()> {
     if !pir_data_dir.exists() {
         std::fs::create_dir_all(pir_data_dir)
             .with_context(|| format!("create {}", pir_data_dir.display()))?;
@@ -446,6 +569,27 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
                         "failed to evict stale precompute cache (next serve will reject via hash)"
                     ),
                 }
+            }
+        }
+    }
+    for (remote_name, local_name) in precompute_to_install {
+        let from = staging.join(remote_name);
+        let to = pir_data_dir.join(local_name);
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                tracing::info!(
+                    cache = %to.display(),
+                    source = *remote_name,
+                    "installed published precompute cache"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    source = %from.display(),
+                    cache = %to.display(),
+                    error = %e,
+                    "failed to install published precompute cache; local startup will recompute"
+                );
             }
         }
     }
@@ -523,7 +667,7 @@ mod tests {
         for name in SNAPSHOT_FILES {
             std::fs::write(staging.join(name), name.as_bytes()).unwrap();
         }
-        install_from_staging(&staging, &dest).unwrap();
+        install_from_staging(&staging, &dest, &[]).unwrap();
         for name in SNAPSHOT_FILES {
             assert!(dest.join(name).exists(), "{name} should be installed");
             assert!(!staging.join(name).exists(), "{name} should be moved");
@@ -539,6 +683,8 @@ mod tests {
             precomputed_base_url: "ignored".into(),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
+            precompute_bootstrap: true,
+            precompute_cache_target_override: None,
         };
         let outcome = run(&cfg).await.unwrap();
         assert_eq!(outcome, Outcome::Disabled);
@@ -567,6 +713,8 @@ mod tests {
             precomputed_base_url: String::new(),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(5),
+            precompute_bootstrap: true,
+            precompute_cache_target_override: None,
         };
         let err = run(&cfg).await.err().expect("expected error");
         let s = format!("{err:#}");
@@ -584,6 +732,8 @@ mod tests {
             precomputed_base_url: String::new(),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_millis(500),
+            precompute_bootstrap: true,
+            precompute_cache_target_override: None,
         };
         assert!(run(&cfg).await.is_err());
     }
@@ -608,7 +758,10 @@ mod tests {
         assert_eq!(m.height, 100);
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
-        assert_eq!(keys, ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]);
+        assert_eq!(
+            keys,
+            ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]
+        );
     }
 
     #[test]
@@ -638,5 +791,4 @@ mod tests {
         }
         assert!(m.files.contains_key("nullifiers.bin"));
     }
-
 }

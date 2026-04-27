@@ -213,7 +213,7 @@ systemctl restart nullifier-query-server
 
 **Startup time:** roughly two phases.
 
-- **Cold (no `tier{1,2}.precompute` cache present)**: bootstrap CDN download + YPIR precomputation + cache write. Bootstrap dominates on a fresh host (~2 min for the 3 GB tier-2 download from the configured CDN region). YPIR setup is ~50 s on a 16-core Apple Silicon dev box; ~2 min on the recommended production SKU. The precompute cache is written at the end (~5 s I/O for the 13 GB tier-2 cache on SSD), enabling fast restarts thereafter.
+- **Cold (no `tier{1,2}.precompute` cache present)**: bootstrap CDN download + precompute cache bootstrap when a matching production cache is published. On non-production targets, or if the optional cache fetch fails, the host locally runs YPIR precomputation and writes the cache for the next restart.
 - **Warm (`tier{1,2}.precompute` present and valid)**: cache load only. ~10 s on Apple Silicon dev; expected sub-15 s on the production SKU. The expensive YPIR offline precomputation is skipped entirely.
 
 Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
@@ -352,6 +352,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
+| `SVOTE_PIR_PRECOMPUTE_BOOTSTRAP` | Defaults to `true`. When a matching production cache is listed in the snapshot manifest, download it during bootstrap; set `false` to force local cache generation. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
 
@@ -391,7 +392,7 @@ Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for
 | `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
 | `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries (mmap'd by `serve`). Identical to `<precomputed-base>/snapshots/<height>/tier*.bin`. |
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: tree roots, tier byte sizes, and `height`. Source of truth for "what height am I serving"; installed **last** so a half-applied bootstrap retries cleanly next start. |
-| `tier1.precompute`, `tier2.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Skips the ~50–120 s YPIR offline precomputation on subsequent boots. Auto-invalidated by content hash when the corresponding `tier{N}.bin` changes; safe to delete (next boot recomputes). Sizes: tier 1 ≈ 720 MB, tier 2 ≈ 13 GB on the production scenario. **Not** distributed via the CDN; each host writes its own. |
+| `tier1.precompute`, `tier2.precompute` | Stage 4: published snapshot cache **or** written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Skips the ~50–120 s YPIR offline precomputation on subsequent boots. Auto-invalidated by content hash when the corresponding `tier{N}.bin` changes; safe to delete (next boot recomputes). Sizes: tier 1 ≈ 720 MB, tier 2 ≈ 13 GB on the production scenario. Published caches are target-specific; v1 bootstrap downloads only matching production `linux-amd64-avx512` caches. Other targets compute local caches. |
 
 When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN. The precompute caches are wiped along with everything else.
 

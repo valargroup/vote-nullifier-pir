@@ -69,10 +69,12 @@ jobs:
             set -euo pipefail
 
             REQUESTED_H="${{ steps.round_height.outputs.value }}"
-            STAGE="/tmp/snap-build-$$"
             BUCKET="${{ env.DO_BUCKET }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
+            PRECOMPUTE_TARGET="linux-amd64-avx512"
+            STAGE_PARENT="${{ env.DEPLOY_PATH }}/snapshot-staging"
+            STAGE=""
 
             echo "==> Ensuring s3cmd and jq are installed"
             if ! command -v s3cmd >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -96,8 +98,9 @@ jobs:
             echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
             cd "${{ env.DEPLOY_PATH }}"
             export SVOTE_PIR_VOTING_CONFIG_URL=
-            rm -rf "$STAGE"
-            mkdir -p "$STAGE"
+            mkdir -p "$STAGE_PARENT"
+            find "$STAGE_PARENT" -maxdepth 1 -type d -name 'snap-build.*' -mtime +1 -exec rm -rf {} +
+            STAGE="$(mktemp -d "$STAGE_PARENT/snap-build.XXXXXX")"
             if [ -n "$REQUESTED_H" ]; then
               echo "    up to explicit height $REQUESTED_H"
               ./nf-server sync \
@@ -130,6 +133,9 @@ jobs:
               exit 1
             fi
 
+            echo "==> Generate production precompute caches (required)"
+            ./nf-server precompute-cache --pir-data-dir "$STAGE"
+
             echo "==> Building manifest.json"
             BIN_SHA=$(sha256sum "${{ env.DEPLOY_PATH }}/nf-server" | awk '{print $1}')
             CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -139,6 +145,16 @@ jobs:
                 size=$(stat -c%s "$f")
                 sha=$(sha256sum "$f" | awk '{print $1}')
                 jq -n --arg name "$f" --argjson size "$size" --arg sha "$sha" \
+                  '{($name): {size: $size, sha256: $sha}}'
+              done | jq -s 'add'
+            )
+            PRECOMPUTE_JSON=$(
+              cd "$STAGE"
+              for f in tier1.precompute tier2.precompute; do
+                size=$(stat -c%s "$f")
+                sha=$(sha256sum "$f" | awk '{print $1}')
+                remote="precompute/$PRECOMPUTE_TARGET/$f"
+                jq -n --arg name "$remote" --argjson size "$size" --arg sha "$sha" \
                   '{($name): {size: $size, sha256: $sha}}'
               done | jq -s 'add'
             )
@@ -161,7 +177,7 @@ jobs:
                 done | jq -s 'add'
               )
             fi
-            FILES_JSON=$(jq -n --argjson tier "$TIER_JSON" --argjson nf "$NF_JSON" '$tier + $nf')
+            FILES_JSON=$(jq -n --argjson tier "$TIER_JSON" --argjson precompute "$PRECOMPUTE_JSON" --argjson nf "$NF_JSON" '$tier + $precompute + $nf')
             jq -n \
               --argjson height "$H" \
               --arg created_at "$CREATED_AT" \
@@ -185,6 +201,12 @@ jobs:
               s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
                 --acl-public --force --no-progress
             done
+            for f in tier1.precompute tier2.precompute; do
+              remote="precompute/$PRECOMPUTE_TARGET/$f"
+              echo "  - $remote"
+              s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$remote" \
+                --acl-public --force --no-progress
+            done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
               for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
@@ -200,6 +222,9 @@ jobs:
 
             echo "==> Enforce public-read ACL on all uploaded files"
             ACL_FILES="tier0.bin tier1.bin tier2.bin pir_root.json"
+            for f in tier1.precompute tier2.precompute; do
+              ACL_FILES="$ACL_FILES precompute/$PRECOMPUTE_TARGET/$f"
+            done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               ACL_FILES="$ACL_FILES nullifiers.bin nullifiers.checkpoint nullifiers.tree"
             fi
@@ -225,6 +250,22 @@ jobs:
               echo "  actual:   $ACTUAL_TIER0_SHA"
               exit 1
             fi
+            echo "==> Verify precompute entries: local disk matches published manifest (no multi-GB re-download)"
+            for f in tier1.precompute tier2.precompute; do
+              remote="precompute/$PRECOMPUTE_TARGET/$f"
+              EXPECT=$(jq -r --arg n "$remote" '.files[$n].sha256 // empty' "$VERIFY_DIR/manifest.json")
+              if [ -z "$EXPECT" ]; then
+                echo "ERROR: manifest missing files[$remote] after upload"
+                exit 1
+              fi
+              ACTUAL=$(sha256sum "$STAGE/$f" | awk '{print $1}')
+              if [ "$EXPECT" != "$ACTUAL" ]; then
+                echo "ERROR: local $f sha256 does not match manifest (upload integrity)"
+                echo "  manifest: $EXPECT"
+                echo "  local:    $ACTUAL"
+                exit 1
+              fi
+            done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
               echo "==> Verify nullifier/tree entries: local disk matches published manifest (no multi-GB re-download)"

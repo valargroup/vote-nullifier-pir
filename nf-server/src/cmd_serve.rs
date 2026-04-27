@@ -38,7 +38,11 @@ pub struct Args {
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
+    #[arg(
+        long,
+        default_value = "https://zec.rocks:443",
+        env = "SVOTE_PIR_MAINNET_RPC_URL"
+    )]
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
@@ -78,6 +82,12 @@ pub struct Args {
     /// patience rather than spurious failures on a fresh host.
     #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
     bootstrap_timeout_secs: u64,
+
+    /// Download matching published YPIR precompute caches during snapshot
+    /// bootstrap when the manifest provides them. Non-production targets skip
+    /// this automatically. Set false to force local cache generation.
+    #[arg(long, env = "SVOTE_PIR_PRECOMPUTE_BOOTSTRAP", default_value_t = true)]
+    precompute_bootstrap: bool,
 
     /// How long the host must continuously serve a snapshot older
     /// than the canonical voting-config height before the watchdog
@@ -164,6 +174,9 @@ pub async fn run(args: Args) -> Result<()> {
         precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
         pir_data_dir: args.pir_data_dir.clone(),
         http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
+        precompute_bootstrap: args.precompute_bootstrap,
+        #[cfg(test)]
+        precompute_cache_target_override: None,
     };
     // Hold `rebuild_lock` for the entire duration of the startup
     // pipeline (index rebuild → bootstrap → load). This serialises
