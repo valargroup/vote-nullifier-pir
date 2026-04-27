@@ -199,46 +199,51 @@ pub fn parse_ypir_query(query_bytes: &[u8]) -> Result<(Vec<u64>, Vec<u64>), &'st
 /// Serialize a YPIR SimplePIR **batch** query into the wire format expected
 /// by `pir-server` at `POST /tier{1,2}/batch_query`.
 ///
-/// All `K` `pqr` slices must have the same length (the `pqr` shape is
-/// determined by the YPIR scenario, not the per-query `q.0` content).
+/// All `K` `(pqr, pp)` pairs must have the same `pqr` length and the same
+/// `pp` length (both shapes are determined by the YPIR scenario, not the
+/// per-query contents).
 ///
 /// Layout:
 /// ```text
 /// [8 bytes LE u64: K]
 /// [8 bytes LE u64: pqr_byte_len]      (per query; identical across the batch)
-/// [K * pqr_byte_len bytes: q_1 || q_2 || ... || q_K as LE u64s]
-/// [8 bytes LE u64: pp_byte_len]
-/// [pp_byte_len bytes: shared pack_pub_params as LE u64s]
+/// [8 bytes LE u64: pp_byte_len]       (per query; identical across the batch)
+/// [K * (pqr_byte_len + pp_byte_len) bytes: (q_1 || pp_1) || ... || (q_K || pp_K)]
 /// ```
 ///
-/// `pack_pub_params` is shared across the K queries because they were
-/// generated under one YPIR `client_seed` (one secret `s`). This is the
-/// upload bandwidth lever the batching protocol exploits.
-pub fn serialize_ypir_batch_query(pqrs: &[&[u64]], pub_params: &[u64]) -> Vec<u8> {
-    let k = pqrs.len();
-    let pqr_u64_len = pqrs.first().map(|q| q.len()).unwrap_or(0);
-    for q in pqrs {
+/// Each pair carries its own `pack_pub_params`, generated under an independent
+/// YPIR `client_seed`, while still sharing one HTTP request.
+pub fn serialize_ypir_batch_query(pairs: &[(&[u64], &[u64])]) -> Vec<u8> {
+    let k = pairs.len();
+    let pqr_u64_len = pairs.first().map(|(q, _)| q.len()).unwrap_or(0);
+    let pp_u64_len = pairs.first().map(|(_, pp)| pp.len()).unwrap_or(0);
+    for (q, pp) in pairs {
         debug_assert_eq!(
             q.len(),
             pqr_u64_len,
             "all per-query pqr vectors must share the same length"
         );
+        debug_assert_eq!(
+            pp.len(),
+            pp_u64_len,
+            "all per-query pp vectors must share the same length"
+        );
     }
     let pqr_byte_len = pqr_u64_len * U64_BYTES;
-    let pp_byte_len = pub_params.len() * U64_BYTES;
+    let pp_byte_len = pp_u64_len * U64_BYTES;
     let mut payload = Vec::with_capacity(
-        3 * U64_BYTES + k * pqr_byte_len + pp_byte_len,
+        3 * U64_BYTES + k * (pqr_byte_len + pp_byte_len),
     );
     payload.extend_from_slice(&(k as u64).to_le_bytes());
     payload.extend_from_slice(&(pqr_byte_len as u64).to_le_bytes());
-    for q in pqrs {
+    payload.extend_from_slice(&(pp_byte_len as u64).to_le_bytes());
+    for (q, pp) in pairs {
         for &v in q.iter() {
             payload.extend_from_slice(&v.to_le_bytes());
         }
-    }
-    payload.extend_from_slice(&(pp_byte_len as u64).to_le_bytes());
-    for &v in pub_params {
-        payload.extend_from_slice(&v.to_le_bytes());
+        for &v in pp.iter() {
+            payload.extend_from_slice(&v.to_le_bytes());
+        }
     }
     payload
 }
@@ -246,16 +251,14 @@ pub fn serialize_ypir_batch_query(pqrs: &[&[u64]], pub_params: &[u64]) -> Vec<u8
 /// Parsed view over a batch query wire payload as produced by
 /// [`serialize_ypir_batch_query`].
 ///
-/// Returns `(pqrs, pub_params)` where `pqrs` is a `Vec<Vec<u64>>` of length K
-/// (one per-query `q.0` vector) and `pub_params` is the shared
-/// `pack_pub_params` blob.
+/// Returns K `(q.0, pack_pub_params)` pairs, one per query slot.
 ///
 /// Caller is responsible for enforcing `K <= MAX_BATCH_K` after parsing.
 pub fn parse_ypir_batch_query(
     query_bytes: &[u8],
-) -> Result<(Vec<Vec<u64>>, Vec<u64>), &'static str> {
+) -> Result<Vec<(Vec<u64>, Vec<u64>)>, &'static str> {
     let mut cursor = 0usize;
-    if query_bytes.len() < 2 * U64_BYTES {
+    if query_bytes.len() < 3 * U64_BYTES {
         return Err("batch query too short for header");
     }
     let k = u64::from_le_bytes(query_bytes[cursor..cursor + U64_BYTES].try_into().unwrap()) as usize;
@@ -272,19 +275,6 @@ pub fn parse_ypir_batch_query(
     if pqr_byte_len == 0 {
         return Err("pqr section is empty");
     }
-    let pqrs_total = k.checked_mul(pqr_byte_len).ok_or("K * pqr overflow")?;
-    if cursor + pqrs_total + U64_BYTES > query_bytes.len() {
-        return Err("batch query truncated in pqr section");
-    }
-    let mut pqrs = Vec::with_capacity(k);
-    for _ in 0..k {
-        let q: Vec<u64> = query_bytes[cursor..cursor + pqr_byte_len]
-            .chunks_exact(U64_BYTES)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
-            .collect();
-        pqrs.push(q);
-        cursor += pqr_byte_len;
-    }
     let pp_byte_len =
         u64::from_le_bytes(query_bytes[cursor..cursor + U64_BYTES].try_into().unwrap()) as usize;
     cursor += U64_BYTES;
@@ -294,14 +284,29 @@ pub fn parse_ypir_batch_query(
     if pp_byte_len == 0 {
         return Err("pp section is empty");
     }
-    if cursor + pp_byte_len != query_bytes.len() {
-        return Err("batch query trailing bytes do not match pp_byte_len");
+    let per_pair_len = pqr_byte_len
+        .checked_add(pp_byte_len)
+        .ok_or("pqr + pp overflow")?;
+    let payload_len = k.checked_mul(per_pair_len).ok_or("K * pair overflow")?;
+    if cursor + payload_len != query_bytes.len() {
+        return Err("batch query payload length mismatch");
     }
-    let pp: Vec<u64> = query_bytes[cursor..cursor + pp_byte_len]
-        .chunks_exact(U64_BYTES)
-        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
-        .collect();
-    Ok((pqrs, pp))
+    let mut pairs = Vec::with_capacity(k);
+    for _ in 0..k {
+        let q: Vec<u64> = query_bytes[cursor..cursor + pqr_byte_len]
+            .chunks_exact(U64_BYTES)
+            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        cursor += pqr_byte_len;
+
+        let pp: Vec<u64> = query_bytes[cursor..cursor + pp_byte_len]
+            .chunks_exact(U64_BYTES)
+            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        cursor += pp_byte_len;
+        pairs.push((q, pp));
+    }
+    Ok(pairs)
 }
 
 /// Serialize K SimplePIR responses into the batch response wire format.
@@ -434,24 +439,24 @@ mod tests {
         let q1 = vec![1u64, 2, 3];
         let q2 = vec![4u64, 5, 6];
         let q3 = vec![7u64, 8, 9];
-        let pp = vec![100u64, 200, 300, 400];
-        let pqrs: Vec<&[u64]> = vec![&q1, &q2, &q3];
-        let payload = serialize_ypir_batch_query(&pqrs, &pp);
+        let pp1 = vec![100u64, 200, 300, 400];
+        let pp2 = vec![500u64, 600, 700, 800];
+        let pp3 = vec![900u64, 1000, 1100, 1200];
+        let pairs: Vec<(&[u64], &[u64])> = vec![(&q1, &pp1), (&q2, &pp2), (&q3, &pp3)];
+        let payload = serialize_ypir_batch_query(&pairs);
 
-        // Header: K, pqr_byte_len, payload bytes for K queries, pp_byte_len, pp.
+        // Header: K, pqr_byte_len, pp_byte_len, then K (q, pp) pairs.
         let expected_len = U64_BYTES // K
             + U64_BYTES // pqr_byte_len
-            + 3 * (3 * U64_BYTES) // K * pqr_byte_len
             + U64_BYTES // pp_byte_len
-            + 4 * U64_BYTES; // pp
+            + 3 * ((3 + 4) * U64_BYTES); // K * (pqr + pp)
         assert_eq!(payload.len(), expected_len);
 
-        let (got_pqrs, got_pp) = parse_ypir_batch_query(&payload).unwrap();
-        assert_eq!(got_pqrs.len(), 3);
-        assert_eq!(got_pqrs[0], q1);
-        assert_eq!(got_pqrs[1], q2);
-        assert_eq!(got_pqrs[2], q3);
-        assert_eq!(got_pp, pp);
+        let got_pairs = parse_ypir_batch_query(&payload).unwrap();
+        assert_eq!(got_pairs.len(), 3);
+        assert_eq!(got_pairs[0], (q1, pp1));
+        assert_eq!(got_pairs[1], (q2, pp2));
+        assert_eq!(got_pairs[2], (q3, pp3));
     }
 
     #[test]
@@ -459,7 +464,7 @@ mod tests {
         let q = vec![1u64, 2, 3];
         let pp = vec![10u64, 20];
         let single = serialize_ypir_query(&q, &pp);
-        let batch = serialize_ypir_batch_query(&[q.as_slice()], &pp);
+        let batch = serialize_ypir_batch_query(&[(q.as_slice(), pp.as_slice())]);
         // Batch is always 16 bytes longer than the single-query layout
         // (extra K prefix + extra pp_byte_len prefix - the single layout has
         // no K prefix and no separate pp_byte_len).
@@ -471,6 +476,7 @@ mod tests {
         let mut payload = Vec::new();
         payload.extend_from_slice(&0u64.to_le_bytes());
         payload.extend_from_slice(&8u64.to_le_bytes());
+        payload.extend_from_slice(&8u64.to_le_bytes());
         assert!(parse_ypir_batch_query(&payload).is_err());
     }
 
@@ -478,8 +484,7 @@ mod tests {
     fn parse_batch_query_rejects_truncated() {
         let q1 = vec![1u64, 2];
         let pp = vec![5u64];
-        let pqrs: Vec<&[u64]> = vec![&q1];
-        let mut payload = serialize_ypir_batch_query(&pqrs, &pp);
+        let mut payload = serialize_ypir_batch_query(&[(q1.as_slice(), pp.as_slice())]);
         payload.truncate(payload.len() - 1);
         assert!(parse_ypir_batch_query(&payload).is_err());
     }
