@@ -6,12 +6,11 @@ edition = "2021"
 [features]
 default = []
 avx512 = ["ypir/explicit_avx512"]
-rayon = ["dep:rayon", "ypir/rayon"]
+rayon = ["ypir/rayon"]
 
 [dependencies]
 pir-types  = { path = "../types" }
 ypir = { version = "0.1.3", package = "valar-ypir", default-features = false, features = ["server"] }
-rayon = { version = "1", optional = true }
 spiral-rs = { version = "0.5", package = "valar-spiral-rs" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

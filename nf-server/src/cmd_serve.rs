@@ -129,14 +129,6 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/params/tier2", get(handlers::get_params_tier2))
         .route("/tier1/query", post(handlers::post_tier1_query))
         .route("/tier2/query", post(handlers::post_tier2_query))
-        .route(
-            "/tier1/batch_query",
-            post(handlers::post_tier1_batch_query),
-        )
-        .route(
-            "/tier2/batch_query",
-            post(handlers::post_tier2_batch_query),
-        )
         .route("/tier1/row/:idx", get(handlers::get_tier1_row))
         .route("/tier2/row/:idx", get(handlers::get_tier2_row))
         .route("/root", get(handlers::get_root))
@@ -288,7 +280,6 @@ pub async fn run(args: Args) -> Result<()> {
                          set SENTRY_DSN to enable alerting)"
                     );
                 }
-                eprintln!("{}", pir_server::pir_batch_compute_mode_startup_message());
                 tx.finish();
                 sentry::capture_message("nf-server ready", sentry::Level::Info);
             }
