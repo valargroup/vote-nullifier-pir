@@ -54,7 +54,11 @@ pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 1,024
 pub const YPIR_MIN_ROWS: usize = 2048;
 
 /// Number of rows in the Tier 1 YPIR database (padded to YPIR minimum).
-pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS { TIER1_ROWS } else { YPIR_MIN_ROWS }; // 2,048
+pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS {
+    TIER1_ROWS
+} else {
+    YPIR_MIN_ROWS
+}; // 2,048
 
 /// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
 /// `[nf_lo, nf_mid, nf_hi]`.
@@ -172,8 +176,7 @@ pub fn parse_ypir_query(query_bytes: &[u8]) -> Result<(Vec<u64>, Vec<u64>), &'st
     if query_bytes.len() < U64_BYTES {
         return Err("query too short");
     }
-    let pqr_byte_len =
-        u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
+    let pqr_byte_len = u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
     if !pqr_byte_len.is_multiple_of(U64_BYTES) {
         return Err("pqr_byte_len not a multiple of 8");
     }
@@ -231,9 +234,7 @@ pub fn serialize_ypir_batch_query(pairs: &[(&[u64], &[u64])]) -> Vec<u8> {
     }
     let pqr_byte_len = pqr_u64_len * U64_BYTES;
     let pp_byte_len = pp_u64_len * U64_BYTES;
-    let mut payload = Vec::with_capacity(
-        3 * U64_BYTES + k * (pqr_byte_len + pp_byte_len),
-    );
+    let mut payload = Vec::with_capacity(3 * U64_BYTES + k * (pqr_byte_len + pp_byte_len));
     payload.extend_from_slice(&(k as u64).to_le_bytes());
     payload.extend_from_slice(&(pqr_byte_len as u64).to_le_bytes());
     payload.extend_from_slice(&(pp_byte_len as u64).to_le_bytes());
@@ -261,7 +262,8 @@ pub fn parse_ypir_batch_query(
     if query_bytes.len() < 3 * U64_BYTES {
         return Err("batch query too short for header");
     }
-    let k = u64::from_le_bytes(query_bytes[cursor..cursor + U64_BYTES].try_into().unwrap()) as usize;
+    let k =
+        u64::from_le_bytes(query_bytes[cursor..cursor + U64_BYTES].try_into().unwrap()) as usize;
     cursor += U64_BYTES;
     if k == 0 {
         return Err("batch K must be >= 1");
@@ -346,8 +348,7 @@ pub fn parse_ypir_batch_response(bytes: &[u8]) -> Result<Vec<Vec<u8>>, &'static 
         return Err("batch response too short for header");
     }
     let k = u64::from_le_bytes(bytes[..U64_BYTES].try_into().unwrap()) as usize;
-    let resp_len =
-        u64::from_le_bytes(bytes[U64_BYTES..2 * U64_BYTES].try_into().unwrap()) as usize;
+    let resp_len = u64::from_le_bytes(bytes[U64_BYTES..2 * U64_BYTES].try_into().unwrap()) as usize;
     if k == 0 {
         return Err("batch response K must be >= 1");
     }

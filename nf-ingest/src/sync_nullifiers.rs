@@ -25,9 +25,7 @@ const BLOCK_ALIGNMENT: u64 = 10;
 /// of the chain tip as reported by the server.
 pub async fn fetch_chain_tip(lwd_url: &str) -> Result<u64> {
     let mut client = connect_lwd(lwd_url).await?;
-    let latest = client
-        .get_latest_block(Request::new(ChainSpec {}))
-        .await?;
+    let latest = client.get_latest_block(Request::new(ChainSpec {})).await?;
     Ok(latest.into_inner().height)
 }
 
@@ -146,12 +144,19 @@ pub async fn sync(
     if start > NU5_ACTIVATION_HEIGHT {
         info!(height = start, existing, "resuming from checkpoint");
     } else {
-        info!(height = NU5_ACTIVATION_HEIGHT, "starting fresh from NU5 activation");
+        info!(
+            height = NU5_ACTIVATION_HEIGHT,
+            "starting fresh from NU5 activation"
+        );
     }
     if let Some(h) = max_height {
         info!(max_height = h, chain_tip, "max height set");
     }
-    info!(target, blocks_remaining = target.saturating_sub(start), "sync target");
+    info!(
+        target,
+        blocks_remaining = target.saturating_sub(start),
+        "sync target"
+    );
 
     if start >= target {
         return Ok(SyncResult {

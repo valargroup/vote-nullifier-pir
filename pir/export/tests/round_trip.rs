@@ -55,7 +55,9 @@ fn construct_proof(
     let t2_offset = t2_row_idx * TIER2_ROW_BYTES;
     let tier2_row = &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES];
     let tier2 = Tier2Row::from_bytes(tier2_row).ok()?;
-    let valid_leaves = num_ranges.saturating_sub(t2_row_idx * TIER2_LEAVES).min(TIER2_LEAVES);
+    let valid_leaves = num_ranges
+        .saturating_sub(t2_row_idx * TIER2_LEAVES)
+        .min(TIER2_LEAVES);
 
     let leaf_idx = tier2.find_leaf(value, valid_leaves)?;
 
@@ -106,7 +108,12 @@ fn test_small_tree_round_trip() {
     let mut tier2_data = Vec::new();
     pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
-    eprintln!("  Tier sizes: {} / {} / {}", tier0_data.len(), tier1_data.len(), tier2_data.len());
+    eprintln!(
+        "  Tier sizes: {} / {} / {}",
+        tier0_data.len(),
+        tier1_data.len(),
+        tier2_data.len()
+    );
 
     // Test multiple values
     let mut passed = 0;
@@ -170,8 +177,13 @@ fn test_pir_proof_verifies_independently() {
     let tier0_data =
         pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
     let mut tier1_data = Vec::new();
-    pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_data)
-        .unwrap();
+    pir_export::tier1::export(
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        &mut tier1_data,
+    )
+    .unwrap();
     let mut tier2_data = Vec::new();
     pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
 
@@ -200,10 +212,7 @@ fn test_pir_proof_verifies_independently() {
 /// records the correct height.
 #[test]
 fn test_build_and_export_writes_files() {
-    let dir = std::env::temp_dir().join(format!(
-        "pir_build_export_test_{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("pir_build_export_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
@@ -217,8 +226,7 @@ fn test_build_and_export_writes_files() {
 
     // Verify metadata
     let meta: pir_export::PirMetadata =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("pir_root.json")).unwrap())
-            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(dir.join("pir_root.json")).unwrap()).unwrap();
     assert_eq!(meta.height, Some(2_800_000));
     assert_eq!(meta.pir_depth, pir_export::PIR_DEPTH);
     assert_eq!(meta.root29, hex::encode(tree.root29.to_repr()));
@@ -282,7 +290,10 @@ fn test_subset_export_produces_different_root() {
             subset_tree.root29,
         )
         .expect("subset proof construction failed");
-        assert!(proof.verify(nf_lo + Fp::one()), "subset proof verification failed");
+        assert!(
+            proof.verify(nf_lo + Fp::one()),
+            "subset proof verification failed"
+        );
     }
 }
 
@@ -296,22 +307,12 @@ fn test_export_deterministic() {
 
     // Export tier1 twice
     let mut tier1_a = Vec::new();
-    pir_export::tier1::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier1_a,
-    )
-    .unwrap();
+    pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_a)
+        .unwrap();
 
     let mut tier1_b = Vec::new();
-    pir_export::tier1::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier1_b,
-    )
-    .unwrap();
+    pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_b)
+        .unwrap();
 
     assert_eq!(
         tier1_a, tier1_b,
@@ -431,6 +432,10 @@ fn test_tier0_binary_search() {
     // Test that values within ranges are found
     for &[nf_lo, _, _] in ranges.iter().take(10) {
         let result = tier0.find_subtree(nf_lo + Fp::one());
-        assert!(result.is_some(), "find_subtree failed for nf_lo={:?}", nf_lo);
+        assert!(
+            result.is_some(),
+            "find_subtree failed for nf_lo={:?}",
+            nf_lo
+        );
     }
 }

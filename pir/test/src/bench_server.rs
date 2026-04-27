@@ -347,7 +347,10 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     eprintln!("  url:        {}", cfg.url);
     eprintln!("  mode:       {}", cfg.mode.as_str());
     eprintln!("  batch_size: {}", cfg.batch_size);
-    eprintln!("  iterations: {} (after {} warmup)", cfg.iterations, cfg.warmup);
+    eprintln!(
+        "  iterations: {} (after {} warmup)",
+        cfg.iterations, cfg.warmup
+    );
     if let Some(s) = cfg.seed {
         eprintln!("  seed:       {}", s);
     }
@@ -356,7 +359,11 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     let nf_data = std::fs::read(&cfg.nullifiers_path)
         .with_context(|| format!("reading {:?}", cfg.nullifiers_path))?;
     let nfs = nf_ingest::file_store::parse_nullifier_bytes(&nf_data)?;
-    eprintln!("  Loaded {} nullifiers from {:?}", nfs.len(), cfg.nullifiers_path);
+    eprintln!(
+        "  Loaded {} nullifiers from {:?}",
+        nfs.len(),
+        cfg.nullifiers_path
+    );
     anyhow::ensure!(!nfs.is_empty(), "nullifiers file is empty");
 
     let ranges = pir_export::prepare_nullifiers(nfs);

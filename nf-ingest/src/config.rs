@@ -14,16 +14,11 @@ const DEFAULT_SINGLE_LWD_URL: &str = "https://zec.rocks:443";
 
 /// Tree checkpoint files under the nullifier root to remove when forcing a rebuild
 /// after new blocks were synced from lightwalletd (`--invalidate-after-blocks`).
-pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] =
-    &["nullifiers.tree", "nullifiers.tree.tmp"];
+pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] = &["nullifiers.tree", "nullifiers.tree.tmp"];
 
 /// PIR tier files under the tier output directory for the same invalidation pass.
-pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] = &[
-    "tier0.bin",
-    "tier1.bin",
-    "tier2.bin",
-    "pir_root.json",
-];
+pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] =
+    &["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"];
 
 /// Validate that `height` is a legal export target: at or above NU5 activation
 /// and a multiple of 10 (the ingestion block-alignment granularity).

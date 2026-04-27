@@ -389,9 +389,7 @@ async fn download_and_verify(
     let actual_sha = hex::encode(hasher.finalize());
     if !actual_sha.eq_ignore_ascii_case(expected_sha256) {
         let _ = std::fs::remove_file(dest);
-        bail!(
-            "{url}: sha256 mismatch (expected {expected_sha256}, got {actual_sha})"
-        );
+        bail!("{url}: sha256 mismatch (expected {expected_sha256}, got {actual_sha})");
     }
 
     info!(
@@ -584,7 +582,10 @@ mod tests {
         assert_eq!(m.height, 100);
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
-        assert_eq!(keys, ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]);
+        assert_eq!(
+            keys,
+            ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]
+        );
     }
 
     #[test]
@@ -614,5 +615,4 @@ mod tests {
         }
         assert!(m.files.contains_key("nullifiers.bin"));
     }
-
 }

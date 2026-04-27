@@ -61,6 +61,10 @@ pub struct TierTiming {
     pub server_decode_copy_ms: Option<f64>,
     /// Server-reported YPIR online computation time.
     pub server_compute_ms: Option<f64>,
+    /// Server-reported first-pass matrix-vector multiplication time.
+    pub server_first_pass_ms: Option<f64>,
+    /// Server-reported ring packing / response construction time.
+    pub server_ring_packing_ms: Option<f64>,
     /// Estimated network + queue latency (RTT minus server time).
     pub net_queue_ms: Option<f64>,
     /// Estimated upload-to-server latency.
@@ -109,6 +113,8 @@ struct BatchTierTiming {
     server_validate_ms: Option<f64>,
     server_decode_copy_ms: Option<f64>,
     server_compute_ms: Option<f64>,
+    server_first_pass_ms: Option<f64>,
+    server_ring_packing_ms: Option<f64>,
     /// `x-pir-batch-k` header echoed back by the server. Used in tests
     /// to assert the round trip matched the requested batch size; the
     /// field is otherwise informational and only consumed at debug time.
@@ -148,6 +154,8 @@ impl BatchTierTiming {
             server_validate_ms: self.server_validate_ms.map(|m| m / k),
             server_decode_copy_ms: self.server_decode_copy_ms.map(|m| m / k),
             server_compute_ms: self.server_compute_ms.map(|m| m / k),
+            server_first_pass_ms: self.server_first_pass_ms.map(|m| m / k),
+            server_ring_packing_ms: self.server_ring_packing_ms.map(|m| m / k),
             net_queue_ms: self
                 .server_total_ms
                 .map(|server_ms| ((self.rtt_ms - server_ms).max(0.0)) / k),
@@ -169,7 +177,9 @@ pub struct PirClientConfig {
 
 impl Default for PirClientConfig {
     fn default() -> Self {
-        Self { disable_batch: false }
+        Self {
+            disable_batch: false,
+        }
     }
 }
 
@@ -527,18 +537,17 @@ impl PirClient {
                 Ok(row) => {
                     let mut_path = &mut paths[i];
                     let nf = nullifiers[i];
-                    let s2_outcome =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            process_tier1(row, nf, mut_path)
-                        }))
-                        .unwrap_or_else(|payload| {
-                            let msg = payload
-                                .downcast_ref::<String>()
-                                .map(|s| s.as_str())
-                                .or_else(|| payload.downcast_ref::<&str>().copied())
-                                .unwrap_or("unknown panic");
-                            Err(anyhow::anyhow!("process_tier1 panicked: {msg}"))
-                        });
+                    let s2_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        process_tier1(row, nf, mut_path)
+                    }))
+                    .unwrap_or_else(|payload| {
+                        let msg = payload
+                            .downcast_ref::<String>()
+                            .map(|s| s.as_str())
+                            .or_else(|| payload.downcast_ref::<&str>().copied())
+                            .unwrap_or("unknown panic");
+                        Err(anyhow::anyhow!("process_tier1 panicked: {msg}"))
+                    });
                     match s2_outcome {
                         Ok(s2) => {
                             let global = s1s[i] * TIER1_LEAVES + s2;
@@ -560,9 +569,7 @@ impl PirClient {
                     }
                 }
                 Err(e) => {
-                    tier1_outcomes.push(Err(anyhow::anyhow!(
-                        "tier1 batch slot {i}: {e}"
-                    )));
+                    tier1_outcomes.push(Err(anyhow::anyhow!("tier1 batch slot {i}: {e}")));
                     t2_indices.push(0);
                 }
             }
@@ -605,11 +612,8 @@ impl PirClient {
         }
 
         let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
-        let view: Vec<(usize, &NoteTiming)> = out
-            .iter()
-            .enumerate()
-            .map(|(i, (_, t))| (i, t))
-            .collect();
+        let view: Vec<(usize, &NoteTiming)> =
+            out.iter().enumerate().map(|(i, (_, t))| (i, t)).collect();
         print_timing_table(&view, wall_ms);
         Ok(out)
     }
@@ -774,6 +778,9 @@ impl PirClient {
         let server_validate_ms = parse_header_f64(resp.headers(), "x-pir-server-validate-ms");
         let server_decode_copy_ms = parse_header_f64(resp.headers(), "x-pir-server-decode-copy-ms");
         let server_compute_ms = parse_header_f64(resp.headers(), "x-pir-server-compute-ms");
+        let server_first_pass_ms = parse_header_f64(resp.headers(), "x-pir-server-first-pass-ms");
+        let server_ring_packing_ms =
+            parse_header_f64(resp.headers(), "x-pir-server-ring-packing-ms");
         let status = resp.status();
         let response_bytes = resp.bytes().await?;
         if !status.is_success() {
@@ -830,6 +837,8 @@ impl PirClient {
                 server_validate_ms,
                 server_decode_copy_ms,
                 server_compute_ms,
+                server_first_pass_ms,
+                server_ring_packing_ms,
                 net_queue_ms,
                 upload_to_server_ms,
                 download_from_server_ms,
@@ -918,6 +927,9 @@ impl PirClient {
         let server_validate_ms = parse_header_f64(resp.headers(), "x-pir-server-validate-ms");
         let server_decode_copy_ms = parse_header_f64(resp.headers(), "x-pir-server-decode-copy-ms");
         let server_compute_ms = parse_header_f64(resp.headers(), "x-pir-server-compute-ms");
+        let server_first_pass_ms = parse_header_f64(resp.headers(), "x-pir-server-first-pass-ms");
+        let server_ring_packing_ms =
+            parse_header_f64(resp.headers(), "x-pir-server-ring-packing-ms");
         let status = resp.status();
         let response_bytes = resp.bytes().await?;
         if !status.is_success() {
@@ -964,20 +976,19 @@ impl PirClient {
                 // pass.
                 for (i, chunk) in chunks.iter().enumerate() {
                     let dec_start = Instant::now();
-                    let decoded =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            ypir_client.decode_response_simplepir(seeds[i], chunk)
-                        }))
-                        .map_err(|payload| {
-                            let msg = payload
-                                .downcast_ref::<String>()
-                                .map(|s| s.as_str())
-                                .or_else(|| payload.downcast_ref::<&str>().copied())
-                                .unwrap_or("unknown panic");
-                            anyhow::anyhow!(
-                                "{tier_name} batch[{i}] response decryption panicked: {msg}"
-                            )
-                        });
+                    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ypir_client.decode_response_simplepir(seeds[i], chunk)
+                    }))
+                    .map_err(|payload| {
+                        let msg = payload
+                            .downcast_ref::<String>()
+                            .map(|s| s.as_str())
+                            .or_else(|| payload.downcast_ref::<&str>().copied())
+                            .unwrap_or("unknown panic");
+                        anyhow::anyhow!(
+                            "{tier_name} batch[{i}] response decryption panicked: {msg}"
+                        )
+                    });
                     per_note_decode_ms[i] = dec_start.elapsed().as_secs_f64() * 1000.0;
                     let row_result = decoded.and_then(|d| {
                         anyhow::ensure!(
@@ -1026,6 +1037,8 @@ impl PirClient {
             server_validate_ms,
             server_decode_copy_ms,
             server_compute_ms,
+            server_first_pass_ms,
+            server_ring_packing_ms,
             server_batch_k,
             upload_to_server_ms,
             download_from_server_ms,
@@ -1121,13 +1134,17 @@ fn print_timing_table(results: &[(usize, &NoteTiming)], wall_ms: f64) {
             fmt_time(t.tier2.download_from_server_ms),
         );
         log::trace!(
-            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={}) T2(v={} copy={} compute={})",
+            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={} matvec={} pack={}) T2(v={} copy={} compute={} matvec={} pack={})",
             fmt_opt_time(t.tier1.server_validate_ms),
             fmt_opt_time(t.tier1.server_decode_copy_ms),
             fmt_opt_time(t.tier1.server_compute_ms),
+            fmt_opt_time(t.tier1.server_first_pass_ms),
+            fmt_opt_time(t.tier1.server_ring_packing_ms),
             fmt_opt_time(t.tier2.server_validate_ms),
             fmt_opt_time(t.tier2.server_decode_copy_ms),
             fmt_opt_time(t.tier2.server_compute_ms),
+            fmt_opt_time(t.tier2.server_first_pass_ms),
+            fmt_opt_time(t.tier2.server_ring_packing_ms),
         );
         log::trace!(
             "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
@@ -1190,8 +1207,9 @@ impl PirClientBlocking {
         config: PirClientConfig,
     ) -> Result<Self> {
         let rt = tokio::runtime::Runtime::new()?;
-        let inner =
-            rt.block_on(PirClient::connect_with_http_and_config(server_url, http, config))?;
+        let inner = rt.block_on(PirClient::connect_with_http_and_config(
+            server_url, http, config,
+        ))?;
         Ok(Self { inner, rt })
     }
 

@@ -173,7 +173,10 @@ mod tests {
     fn punctured_verify_rejects_tampered_bounds() {
         let mut proof = make_punctured_proof([fp(10), fp(20), fp(30)]);
         proof.nf_bounds[1] = fp(21);
-        assert!(!proof.verify(fp(15)), "tampered nf_mid should fail Merkle check");
+        assert!(
+            !proof.verify(fp(15)),
+            "tampered nf_mid should fail Merkle check"
+        );
     }
 
     #[test]

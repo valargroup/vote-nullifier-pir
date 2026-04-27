@@ -21,10 +21,7 @@ pub use pir_types::tier2::Tier2Row;
 const PROGRESS_INTERVAL: usize = 100_000;
 
 /// Export all Tier 2 rows to a writer.
-pub fn export(
-    ranges: &[PuncturedRange],
-    writer: &mut impl Write,
-) -> Result<()> {
+pub fn export(ranges: &[PuncturedRange], writer: &mut impl Write) -> Result<()> {
     let mut buf = vec![0u8; TIER2_ROW_BYTES];
 
     for s in 0..TIER2_ROWS {
@@ -39,11 +36,7 @@ pub fn export(
 }
 
 /// Write a single Tier 2 row for subtree index `s` (at depth TIER0_LAYERS + TIER1_LAYERS = 15).
-fn write_row(
-    ranges: &[PuncturedRange],
-    s: usize,
-    buf: &mut [u8],
-) {
+fn write_row(ranges: &[PuncturedRange], s: usize, buf: &mut [u8]) {
     buf.fill(0);
     let leaf_start = s * TIER2_LEAVES;
     let mut offset = 0;

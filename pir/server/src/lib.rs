@@ -12,6 +12,7 @@ use tracing::info;
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 
 use spiral_rs::params::Params;
+use ypir::measurement::Measurement;
 use ypir::params::{params_for_scenario_simplepir, DbRowsCols, PtModulusBits};
 use ypir::serialize::{FilePtIter, OfflinePrecomputedValues};
 use ypir::server::YServer;
@@ -26,59 +27,30 @@ pub use pir_types::{
 const U64_BYTES: usize = std::mem::size_of::<u64>();
 const AVX512_ALIGN: usize = 64;
 
-/// Environment variable controlling server-side batch SimplePIR scheduling.
+/// Legacy environment variable for server-side batch SimplePIR scheduling.
 ///
-/// - Unset, empty, or `serial` (case-insensitive): run K matvecs strictly
-///   in query order (default).
-/// - `parallel-k5` (case-insensitive): when this crate is built with the
-///   `rayon` feature and the batch has `K == 5`, run up to five concurrent
-///   matvecs inside one batch request while preserving response order.
+/// Kept so older deploy environments and health readers do not break. The
+/// server now uses the K-wide YPIR kernel for `K == 5` regardless of this env
+/// value and falls back to serial compute for other K values.
 pub const PIR_BATCH_COMPUTE_MODE_ENV: &str = "PIR_BATCH_COMPUTE_MODE";
 
-/// Whether `parallel-k5` batch scheduling is active for this process.
-///
-/// Requires both the `rayon` crate feature and
-/// `PIR_BATCH_COMPUTE_MODE=parallel-k5`.
+/// Whether the legacy `parallel-k5` batch scheduling knob is active.
 pub fn pir_batch_parallel_k5_env_active() -> bool {
-    batch_parallel_k5_enabled()
+    false
 }
 
 /// Short label for operator logs / health output.
 pub fn pir_batch_compute_mode_label() -> &'static str {
-    if !cfg!(feature = "rayon") {
-        return "serial (build without rayon)";
-    }
-    match std::env::var(PIR_BATCH_COMPUTE_MODE_ENV) {
-        Ok(v) => {
-            let t = v.trim();
-            if t.eq_ignore_ascii_case("parallel-k5") {
-                "parallel-k5"
-            } else if t.is_empty() || t.eq_ignore_ascii_case("serial") {
-                "serial"
-            } else {
-                "serial (unrecognized PIR_BATCH_COMPUTE_MODE; using serial)"
-            }
-        }
-        Err(_) => "serial (default)",
-    }
+    "k-wide-k5"
 }
 
 /// One-line status for startup logs (`nf-server serve`).
 pub fn pir_batch_compute_mode_startup_message() -> String {
     format!(
-        "PIR batch matvec: {} (env {} — set to `parallel-k5` for K=5 Rayon overlap when built with `--features rayon`)",
+        "PIR batch matvec: {} (K=5 uses YPIR batched first pass; legacy env {} is ignored)",
         pir_batch_compute_mode_label(),
         PIR_BATCH_COMPUTE_MODE_ENV
     )
-}
-
-fn batch_parallel_k5_enabled() -> bool {
-    if !cfg!(feature = "rayon") {
-        return false;
-    }
-    std::env::var(PIR_BATCH_COMPUTE_MODE_ENV)
-        .map(|v| v.trim().eq_ignore_ascii_case("parallel-k5"))
-        .unwrap_or(false)
 }
 
 /// 64-byte aligned u64 buffer for AVX-512 operations.
@@ -161,6 +133,8 @@ pub struct QueryTiming {
     pub validate_ms: f64,
     pub decode_copy_ms: f64,
     pub online_compute_ms: f64,
+    pub first_pass_ms: f64,
+    pub ring_packing_ms: f64,
     pub total_ms: f64,
     pub response_bytes: usize,
 }
@@ -183,6 +157,8 @@ pub struct BatchQueryTiming {
     pub validate_ms: f64,
     pub decode_copy_ms: f64,
     pub online_compute_ms: f64,
+    pub first_pass_ms: f64,
+    pub ring_packing_ms: f64,
     pub total_ms: f64,
     /// Total response bytes across all K queries (concatenated, before the
     /// 16-byte batch wire-format header).
@@ -321,11 +297,12 @@ impl<'a> TierServer<'a> {
 
         // Run the YPIR online computation (returns Vec<u8> directly)
         let compute_start = Instant::now();
+        let mut measurement = Measurement::default();
         let response = self.server.perform_online_computation_simplepir(
             pqr.as_slice(),
             &self.offline,
             &[pub_params.as_slice()],
-            None,
+            Some(&mut measurement),
         );
         let online_compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
         let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -335,6 +312,8 @@ impl<'a> TierServer<'a> {
                 validate_ms,
                 decode_copy_ms,
                 online_compute_ms,
+                first_pass_ms: measurement.online.first_pass_time_ms as f64,
+                ring_packing_ms: measurement.online.ring_packing_time_ms as f64,
                 total_ms,
                 response_bytes: response.len(),
             },
@@ -344,6 +323,42 @@ impl<'a> TierServer<'a> {
 
     /// Run K SimplePIR online computations in strict query order.
     fn compute_batch_responses_serial(
+        &self,
+        pqrs_aligned: &[Aligned64],
+        pps_aligned: &[Aligned64],
+        measurement: Option<&mut Measurement>,
+    ) -> Vec<Vec<u8>> {
+        let mut first_pass_time_ms = 0usize;
+        let mut ring_packing_time_ms = 0usize;
+        let responses: Vec<Vec<u8>> = pqrs_aligned
+            .iter()
+            .zip(pps_aligned.iter())
+            .map(|(q, pp)| {
+                let mut slot_measurement = Measurement::default();
+                let response = self.server.perform_online_computation_simplepir(
+                    q.as_slice(),
+                    &self.offline,
+                    &[pp.as_slice()],
+                    Some(&mut slot_measurement),
+                );
+                first_pass_time_ms += slot_measurement.online.first_pass_time_ms;
+                ring_packing_time_ms += slot_measurement.online.ring_packing_time_ms;
+                response
+            })
+            .collect();
+
+        if let Some(m) = measurement {
+            m.online.first_pass_time_ms = first_pass_time_ms;
+            m.online.ring_packing_time_ms = ring_packing_time_ms;
+        }
+
+        responses
+    }
+
+    /// Answer K SimplePIR online computations in strict query order without
+    /// collecting detailed stage timings.
+    #[allow(dead_code)]
+    fn compute_batch_responses_serial_unmeasured(
         &self,
         pqrs_aligned: &[Aligned64],
         pps_aligned: &[Aligned64],
@@ -362,30 +377,34 @@ impl<'a> TierServer<'a> {
             .collect()
     }
 
-    /// Same as [`Self::compute_batch_responses_serial`] but overlaps the K=5
-    /// matvecs on Rayon when enabled via [`PIR_BATCH_COMPUTE_MODE_ENV`].
-    #[cfg(feature = "rayon")]
-    fn compute_batch_responses_parallel_k5(
+    /// Answer the production K=5 shape with YPIR's K-wide SimplePIR first pass.
+    fn compute_batch_responses_batched_k5(
         &self,
         pqrs_aligned: &[Aligned64],
         pps_aligned: &[Aligned64],
+        measurement: Option<&mut Measurement>,
     ) -> Vec<Vec<u8>> {
-        use rayon::prelude::*;
         debug_assert_eq!(pqrs_aligned.len(), 5);
         debug_assert_eq!(pps_aligned.len(), 5);
-        let offline = &*self.offline;
-        let server = &*self.server;
-        (0..pqrs_aligned.len())
-            .into_par_iter()
-            .map(|i| {
-                server.perform_online_computation_simplepir(
-                    pqrs_aligned[i].as_slice(),
-                    offline,
-                    &[pps_aligned[i].as_slice()],
-                    None,
-                )
-            })
-            .collect()
+
+        let q_len = pqrs_aligned[0].len;
+        let mut batched_q = Aligned64::new(q_len * 5);
+        for (slot, q) in pqrs_aligned.iter().enumerate() {
+            debug_assert_eq!(q.len, q_len);
+            let start = slot * q_len;
+            let end = start + q_len;
+            batched_q.as_mut_slice()[start..end].copy_from_slice(q.as_slice());
+        }
+
+        let pack_pub_params: [&[u64]; 5] = std::array::from_fn(|i| pps_aligned[i].as_slice());
+        self.server
+            .perform_online_computation_simplepir_batched::<5>(
+                batched_q.as_slice(),
+                &self.offline,
+                &pack_pub_params,
+                measurement,
+            )
+            .into()
     }
 
     /// Answer K YPIR+SP queries served as one HTTP batch.
@@ -394,13 +413,9 @@ impl<'a> TierServer<'a> {
     /// `[8 bytes K][8 bytes pqr_byte_len][8 bytes pp_byte_len][K * (q || pp)]`.
     /// Each `q.0` vector carries its own `pack_pub_params`.
     ///
-    /// Server-side compute is *additive*: we call
-    /// [`YServer::perform_online_computation_simplepir`] once per `(q.0, pp)`
-    /// pair. When `K == 5`, this crate is built with the
-    /// `rayon` feature, and `PIR_BATCH_COMPUTE_MODE=parallel-k5`, those five
-    /// calls run concurrently while preserving response order. Otherwise the
-    /// serial loop is used. A future iteration may replace this with a single
-    /// K-wide kernel call (Phase 2).
+    /// Server-side compute uses YPIR's K-wide SimplePIR first pass for the
+    /// production `K == 5` shape and falls back to the strict serial loop for
+    /// all other supported `K` values.
     pub fn answer_batch_query(&self, query_bytes: &[u8]) -> Result<BatchQueryAnswer> {
         let total_start = Instant::now();
 
@@ -443,21 +458,18 @@ impl<'a> TierServer<'a> {
         }
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Per-query online computation, each with its matching pack_pub_params.
+        // K=5 uses one batched first-pass matvec, each slot with its matching
+        // pack_pub_params. Other K values keep the pre-existing serial path.
         let compute_start = Instant::now();
-        let responses = {
-            #[cfg(feature = "rayon")]
-            {
-                if k == 5 && batch_parallel_k5_enabled() {
-                    self.compute_batch_responses_parallel_k5(&pqrs_aligned, &pps_aligned)
-                } else {
-                    self.compute_batch_responses_serial(&pqrs_aligned, &pps_aligned)
-                }
-            }
-            #[cfg(not(feature = "rayon"))]
-            {
-                self.compute_batch_responses_serial(&pqrs_aligned, &pps_aligned)
-            }
+        let mut measurement = Measurement::default();
+        let responses = if k == 5 {
+            self.compute_batch_responses_batched_k5(
+                &pqrs_aligned,
+                &pps_aligned,
+                Some(&mut measurement),
+            )
+        } else {
+            self.compute_batch_responses_serial(&pqrs_aligned, &pps_aligned, Some(&mut measurement))
         };
         let online_compute_ms = compute_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -483,6 +495,8 @@ impl<'a> TierServer<'a> {
                 validate_ms,
                 decode_copy_ms,
                 online_compute_ms,
+                first_pass_ms: measurement.online.first_pass_time_ms as f64,
+                ring_packing_ms: measurement.online.ring_packing_time_ms as f64,
                 total_ms,
                 response_bytes: total_response_bytes,
                 response_bytes_per_query,
@@ -582,7 +596,7 @@ pub fn write_batch_timing_headers(
     req_id: u64,
     timing: BatchQueryTiming,
 ) {
-    let entries: [(&str, String); 8] = [
+    let entries: [(&str, String); 10] = [
         ("x-pir-req-id", req_id.to_string()),
         ("x-pir-batch-k", timing.k.to_string()),
         ("x-pir-server-total-ms", format!("{:.3}", timing.total_ms)),
@@ -597,6 +611,14 @@ pub fn write_batch_timing_headers(
         (
             "x-pir-server-compute-ms",
             format!("{:.3}", timing.online_compute_ms),
+        ),
+        (
+            "x-pir-server-first-pass-ms",
+            format!("{:.3}", timing.first_pass_ms),
+        ),
+        (
+            "x-pir-server-ring-packing-ms",
+            format!("{:.3}", timing.ring_packing_ms),
         ),
         (
             "x-pir-server-response-bytes",
@@ -619,7 +641,7 @@ pub fn write_batch_timing_headers(
 /// Used by both `pir-server` and `nf-server` to expose server-side stage
 /// timing so the client can split RTT into server vs network/queue.
 pub fn write_timing_headers(headers: &mut axum::http::HeaderMap, req_id: u64, timing: QueryTiming) {
-    let entries: [(&str, String); 6] = [
+    let entries: [(&str, String); 8] = [
         ("x-pir-req-id", req_id.to_string()),
         ("x-pir-server-total-ms", format!("{:.3}", timing.total_ms)),
         (
@@ -633,6 +655,14 @@ pub fn write_timing_headers(headers: &mut axum::http::HeaderMap, req_id: u64, ti
         (
             "x-pir-server-compute-ms",
             format!("{:.3}", timing.online_compute_ms),
+        ),
+        (
+            "x-pir-server-first-pass-ms",
+            format!("{:.3}", timing.first_pass_ms),
+        ),
+        (
+            "x-pir-server-ring-packing-ms",
+            format!("{:.3}", timing.ring_packing_ms),
         ),
         (
             "x-pir-server-response-bytes",
@@ -700,6 +730,8 @@ pub fn dispatch_query(
                 validate_ms = format!("{:.3}", answer.timing.validate_ms),
                 decode_copy_ms = format!("{:.3}", answer.timing.decode_copy_ms),
                 compute_ms = format!("{:.3}", answer.timing.online_compute_ms),
+                first_pass_ms = format!("{:.3}", answer.timing.first_pass_ms),
+                ring_packing_ms = format!("{:.3}", answer.timing.ring_packing_ms),
                 server_total_ms = format!("{:.3}", answer.timing.total_ms),
                 response_bytes = answer.timing.response_bytes,
                 "pir_request_finished"
@@ -763,6 +795,8 @@ pub fn dispatch_batch_query(
                 validate_ms = format!("{:.3}", answer.timing.validate_ms),
                 decode_copy_ms = format!("{:.3}", answer.timing.decode_copy_ms),
                 compute_ms = format!("{:.3}", answer.timing.online_compute_ms),
+                first_pass_ms = format!("{:.3}", answer.timing.first_pass_ms),
+                ring_packing_ms = format!("{:.3}", answer.timing.ring_packing_ms),
                 server_total_ms = format!("{:.3}", answer.timing.total_ms),
                 response_bytes = answer.timing.response_bytes,
                 "pir_batch_request_finished"
@@ -968,16 +1002,14 @@ mod tests {
         let server = state.server();
 
         for &k in &[1usize, 3, 5, 16] {
-            let target_rows: Vec<usize> =
-                (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
+            let target_rows: Vec<usize> = (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
 
             // Sequential path: K independent (q, seed) pairs through
             // `answer_query`.
             let mut sequential_decoded: Vec<Vec<u8>> = Vec::with_capacity(k);
             for &row in &target_rows {
                 let (q, seed) = ypir_client.generate_query_simplepir(row);
-                let payload =
-                    pir_types::serialize_ypir_query(q.0.as_slice(), q.1.as_slice());
+                let payload = pir_types::serialize_ypir_query(q.0.as_slice(), q.1.as_slice());
                 let answer = server
                     .answer_query(&payload)
                     .expect("sequential answer_query");
@@ -1092,7 +1124,9 @@ mod tests {
         let batch = build_simplepir_batch(&ypir_client, &[target_row]);
         assert_eq!(batch.len(), 1);
         let payload = serialize_simplepir_batch(&batch);
-        let answer = server.answer_batch_query(&payload).expect("answer_batch_query");
+        let answer = server
+            .answer_batch_query(&payload)
+            .expect("answer_batch_query");
         assert_eq!(answer.timing.k, 1);
 
         let chunks = pir_types::parse_ypir_batch_response(&answer.response)
@@ -1113,8 +1147,7 @@ mod tests {
         let server = state.server();
 
         let k = 5usize;
-        let target_rows: Vec<usize> =
-            (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
+        let target_rows: Vec<usize> = (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
         let batch = build_simplepir_batch(&ypir_client, &target_rows);
         let payload = serialize_simplepir_batch(&batch);
 
@@ -1138,8 +1171,7 @@ mod tests {
         let server = state.server();
 
         let k = 3usize;
-        let target_rows: Vec<usize> =
-            (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
+        let target_rows: Vec<usize> = (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
         let batch = build_simplepir_batch(&ypir_client, &target_rows);
         let payload = serialize_simplepir_batch(&batch);
 
@@ -1147,7 +1179,9 @@ mod tests {
         let default = server.answer_batch_query(&payload).expect("default batch");
 
         std::env::set_var(PIR_BATCH_COMPUTE_MODE_ENV, "parallel-k5");
-        let with_env = server.answer_batch_query(&payload).expect("with parallel-k5 env");
+        let with_env = server
+            .answer_batch_query(&payload)
+            .expect("with parallel-k5 env");
         std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
 
         assert_eq!(with_env.response, default.response);
@@ -1161,8 +1195,7 @@ mod tests {
         let server = state.server();
 
         let k = 16usize;
-        let target_rows: Vec<usize> =
-            (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
+        let target_rows: Vec<usize> = (0..k).map(|i| (i * 257 + 11) % TEST_NUM_ITEMS).collect();
         let batch = build_simplepir_batch(&ypir_client, &target_rows);
         let payload = serialize_simplepir_batch(&batch);
 
@@ -1170,7 +1203,9 @@ mod tests {
         let default = server.answer_batch_query(&payload).expect("default batch");
 
         std::env::set_var(PIR_BATCH_COMPUTE_MODE_ENV, "parallel-k5");
-        let with_env = server.answer_batch_query(&payload).expect("with parallel-k5 env");
+        let with_env = server
+            .answer_batch_query(&payload)
+            .expect("with parallel-k5 env");
         std::env::remove_var(PIR_BATCH_COMPUTE_MODE_ENV);
 
         assert_eq!(with_env.response, default.response);

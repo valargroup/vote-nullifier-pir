@@ -60,7 +60,9 @@ run; the actual load phase starts after the "Starting load phase" line.
 |------|---------|-------------|
 | `--url` | *(required)* | Server base URL. |
 | `--nullifiers` | *(required)* | Path to `nullifiers.bin`. |
-| `--concurrency` | `8` | Number of workers (closed-loop mode). Each worker sends `fetch_proof` back-to-back. |
+| `--mode` | `single` | Load shape: `single` sends one `fetch_proof_with_timing` per load unit; `batched` sends `fetch_proofs_with_timing` through `/tier{1,2}/batch_query`. |
+| `--batch-size` | `5` | Number of proofs per load unit when `--mode batched`. Ignored by the default single-proof shape. |
+| `--concurrency` | `8` | Number of workers (closed-loop mode). Each worker sends one load unit back-to-back. |
 | `--rps` | *(unset)* | Target requests/sec (open-loop mode). Overrides `--concurrency` as the load-shaping mechanism. |
 | `--max-inflight` | `256` | Caps in-flight requests in open-loop mode so a slow server can't exhaust memory. |
 | `--duration` | `60s` | How long the timed measurement phase runs. Accepts `humantime` syntax (`30s`, `5m`, `1h`). |
@@ -92,6 +94,8 @@ workflow is a `workflow_dispatch` job with these inputs:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `target` | `backup` | Which host to hit (`primary` or `backup`). |
+| `mode` | `single` | Passed to `--mode` (`single` or `batched`). |
+| `batch_size` | `5` | Passed to `--batch-size` for batched mode. |
 | `concurrency` | `8` | Passed to `--concurrency`. |
 | `rps` | *(empty)* | If non-empty, enables open-loop mode. |
 | `duration` | `60s` | Passed to `--duration`. |
@@ -123,14 +127,16 @@ During the load phase, a status line prints every 5 seconds:
   elapsed=10s  reqs=19  in_flight=2
 ```
 
-- **reqs** — total requests completed so far (success + error).
+- **reqs** — total load units completed so far (proofs in `single` mode,
+  batches in `batched` mode; success + error).
 - **in_flight** — currently active requests.
 
 ### Summary table
 
 ```
 === pir-test load summary ===
-url=http://localhost:3000   duration=20s   concurrency=2   completed=37   errors=0 (0.00%)
+url=http://localhost:3000   mode=single   duration=20s   concurrency=2   completed=37   proofs=37   errors=0 (0.00%)
+throughput: 1.850 batches/s   1.850 proofs/s
                         p50        p90        p95        p99        max        n
       end-to-end      1.06s      1.11s      1.12s      1.99s      1.99s       37
        tier1_rtt       42ms       87ms      102ms      117ms      117ms       37
@@ -177,9 +183,15 @@ The `--json-out` file mirrors the table in a machine-readable format:
 ```json
 {
   "url": "http://localhost:3000",
+  "mode": "single",
+  "batch_size": 5,
   "duration_s": 20.0,
   "concurrency": 2,
   "completed": 37,
+  "completed_batches": 37,
+  "completed_proofs": 37,
+  "batches_per_s": 1.85,
+  "proofs_per_s": 1.85,
   "errors": 0,
   "error_rate": 0.0,
   "stages": [

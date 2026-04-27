@@ -13,9 +13,26 @@ use pir_client::PirClient;
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadMode {
+    Single,
+    Batched,
+}
+
+impl LoadMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            LoadMode::Single => "single",
+            LoadMode::Batched => "batched",
+        }
+    }
+}
+
 pub struct LoadConfig {
     pub url: String,
     pub nullifiers_path: PathBuf,
+    pub mode: LoadMode,
+    pub batch_size: usize,
     pub concurrency: usize,
     pub rps: Option<f64>,
     pub max_inflight: usize,
@@ -36,6 +53,11 @@ struct Sample {
     tier2_rtt_ms: f64,
     tier1_server_ms: Option<f64>,
     tier2_server_ms: Option<f64>,
+    tier1_first_pass_ms: Option<f64>,
+    tier2_first_pass_ms: Option<f64>,
+    tier1_ring_packing_ms: Option<f64>,
+    tier2_ring_packing_ms: Option<f64>,
+    proof_count: u64,
     success: bool,
     error_class: Option<ErrorClass>,
 }
@@ -75,9 +97,16 @@ fn classify_error(e: &anyhow::Error) -> ErrorClass {
 #[derive(Serialize)]
 pub struct LoadSummary {
     pub url: String,
+    pub mode: String,
+    pub batch_size: usize,
     pub duration_s: f64,
     pub concurrency: usize,
+    /// Completed load units: proofs in `single` mode, K-proof batches in `batched` mode.
     pub completed: u64,
+    pub completed_batches: u64,
+    pub completed_proofs: u64,
+    pub batches_per_s: f64,
+    pub proofs_per_s: f64,
     pub errors: u64,
     pub error_rate: f64,
     pub stages: Vec<StageSummary>,
@@ -110,7 +139,12 @@ struct StatsCollector {
     tier2_rtt: Histogram<u64>,
     tier1_server: Histogram<u64>,
     tier2_server: Histogram<u64>,
+    tier1_first_pass: Histogram<u64>,
+    tier2_first_pass: Histogram<u64>,
+    tier1_ring_packing: Histogram<u64>,
+    tier2_ring_packing: Histogram<u64>,
     ok_count: u64,
+    ok_proofs: u64,
     err_count: u64,
     error_counts: std::collections::HashMap<ErrorClass, u64>,
 }
@@ -123,7 +157,12 @@ impl StatsCollector {
             tier2_rtt: Histogram::new_with_max(300_000, 3).unwrap(),
             tier1_server: Histogram::new_with_max(300_000, 3).unwrap(),
             tier2_server: Histogram::new_with_max(300_000, 3).unwrap(),
+            tier1_first_pass: Histogram::new_with_max(300_000, 3).unwrap(),
+            tier2_first_pass: Histogram::new_with_max(300_000, 3).unwrap(),
+            tier1_ring_packing: Histogram::new_with_max(300_000, 3).unwrap(),
+            tier2_ring_packing: Histogram::new_with_max(300_000, 3).unwrap(),
             ok_count: 0,
+            ok_proofs: 0,
             err_count: 0,
             error_counts: std::collections::HashMap::new(),
         }
@@ -133,6 +172,7 @@ impl StatsCollector {
         let _ = self.end_to_end.record(sample.total_ms as u64);
         if sample.success {
             self.ok_count += 1;
+            self.ok_proofs += sample.proof_count;
             let _ = self.tier1_rtt.record(sample.tier1_rtt_ms as u64);
             let _ = self.tier2_rtt.record(sample.tier2_rtt_ms as u64);
             if let Some(ms) = sample.tier1_server_ms {
@@ -140,6 +180,18 @@ impl StatsCollector {
             }
             if let Some(ms) = sample.tier2_server_ms {
                 let _ = self.tier2_server.record(ms as u64);
+            }
+            if let Some(ms) = sample.tier1_first_pass_ms {
+                let _ = self.tier1_first_pass.record(ms as u64);
+            }
+            if let Some(ms) = sample.tier2_first_pass_ms {
+                let _ = self.tier2_first_pass.record(ms as u64);
+            }
+            if let Some(ms) = sample.tier1_ring_packing_ms {
+                let _ = self.tier1_ring_packing.record(ms as u64);
+            }
+            if let Some(ms) = sample.tier2_ring_packing_ms {
+                let _ = self.tier2_ring_packing.record(ms as u64);
             }
         } else {
             self.err_count += 1;
@@ -162,7 +214,14 @@ impl StatsCollector {
         }
     }
 
-    fn into_summary(self, url: &str, duration_s: f64, concurrency: usize) -> LoadSummary {
+    fn into_summary(
+        self,
+        url: &str,
+        mode: LoadMode,
+        batch_size: usize,
+        duration_s: f64,
+        concurrency: usize,
+    ) -> LoadSummary {
         let completed = self.ok_count + self.err_count;
         let error_rate = if completed > 0 {
             self.err_count as f64 / completed as f64
@@ -181,6 +240,24 @@ impl StatsCollector {
         if self.tier2_server.len() > 0 {
             stages.push(Self::stage_summary("tier2_srvr", &self.tier2_server));
         }
+        if self.tier1_first_pass.len() > 0 {
+            stages.push(Self::stage_summary("tier1_matvec", &self.tier1_first_pass));
+        }
+        if self.tier2_first_pass.len() > 0 {
+            stages.push(Self::stage_summary("tier2_matvec", &self.tier2_first_pass));
+        }
+        if self.tier1_ring_packing.len() > 0 {
+            stages.push(Self::stage_summary(
+                "tier1_packing",
+                &self.tier1_ring_packing,
+            ));
+        }
+        if self.tier2_ring_packing.len() > 0 {
+            stages.push(Self::stage_summary(
+                "tier2_packing",
+                &self.tier2_ring_packing,
+            ));
+        }
 
         let mut error_classes: Vec<ErrorClassCount> = self
             .error_counts
@@ -194,9 +271,15 @@ impl StatsCollector {
 
         LoadSummary {
             url: url.to_string(),
+            mode: mode.as_str().to_string(),
+            batch_size,
             duration_s,
             concurrency,
             completed,
+            completed_batches: completed,
+            completed_proofs: self.ok_proofs,
+            batches_per_s: completed as f64 / duration_s,
+            proofs_per_s: self.ok_proofs as f64 / duration_s,
             errors: self.err_count,
             error_rate,
             stages,
@@ -210,19 +293,17 @@ impl StatsCollector {
 pub async fn run(cfg: LoadConfig) -> Result<()> {
     eprintln!("=== pir-test load ===\n");
     eprintln!("  url:         {}", cfg.url);
+    eprintln!("  mode:        {}", cfg.mode.as_str());
+    if cfg.mode == LoadMode::Batched {
+        eprintln!("  batch_size:  {}", cfg.batch_size);
+    }
     eprintln!("  concurrency: {}", cfg.concurrency);
     if let Some(rps) = cfg.rps {
         eprintln!("  rps:         {:.1}", rps);
         eprintln!("  max_inflight:{}", cfg.max_inflight);
     }
-    eprintln!(
-        "  duration:    {}s",
-        cfg.duration.as_secs_f64()
-    );
-    eprintln!(
-        "  warmup:      {}s",
-        cfg.warmup.as_secs_f64()
-    );
+    eprintln!("  duration:    {}s", cfg.duration.as_secs_f64());
+    eprintln!("  warmup:      {}s", cfg.warmup.as_secs_f64());
     eprintln!();
 
     // Load nullifiers
@@ -231,6 +312,7 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     let nfs = nf_ingest::file_store::parse_nullifier_bytes(&nf_data)?;
     eprintln!("  Loaded {} nullifiers", nfs.len());
     anyhow::ensure!(!nfs.is_empty(), "nullifiers file is empty");
+    anyhow::ensure!(cfg.batch_size >= 1, "batch_size must be at least 1");
 
     let ranges = pir_export::prepare_nullifiers(nfs);
     eprintln!("  Prepared {} ranges", ranges.len());
@@ -246,10 +328,27 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
 
     // Warmup: a single proof to verify connectivity
     {
-        eprintln!("  Warmup: single proof...");
-        let proof = client.fetch_proof(pool[0]).await?;
-        if !cfg.no_verify {
-            anyhow::ensure!(proof.verify(pool[0]), "warmup proof verification failed");
+        match cfg.mode {
+            LoadMode::Single => {
+                eprintln!("  Warmup: single proof...");
+                let proof = client.fetch_proof(pool[0]).await?;
+                if !cfg.no_verify {
+                    anyhow::ensure!(proof.verify(pool[0]), "warmup proof verification failed");
+                }
+            }
+            LoadMode::Batched => {
+                eprintln!("  Warmup: {}-proof batch...", cfg.batch_size);
+                let values = batch_values(&pool, 0, cfg.batch_size);
+                let proofs = client.fetch_proofs(&values).await?;
+                if !cfg.no_verify {
+                    for (value, proof) in values.iter().zip(proofs.iter()) {
+                        anyhow::ensure!(
+                            proof.verify(*value),
+                            "warmup batch proof verification failed"
+                        );
+                    }
+                }
+            }
         }
         eprintln!("  Warmup: OK\n");
     }
@@ -257,27 +356,16 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     // Extended warmup period
     if !cfg.warmup.is_zero() {
         eprintln!("  Extended warmup ({:.0}s)...", cfg.warmup.as_secs_f64());
-        run_phase(
-            &client,
-            &pool,
-            &cfg,
-            cfg.warmup,
-            false,
-        )
-        .await?;
+        run_phase(&client, &pool, &cfg, cfg.warmup, false).await?;
         eprintln!("  Warmup complete.\n");
     }
 
     // Timed phase
-    eprintln!("  Starting load phase ({:.0}s)...\n", cfg.duration.as_secs_f64());
-    let summary = run_phase(
-        &client,
-        &pool,
-        &cfg,
-        cfg.duration,
-        true,
-    )
-    .await?;
+    eprintln!(
+        "  Starting load phase ({:.0}s)...\n",
+        cfg.duration.as_secs_f64()
+    );
+    let summary = run_phase(&client, &pool, &cfg, cfg.duration, true).await?;
 
     // Print summary
     print_summary(&summary);
@@ -303,10 +391,7 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     if let Some(slo) = cfg.slo_p99_ms {
         if let Some(e2e) = summary.stages.first() {
             if e2e.p99_ms > slo {
-                eprintln!(
-                    "\nFAIL: p99 {:.0}ms > SLO {:.0}ms",
-                    e2e.p99_ms, slo
-                );
+                eprintln!("\nFAIL: p99 {:.0}ms > SLO {:.0}ms", e2e.p99_ms, slo);
                 failed = true;
             }
         }
@@ -331,6 +416,8 @@ async fn run_phase(
     let deadline = Instant::now() + duration;
 
     let no_verify = cfg.no_verify;
+    let mode = cfg.mode;
+    let batch_size = cfg.batch_size;
 
     // Progress printer (shared by both modes)
     let inflight_progress = Arc::clone(&inflight);
@@ -376,7 +463,7 @@ async fn run_phase(
             let idx = request_idx.fetch_add(1, Ordering::Relaxed);
             handles.push(tokio::spawn(async move {
                 inflight.fetch_add(1, Ordering::Relaxed);
-                let sample = do_request(&client, &pool, idx, no_verify).await;
+                let sample = do_request(&client, &pool, idx, batch_size, mode, no_verify).await;
                 inflight.fetch_sub(1, Ordering::Relaxed);
                 let _ = tx.send(sample);
                 drop(permit);
@@ -399,7 +486,7 @@ async fn run_phase(
                 while Instant::now() < deadline {
                     let idx = request_idx.fetch_add(1, Ordering::Relaxed);
                     inflight.fetch_add(1, Ordering::Relaxed);
-                    let sample = do_request(&client, &pool, idx, no_verify).await;
+                    let sample = do_request(&client, &pool, idx, batch_size, mode, no_verify).await;
                     inflight.fetch_sub(1, Ordering::Relaxed);
                     if tx.send(sample).is_err() {
                         break;
@@ -431,10 +518,30 @@ async fn run_phase(
         while rx.recv().await.is_some() {}
     }
 
-    Ok(collector.into_summary(&cfg.url, duration.as_secs_f64(), cfg.concurrency))
+    Ok(collector.into_summary(
+        &cfg.url,
+        cfg.mode,
+        cfg.batch_size,
+        duration.as_secs_f64(),
+        cfg.concurrency,
+    ))
 }
 
-async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) -> Sample {
+async fn do_request(
+    client: &PirClient,
+    pool: &[Fp],
+    idx: u64,
+    batch_size: usize,
+    mode: LoadMode,
+    no_verify: bool,
+) -> Sample {
+    match mode {
+        LoadMode::Single => do_single_request(client, pool, idx, no_verify).await,
+        LoadMode::Batched => do_batched_request(client, pool, idx, batch_size, no_verify).await,
+    }
+}
+
+async fn do_single_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) -> Sample {
     let value = pool[(idx as usize) % pool.len()];
     let t0 = Instant::now();
 
@@ -448,6 +555,11 @@ async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) 
                     tier2_rtt_ms: timing.tier2.rtt_ms,
                     tier1_server_ms: timing.tier1.server_total_ms,
                     tier2_server_ms: timing.tier2.server_total_ms,
+                    tier1_first_pass_ms: timing.tier1.server_first_pass_ms,
+                    tier2_first_pass_ms: timing.tier2.server_first_pass_ms,
+                    tier1_ring_packing_ms: timing.tier1.server_ring_packing_ms,
+                    tier2_ring_packing_ms: timing.tier2.server_ring_packing_ms,
+                    proof_count: 0,
                     success: false,
                     error_class: Some(ErrorClass::VerifyFail),
                 };
@@ -458,6 +570,11 @@ async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) 
                 tier2_rtt_ms: timing.tier2.rtt_ms,
                 tier1_server_ms: timing.tier1.server_total_ms,
                 tier2_server_ms: timing.tier2.server_total_ms,
+                tier1_first_pass_ms: timing.tier1.server_first_pass_ms,
+                tier2_first_pass_ms: timing.tier2.server_first_pass_ms,
+                tier1_ring_packing_ms: timing.tier1.server_ring_packing_ms,
+                tier2_ring_packing_ms: timing.tier2.server_ring_packing_ms,
+                proof_count: 1,
                 success: true,
                 error_class: None,
             }
@@ -470,11 +587,133 @@ async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) 
                 tier2_rtt_ms: 0.0,
                 tier1_server_ms: None,
                 tier2_server_ms: None,
+                tier1_first_pass_ms: None,
+                tier2_first_pass_ms: None,
+                tier1_ring_packing_ms: None,
+                tier2_ring_packing_ms: None,
+                proof_count: 0,
                 success: false,
                 error_class: Some(class),
             }
         }
     }
+}
+
+async fn do_batched_request(
+    client: &PirClient,
+    pool: &[Fp],
+    idx: u64,
+    batch_size: usize,
+    no_verify: bool,
+) -> Sample {
+    let values = batch_values(pool, idx, batch_size);
+    let t0 = Instant::now();
+
+    match client.fetch_proofs_with_timing(&values).await {
+        Ok(results) => {
+            let mut tier1_server_ms = 0.0;
+            let mut tier2_server_ms = 0.0;
+            let mut tier1_first_pass_ms = 0.0;
+            let mut tier2_first_pass_ms = 0.0;
+            let mut tier1_ring_packing_ms = 0.0;
+            let mut tier2_ring_packing_ms = 0.0;
+            let mut saw_tier1_server = false;
+            let mut saw_tier2_server = false;
+            let mut saw_tier1_first_pass = false;
+            let mut saw_tier2_first_pass = false;
+            let mut saw_tier1_ring_packing = false;
+            let mut saw_tier2_ring_packing = false;
+            let mut tier1_rtt_ms = 0.0;
+            let mut tier2_rtt_ms = 0.0;
+
+            for (i, (proof, timing)) in results.iter().enumerate() {
+                if !no_verify && !proof.verify(values[i]) {
+                    return Sample {
+                        total_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                        tier1_rtt_ms,
+                        tier2_rtt_ms,
+                        tier1_server_ms: saw_tier1_server.then_some(tier1_server_ms),
+                        tier2_server_ms: saw_tier2_server.then_some(tier2_server_ms),
+                        tier1_first_pass_ms: saw_tier1_first_pass.then_some(tier1_first_pass_ms),
+                        tier2_first_pass_ms: saw_tier2_first_pass.then_some(tier2_first_pass_ms),
+                        tier1_ring_packing_ms: saw_tier1_ring_packing
+                            .then_some(tier1_ring_packing_ms),
+                        tier2_ring_packing_ms: saw_tier2_ring_packing
+                            .then_some(tier2_ring_packing_ms),
+                        proof_count: 0,
+                        success: false,
+                        error_class: Some(ErrorClass::VerifyFail),
+                    };
+                }
+
+                tier1_rtt_ms = tier1_rtt_ms.max(timing.tier1.rtt_ms);
+                tier2_rtt_ms = tier2_rtt_ms.max(timing.tier2.rtt_ms);
+                if let Some(ms) = timing.tier1.server_total_ms {
+                    saw_tier1_server = true;
+                    tier1_server_ms += ms;
+                }
+                if let Some(ms) = timing.tier2.server_total_ms {
+                    saw_tier2_server = true;
+                    tier2_server_ms += ms;
+                }
+                if let Some(ms) = timing.tier1.server_first_pass_ms {
+                    saw_tier1_first_pass = true;
+                    tier1_first_pass_ms += ms;
+                }
+                if let Some(ms) = timing.tier2.server_first_pass_ms {
+                    saw_tier2_first_pass = true;
+                    tier2_first_pass_ms += ms;
+                }
+                if let Some(ms) = timing.tier1.server_ring_packing_ms {
+                    saw_tier1_ring_packing = true;
+                    tier1_ring_packing_ms += ms;
+                }
+                if let Some(ms) = timing.tier2.server_ring_packing_ms {
+                    saw_tier2_ring_packing = true;
+                    tier2_ring_packing_ms += ms;
+                }
+            }
+
+            Sample {
+                total_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                tier1_rtt_ms,
+                tier2_rtt_ms,
+                tier1_server_ms: saw_tier1_server.then_some(tier1_server_ms),
+                tier2_server_ms: saw_tier2_server.then_some(tier2_server_ms),
+                tier1_first_pass_ms: saw_tier1_first_pass.then_some(tier1_first_pass_ms),
+                tier2_first_pass_ms: saw_tier2_first_pass.then_some(tier2_first_pass_ms),
+                tier1_ring_packing_ms: saw_tier1_ring_packing.then_some(tier1_ring_packing_ms),
+                tier2_ring_packing_ms: saw_tier2_ring_packing.then_some(tier2_ring_packing_ms),
+                proof_count: results.len() as u64,
+                success: true,
+                error_class: None,
+            }
+        }
+        Err(e) => {
+            let class = classify_error(&e);
+            Sample {
+                total_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                tier1_rtt_ms: 0.0,
+                tier2_rtt_ms: 0.0,
+                tier1_server_ms: None,
+                tier2_server_ms: None,
+                tier1_first_pass_ms: None,
+                tier2_first_pass_ms: None,
+                tier1_ring_packing_ms: None,
+                tier2_ring_packing_ms: None,
+                proof_count: 0,
+                success: false,
+                error_class: Some(class),
+            }
+        }
+    }
+}
+
+fn batch_values(pool: &[Fp], idx: u64, batch_size: usize) -> Vec<Fp> {
+    let start = idx as usize * batch_size;
+    (0..batch_size)
+        .map(|offset| pool[(start + offset) % pool.len()])
+        .collect()
 }
 
 fn build_query_pool(ranges: &[[Fp; 3]], size: usize, seed: Option<u64>) -> Vec<Fp> {
@@ -499,13 +738,19 @@ fn build_query_pool(ranges: &[[Fp; 3]], size: usize, seed: Option<u64>) -> Vec<F
 fn print_summary(s: &LoadSummary) {
     eprintln!("\n=== pir-test load summary ===");
     eprintln!(
-        "url={}   duration={:.0}s   concurrency={}   completed={}   errors={} ({:.2}%)",
+        "url={}   mode={}   duration={:.0}s   concurrency={}   completed={}   proofs={}   errors={} ({:.2}%)",
         s.url,
+        s.mode,
         s.duration_s,
         s.concurrency,
         s.completed,
+        s.completed_proofs,
         s.errors,
         s.error_rate * 100.0,
+    );
+    eprintln!(
+        "throughput: {:.3} batches/s   {:.3} proofs/s",
+        s.batches_per_s, s.proofs_per_s
     );
 
     eprintln!(

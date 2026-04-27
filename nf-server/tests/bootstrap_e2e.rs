@@ -38,15 +38,15 @@ use tokio::sync::oneshot;
 // bootstrap surface, never the `/metrics` HTTP handler or the URL
 // default constants (those are exercised by `cmd_serve.rs` flag
 // defaults, not by tests here).
+#[path = "../src/bootstrap.rs"]
+#[allow(dead_code)]
+mod bootstrap;
 #[path = "../src/metrics.rs"]
 #[allow(dead_code)]
 mod metrics;
 #[path = "../src/voting_config.rs"]
 #[allow(dead_code)]
 mod voting_config;
-#[path = "../src/bootstrap.rs"]
-#[allow(dead_code)]
-mod bootstrap;
 
 use bootstrap::{Config, Outcome};
 
@@ -70,27 +70,17 @@ impl MockBucket {
     }
 }
 
-async fn handle_get(
-    State(bucket): State<MockBucket>,
-    uri: axum::http::Uri,
-) -> impl IntoResponse {
+async fn handle_get(State(bucket): State<MockBucket>, uri: axum::http::Uri) -> impl IntoResponse {
     let path = uri.path().to_string();
     match bucket.routes.read().unwrap().get(&path).cloned() {
-        Some((ct, body)) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, ct)],
-            body,
-        )
-            .into_response(),
+        Some((ct, body)) => (StatusCode::OK, [(header::CONTENT_TYPE, ct)], body).into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
 /// Spawn an axum server on a random port. Returns `(base_url, shutdown_tx)`.
 async fn spawn_mock(bucket: MockBucket) -> (String, oneshot::Sender<()>) {
-    let app = Router::new()
-        .fallback(get(handle_get))
-        .with_state(bucket);
+    let app = Router::new().fallback(get(handle_get)).with_state(bucket);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
@@ -389,10 +379,7 @@ async fn voting_config_without_height_errors() {
 
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
     let s = format!("{err:#}");
-    assert!(
-        s.contains("snapshot_height"),
-        "unexpected error: {s}"
-    );
+    assert!(s.contains("snapshot_height"), "unexpected error: {s}");
 }
 
 #[tokio::test]

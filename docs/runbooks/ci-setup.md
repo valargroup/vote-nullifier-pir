@@ -61,9 +61,9 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 | `DO_SECRET_KEY` | `release.yml` | DigitalOcean Spaces secret key (optional). |
 
 `deploy.yml` also writes **`PIR_BATCH_COMPUTE_MODE=parallel-k5`** into
-`/opt/nf-ingest/.env` (same file as `SENTRY_DSN`) so Phase 1.1 batch queries
-overlap K=5 matvecs on Rayon. To roll back to serial batching, set `serial`
-or remove that line on the host and `sudo systemctl restart nullifier-query-server`.
+`/opt/nf-ingest/.env` (same file as `SENTRY_DSN`) for compatibility with older
+Phase 1.1 binaries. Current K-wide batching builds ignore this env and use the
+YPIR batched first pass for `K == 5`.
 
 ### One-time setup on the remote host
 
@@ -209,7 +209,7 @@ flowchart LR
 | [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, optional `include_nullifier_artifacts`) | Runs `nf-server sync` on `PIR_BACKUP_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Set **`include_nullifier_artifacts`** to also upload `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.tree` into the same prefix (large); default is **false** so routine snapshot bumps stay tier-only. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and `nf_snapshot_served_height == nf_snapshot_expected_height`, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
 | [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml) | Manual `workflow_dispatch` | Runs `nf-server sync` + `systemctl restart` on the host in `DEPLOY_HOST`. For fleet-wide snapshot bumps, prefer `publish-snapshot.yml` then `restart.yml`. |
-| [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (per `voting-config.json`, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint from the same config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for the current height. |
+| [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (per `voting-config.json`, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint from the same config, and runs `pir-test load` with configurable mode (`single` or `batched`), batch size, concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for the current height. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
 
 ### Removing legacy bucket-root `nullifiers.*` keys

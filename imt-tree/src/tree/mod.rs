@@ -142,7 +142,11 @@ pub fn precompute_empty_hashes() -> [Fp; TREE_DEPTH] {
 /// that pair-wise hashing produces the next level cleanly. All intermediate
 /// layers are retained so Merkle auth paths can be extracted in O(`depth`)
 /// via simple sibling lookups.
-pub fn build_levels(mut leaves: Vec<Fp>, empty: &[Fp; TREE_DEPTH], depth: usize) -> (Fp, Vec<Vec<Fp>>) {
+pub fn build_levels(
+    mut leaves: Vec<Fp>,
+    empty: &[Fp; TREE_DEPTH],
+    depth: usize,
+) -> (Fp, Vec<Vec<Fp>>) {
     let hasher = PoseidonHasher::new();
     let mut levels: Vec<Vec<Fp>> = Vec::with_capacity(depth);
 
@@ -181,5 +185,3 @@ pub fn build_levels(mut leaves: Vec<Fp>, empty: &[Fp; TREE_DEPTH], depth: usize)
 
     (root, levels)
 }
-
-

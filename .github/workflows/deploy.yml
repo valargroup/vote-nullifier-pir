@@ -76,7 +76,8 @@ jobs:
           envs: SENTRY_DSN
           script: |
             # systemd loads /opt/nf-ingest/.env (see nullifier-query-server.service).
-            # PIR_BATCH_COMPUTE_MODE enables Phase 1.1 K=5 Rayon overlap in batch_query.
+            # PIR_BATCH_COMPUTE_MODE is kept for compatibility with older binaries;
+            # current builds use the K-wide YPIR path for K=5 batch_query.
             printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" "PIR_BATCH_COMPUTE_MODE=parallel-k5" \
               | sudo tee /opt/nf-ingest/.env > /dev/null
             sudo chmod 600 /opt/nf-ingest/.env

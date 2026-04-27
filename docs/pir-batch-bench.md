@@ -789,6 +789,93 @@ changing the wire protocol; the durable fix remains **Phase 2**: replace the
 K tier-2 matvecs with the K-wide batched server kernel behind the same
 `/tier{1,2}/batch_query` route.
 
+## Phase 2 DigitalOcean test-host playbook
+
+Phase 2 wires `YServer::perform_online_computation_simplepir_batched::<5>` into
+the existing `/tier{1,2}/batch_query` route. The wire format remains K
+independent `(q_k, pp_k)` slots; only the server's first-pass SimplePIR matvec
+changes from K independent calls to one K-wide call for `K == 5`.
+
+The one-off DigitalOcean rollout is documented in
+[`runbooks/do-batch-rollout.md`](runbooks/do-batch-rollout.md). The minimum
+before/after matrix on the same test host is:
+
+```bash
+./target/release/pir-test bench-server \
+  --url "$PIR_URL" --nullifiers "$NF" \
+  --iterations 30 --warmup 3 \
+  --batch-size 5 --mode parallel \
+  --seed 42 --label "$LABEL_PREFIX-k5-parallel" \
+  --json-out "docs/baselines/$LABEL_PREFIX-k5-parallel.json"
+
+./target/release/pir-test bench-server \
+  --url "$PIR_URL" --nullifiers "$NF" \
+  --iterations 30 --warmup 3 \
+  --batch-size 5 --mode batched \
+  --seed 42 --label "$LABEL_PREFIX-k5-batched" \
+  --json-out "docs/baselines/$LABEL_PREFIX-k5-batched.json"
+
+./target/release/pir-test load \
+  --url "$PIR_URL" --nullifiers "$NF" \
+  --mode single --concurrency 8 \
+  --duration 120s --warmup 15s --seed 42 \
+  --json-out "docs/baselines/$LABEL_PREFIX-load-single-c8.json"
+
+./target/release/pir-test load \
+  --url "$PIR_URL" --nullifiers "$NF" \
+  --mode batched --batch-size 5 --concurrency 8 \
+  --duration 120s --warmup 15s --seed 42 \
+  --json-out "docs/baselines/$LABEL_PREFIX-load-batched-k5-c8.json"
+```
+
+### Phase 2 DO test-host measurement
+
+Measured on a one-off DigitalOcean host:
+
+- Host: `vote-nullifier-pir-batch-test`, `m-4vcpu-32gb-intel`, `fra1`,
+  `139.59.210.199`.
+- CPU: Intel Xeon Platinum 8358, 4 vCPU, AVX-512 available.
+- Snapshot: height `3317500`, `24962943` ranges, root29 `c338a0...3a3f`.
+- Observer: local machine over HTTP to `:3000`, no Caddy/TLS.
+- Baseline binary: `v0.0.27` installed by `start_pir.sh`.
+- K-wide binary: local source build, `nf-server 0.1.0`, compiled on the host
+  with `--features avx512,rayon` and `target-cpu=x86-64-v4`.
+
+Raw JSON:
+
+- [`baselines/do-batch-test-baseline-20260427T035401Z-k5-parallel.json`](baselines/do-batch-test-baseline-20260427T035401Z-k5-parallel.json)
+- [`baselines/do-batch-test-baseline-20260427T035401Z-k5-batched.json`](baselines/do-batch-test-baseline-20260427T035401Z-k5-batched.json)
+- [`baselines/do-batch-test-baseline-20260427T035401Z-load-single-c8.json`](baselines/do-batch-test-baseline-20260427T035401Z-load-single-c8.json)
+- [`baselines/do-batch-test-baseline-20260427T035401Z-load-batched-k5-c8.json`](baselines/do-batch-test-baseline-20260427T035401Z-load-batched-k5-c8.json)
+- [`baselines/do-batch-test-kwide-20260427T042223Z-k5-parallel.json`](baselines/do-batch-test-kwide-20260427T042223Z-k5-parallel.json)
+- [`baselines/do-batch-test-kwide-20260427T042223Z-k5-batched.json`](baselines/do-batch-test-kwide-20260427T042223Z-k5-batched.json)
+- [`baselines/do-batch-test-kwide-20260427T042223Z-load-single-c8.json`](baselines/do-batch-test-kwide-20260427T042223Z-load-single-c8.json)
+- [`baselines/do-batch-test-kwide-20260427T042223Z-load-batched-k5-c8.json`](baselines/do-batch-test-kwide-20260427T042223Z-load-batched-k5-c8.json)
+
+`bench-server --mode batched`, K=5:
+
+| Run | Wall p50 | Wall p95 | Wall p99 | T2 compute p50 | T2 compute p95 | Errors |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline `v0.0.27` | 9.04 s | 13.78 s | 20.19 s | 884 ms | 902 ms | 0 / 150 |
+| K-wide build | 11.43 s | 19.76 s | 26.74 s | 847 ms | 906 ms | 0 / 150 |
+
+`pir-test load`, concurrency 8:
+
+| Run | Mode | Proofs/s | Batches/s | E2E p50 | E2E p95 | E2E p99 | Errors |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Baseline `v0.0.27` | single | 1.73 | 1.73 | 4.34 s | 8.14 s | 11.77 s | 0 |
+| K-wide build | single | 1.88 | 1.88 | 4.09 s | 6.56 s | 7.29 s | 0 |
+| Baseline `v0.0.27` | batched K=5 | 2.13 | 0.43 | 19.90 s | 27.57 s | 30.94 s | 0 |
+| K-wide build | batched K=5 | 2.29 | 0.46 | 18.27 s | 24.34 s | 30.26 s | 0 |
+
+Read: the K-wide build improved sustained batched throughput on this host
+(2.13 → 2.29 proofs/s, +7.8%) and reduced batched-load p50/p95, with zero
+errors. The closed-loop `bench-server --mode batched` latency did **not**
+improve in this run; wall p50/p95/p99 regressed despite a small T2 compute p50
+drop. Treat the result as a throughput win under load, not a latency win, until
+we profile why the batched first-pass saving is not flowing through the
+single-delegation path.
+
 ## Phase 1 / Phase 2 success criteria
 
 These are the gates that block merging the SDK swap to the batched path

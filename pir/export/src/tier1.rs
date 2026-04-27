@@ -17,8 +17,8 @@ use pasta_curves::Fp;
 use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 
 use crate::{
-    node_or_empty, subtree_min_key, write_fp, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS, TIER2_LEAVES,
+    node_or_empty, subtree_min_key, write_fp, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS, TIER1_LEAVES,
+    TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS, TIER2_LEAVES,
 };
 
 pub use pir_types::tier1::Tier1Row;

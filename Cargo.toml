@@ -14,6 +14,9 @@ members = [
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.1.1" }
 
+[patch.crates-io]
+valar-ypir = { path = "../ypir" }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

@@ -1,0 +1,67 @@
+{
+  "url": "http://139.59.210.199:3000",
+  "mode": "batched",
+  "batch_size": 5,
+  "duration_s": 120.0,
+  "concurrency": 8,
+  "completed": 51,
+  "completed_batches": 51,
+  "completed_proofs": 255,
+  "batches_per_s": 0.425,
+  "proofs_per_s": 2.125,
+  "errors": 0,
+  "error_rate": 0.0,
+  "stages": [
+    {
+      "name": "end-to-end",
+      "n": 51,
+      "p50_ms": 19903.0,
+      "p90_ms": 25999.0,
+      "p95_ms": 27567.0,
+      "p99_ms": 30943.0,
+      "p999_ms": 30943.0,
+      "max_ms": 30943.0
+    },
+    {
+      "name": "tier1_rtt",
+      "n": 51,
+      "p50_ms": 3247.0,
+      "p90_ms": 7983.0,
+      "p95_ms": 10735.0,
+      "p99_ms": 12319.0,
+      "p999_ms": 12319.0,
+      "max_ms": 12319.0
+    },
+    {
+      "name": "tier2_rtt",
+      "n": 51,
+      "p50_ms": 14735.0,
+      "p90_ms": 20639.0,
+      "p95_ms": 22479.0,
+      "p99_ms": 24991.0,
+      "p999_ms": 24991.0,
+      "max_ms": 24991.0
+    },
+    {
+      "name": "tier1_srvr",
+      "n": 51,
+      "p50_ms": 559.0,
+      "p90_ms": 838.0,
+      "p95_ms": 887.0,
+      "p99_ms": 921.0,
+      "p999_ms": 921.0,
+      "max_ms": 921.0
+    },
+    {
+      "name": "tier2_srvr",
+      "n": 51,
+      "p50_ms": 9023.0,
+      "p90_ms": 9719.0,
+      "p95_ms": 10047.0,
+      "p99_ms": 10167.0,
+      "p999_ms": 10167.0,
+      "max_ms": 10167.0
+    }
+  ],
+  "error_classes": []
+}

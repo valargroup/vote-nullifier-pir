@@ -17,7 +17,7 @@ use pasta_curves::Fp;
 use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 
 use crate::{
-    subtree_min_key, write_fp, write_internal_nodes, node_or_empty, PIR_DEPTH, TIER0_LAYERS,
+    node_or_empty, subtree_min_key, write_fp, write_internal_nodes, PIR_DEPTH, TIER0_LAYERS,
     TIER1_ROWS,
 };
 
@@ -44,7 +44,14 @@ pub fn export(
     offset += 32;
 
     // Depths 1 through TIER0_LAYERS-1 (= 8).
-    offset += write_internal_nodes(levels, empty_hashes, PIR_DEPTH, TIER0_LAYERS, 0, &mut buf[offset..]);
+    offset += write_internal_nodes(
+        levels,
+        empty_hashes,
+        PIR_DEPTH,
+        TIER0_LAYERS,
+        0,
+        &mut buf[offset..],
+    );
 
     debug_assert_eq!(offset, TIER0_INTERNAL_NODES * 32);
 

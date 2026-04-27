@@ -184,7 +184,8 @@ pub fn save_tree_checkpoint(path: &Path, tree: &PirTree, chain_height: u64) -> R
     f.write_all(&payload)?;
     f.sync_all().context("fsync tree checkpoint tmp")?;
     drop(f);
-    fs::rename(&tmp, path).with_context(|| format!("rename tree checkpoint to {}", path.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("rename tree checkpoint to {}", path.display()))?;
     Ok(())
 }
 

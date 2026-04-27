@@ -136,7 +136,10 @@ fn check_avx512() {
     #[cfg(target_arch = "x86_64")]
     {
         let supported = std::arch::is_x86_feature_detected!("avx512f");
-        println!("AVX-512F (runtime): {}", if supported { "yes" } else { "no" });
+        println!(
+            "AVX-512F (runtime): {}",
+            if supported { "yes" } else { "no" }
+        );
         if !supported {
             warn_hardware(
                 "CPU does not advertise AVX-512F at runtime; PIR still runs but may be \
@@ -156,7 +159,9 @@ fn resolve_existing_prefix(p: &Path) -> PathBuf {
     let mut cur = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(p)
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(p)
     };
     loop {
         if cur.exists() {

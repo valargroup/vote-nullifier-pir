@@ -38,7 +38,11 @@ pub struct Args {
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
+    #[arg(
+        long,
+        default_value = "https://zec.rocks:443",
+        env = "SVOTE_PIR_MAINNET_RPC_URL"
+    )]
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
@@ -129,14 +133,8 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/params/tier2", get(handlers::get_params_tier2))
         .route("/tier1/query", post(handlers::post_tier1_query))
         .route("/tier2/query", post(handlers::post_tier2_query))
-        .route(
-            "/tier1/batch_query",
-            post(handlers::post_tier1_batch_query),
-        )
-        .route(
-            "/tier2/batch_query",
-            post(handlers::post_tier2_batch_query),
-        )
+        .route("/tier1/batch_query", post(handlers::post_tier1_batch_query))
+        .route("/tier2/batch_query", post(handlers::post_tier2_batch_query))
         .route("/tier1/row/:idx", get(handlers::get_tier1_row))
         .route("/tier2/row/:idx", get(handlers::get_tier2_row))
         .route("/root", get(handlers::get_root))

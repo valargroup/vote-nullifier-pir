@@ -43,7 +43,10 @@ pub(crate) struct PrepareRequest {
 /// Retained for historical reasons; see the module-level note above.
 #[allow(dead_code)]
 async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
-    let url = format!("{}/shielded-vote/v1/rounds/active", chain_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/shielded-vote/v1/rounds/active",
+        chain_url.trim_end_matches('/')
+    );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
@@ -268,21 +271,26 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            rt.block_on(sync_nullifiers::sync(&dd, &lwd, Some(target_height), |h, t, _, _| {
-                info!(height = h, target = t, "nullifier sync progress");
-                let pct = if t > 0 {
-                    2 + ((h as f64 / t as f64) * 8.0) as u8
-                } else {
-                    5
-                };
-                if let Ok(mut phase) = state_ref.phase.try_write() {
-                    *phase = ServerPhase::Rebuilding {
-                        target_height,
-                        progress: format!("syncing {h}/{t}"),
-                        progress_pct: pct,
+            rt.block_on(sync_nullifiers::sync(
+                &dd,
+                &lwd,
+                Some(target_height),
+                |h, t, _, _| {
+                    info!(height = h, target = t, "nullifier sync progress");
+                    let pct = if t > 0 {
+                        2 + ((h as f64 / t as f64) * 8.0) as u8
+                    } else {
+                        5
                     };
-                }
-            }))?;
+                    if let Ok(mut phase) = state_ref.phase.try_write() {
+                        *phase = ServerPhase::Rebuilding {
+                            target_height,
+                            progress: format!("syncing {h}/{t}"),
+                            progress_pct: pct,
+                        };
+                    }
+                },
+            ))?;
             Ok::<_, anyhow::Error>(())
         })
         .await??;
@@ -302,10 +310,12 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     let state_ref = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {
         let entry = file_store::offset_for_height(&dd, target_height)?;
-        let (idx_height, byte_offset) = entry.ok_or_else(|| {
-            anyhow::anyhow!("no index entry for target height {}", target_height)
-        })?;
-        info!(height = idx_height, byte_offset, "Loading nullifiers for export");
+        let (idx_height, byte_offset) = entry
+            .ok_or_else(|| anyhow::anyhow!("no index entry for target height {}", target_height))?;
+        info!(
+            height = idx_height,
+            byte_offset, "Loading nullifiers for export"
+        );
         let nfs = file_store::load_nullifiers_up_to(&dd, byte_offset)?;
         info!(count = nfs.len(), "Nullifiers loaded");
 
@@ -341,7 +351,8 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     }
 
     let pd = pir_data_dir.clone();
-    let new_serving = tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd)).await??;
+    let new_serving =
+        tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd)).await??;
 
     {
         let mut serving = state.serving.write().await;

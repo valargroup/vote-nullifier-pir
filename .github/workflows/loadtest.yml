@@ -13,6 +13,17 @@ on:
           - backup
           - primary
         default: backup
+      mode:
+        description: "Load shape"
+        type: choice
+        options:
+          - single
+          - batched
+        default: single
+      batch_size:
+        description: "Proofs per load unit when mode=batched"
+        type: string
+        default: "5"
       concurrency:
         description: "Number of concurrent workers"
         type: string
@@ -35,7 +46,7 @@ env:
 
 jobs:
   loadtest:
-    name: Load test (${{ inputs.target }}, c=${{ inputs.concurrency }}, ${{ inputs.duration }})
+    name: Load test (${{ inputs.target }}, ${{ inputs.mode }}, c=${{ inputs.concurrency }}, ${{ inputs.duration }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +107,7 @@ jobs:
 
       - name: Run load test
         run: |
-          ARGS="--url $PIR_URL --nullifiers nullifiers.bin --concurrency ${{ inputs.concurrency }} --duration ${{ inputs.duration }} --json-out summary.json"
+          ARGS="--url $PIR_URL --nullifiers nullifiers.bin --mode ${{ inputs.mode }} --batch-size ${{ inputs.batch_size }} --concurrency ${{ inputs.concurrency }} --duration ${{ inputs.duration }} --json-out summary.json"
           if [ -n "${{ inputs.rps }}" ]; then
             ARGS="$ARGS --rps ${{ inputs.rps }}"
           fi
