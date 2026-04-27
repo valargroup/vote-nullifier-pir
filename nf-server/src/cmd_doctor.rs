@@ -17,7 +17,7 @@ const RECOMMENDED_CPU: u32 = 4;
 /// Recommended minimum system RAM (GiB).
 const RECOMMENDED_RAM_GIB: u64 = 32;
 /// Recommended minimum free space on the PIR data volume (GiB).
-const RECOMMENDED_FREE_DISK_GIB: u64 = 35;
+const RECOMMENDED_FREE_DISK_GIB: u64 = 65;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -42,10 +42,35 @@ pub fn run(args: Args) -> Result<()> {
     check_ram();
     check_disk(&args.pir_data_dir)?;
     check_avx512();
+    check_precompute_cache(&args.pir_data_dir);
 
     println!();
     println!("Doctor finished (warnings are advisory; exit code is always 0).");
     Ok(())
+}
+
+/// Report whether each tier's precompute cache file is present and how big.
+/// Doesn't validate the header (would require loading YPIR params); presence
+/// is enough for an operator to triage warm-start regressions ("did the cache
+/// disappear?"). A stale cache will be rejected by hash on next load.
+fn check_precompute_cache(pir_data_dir: &Path) {
+    println!();
+    println!("Precompute cache:");
+    for (label, name) in [("tier 1", "tier1.precompute"), ("tier 2", "tier2.precompute")] {
+        let p = pir_data_dir.join(name);
+        match std::fs::metadata(&p) {
+            Ok(m) => {
+                let gib = m.len() as f64 / (1024.0 * 1024.0 * 1024.0);
+                println!("  {label}: present ({:.2} GiB at {})", gib, p.display());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                println!("  {label}: absent (will be written on first serve boot)");
+            }
+            Err(e) => {
+                println!("  {label}: unreadable ({e})");
+            }
+        }
+    }
 }
 
 fn print_build_features() {

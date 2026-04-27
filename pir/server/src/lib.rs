@@ -4,10 +4,11 @@
 //! that both the HTTP server (`main.rs`) and the test harness (`pir-test`)
 //! can use.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::io::Cursor;
+use std::path::Path;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 
@@ -15,6 +16,8 @@ use spiral_rs::params::Params;
 use ypir::params::{params_for_scenario_simplepir, DbRowsCols, PtModulusBits};
 use ypir::serialize::{FilePtIter, OfflinePrecomputedValues};
 use ypir::server::YServer;
+
+pub mod precompute_cache;
 
 // Re-export shared types and constants so existing consumers can import from pir_server.
 pub use pir_types::{
@@ -200,34 +203,25 @@ pub struct BatchQueryAnswer {
 }
 
 impl<'a> TierServer<'a> {
-    /// Initialize a YPIR+SP server from raw tier data.
+    /// Build the YPIR `(YServer, OfflinePrecomputedValues)` pair from raw
+    /// tier bytes against a pre-allocated `Params`. Slow path: ~30s for
+    /// tier 1, ~90-120s for tier 2; this is what the precompute cache
+    /// (see [`OwnedTierState::new_or_load`]) skips on subsequent boots.
     ///
-    /// `data` is the flat binary tier file (rows × row_bytes).
-    /// This performs the expensive offline precomputation.
-    pub fn new(data: &'a [u8], scenario: YpirScenario) -> Self {
+    /// Factored out so the cache-miss path in `OwnedTierState::new_or_load`
+    /// can drive the same construction without allocating its own `Params`.
+    fn build_ypir_state(
+        params: &'a Params,
+        data: &'a [u8],
+        scenario: &YpirScenario,
+    ) -> (YServer<'a, u16>, OfflinePrecomputedValues<'a>) {
         let t0 = Instant::now();
-
-        // Note: this is where server params are set.
-        let params_box = Box::new(params_for_scenario_simplepir(
-            scenario.num_items as u64,
-            scenario.item_size_bits as u64,
-        ));
-
-        // SAFETY: We extend the reference lifetime to 'a. This is sound because:
-        // 1. params_box is a heap allocation with a stable address
-        // 2. server and offline are ManuallyDrop, dropped before _params in our Drop impl
-        // 3. The reference remains valid for the entire lifetime of this struct
-        let params: &'a Params =
-            unsafe { std::mem::transmute::<&Params, &'a Params>(params_box.as_ref()) };
-
         info!(
             num_items = scenario.num_items,
             item_size_bits = scenario.item_size_bits,
             "YPIR server init"
         );
 
-        // Use FilePtIter to pack raw bytes into 14-bit u16 values.
-        // This matches how the YPIR standalone server reads database files.
         let bytes_per_row = scenario.item_size_bits / 8;
         let db_cols = params.db_cols_simplepir();
         let pt_bits = params.pt_modulus_bits();
@@ -248,12 +242,51 @@ impl<'a> TierServer<'a> {
             "YPIR offline precomputation done"
         );
 
+        (server, offline)
+    }
+
+    /// Allocate a fresh `Params` box for this scenario. Caller is
+    /// responsible for keeping it alive longer than any borrows.
+    fn alloc_params(scenario: &YpirScenario) -> Box<Params> {
+        Box::new(params_for_scenario_simplepir(
+            scenario.num_items as u64,
+            scenario.item_size_bits as u64,
+        ))
+    }
+
+    /// Wrap pre-built YPIR state (e.g. from `build_ypir_state` or from a
+    /// cache load) in a `TierServer`. The caller must guarantee that
+    /// `server` and `offline` borrow from `params_box` (so the box must
+    /// outlive them, which the `ManuallyDrop` + Drop impl ensures).
+    fn wrap(
+        server: YServer<'a, u16>,
+        offline: OfflinePrecomputedValues<'a>,
+        scenario: YpirScenario,
+        params_box: Box<Params>,
+    ) -> Self {
         Self {
             server: std::mem::ManuallyDrop::new(server),
             offline: std::mem::ManuallyDrop::new(offline),
             _params: params_box,
             scenario,
         }
+    }
+
+    /// Initialize a YPIR+SP server from raw tier data.
+    ///
+    /// `data` is the flat binary tier file (rows × row_bytes).
+    /// This performs the expensive offline precomputation. Used by
+    /// in-process callers (tests) that don't want the cache. Server-side
+    /// startup uses [`OwnedTierState::new_or_load`] instead.
+    pub fn new(data: &'a [u8], scenario: YpirScenario) -> Self {
+        let params_box = Self::alloc_params(&scenario);
+        // SAFETY: We extend the reference lifetime to 'a. Sound because
+        // params_box is a heap allocation with a stable address, and
+        // server/offline are dropped before _params in our Drop impl.
+        let params: &'a Params =
+            unsafe { std::mem::transmute::<&Params, &'a Params>(params_box.as_ref()) };
+        let (server, offline) = Self::build_ypir_state(params, data, &scenario);
+        Self::wrap(server, offline, scenario, params_box)
     }
 
     /// Answer a single YPIR+SP query.
@@ -523,6 +556,9 @@ impl OwnedTierState {
     /// Construct a new `OwnedTierState` from borrowed tier data and a YPIR scenario.
     ///
     /// The data slice only needs to live for the duration of this call.
+    /// Used by in-process callers (tests) that don't want the warm-restart
+    /// cache. Server-side startup should use [`OwnedTierState::new_or_load`]
+    /// instead so that subsequent boots skip the ~2-minute YPIR setup.
     ///
     /// # Safety
     ///
@@ -536,6 +572,102 @@ impl OwnedTierState {
         let data_ref: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(data) };
         let server = TierServer::new(data_ref, scenario);
         Self { server }
+    }
+
+    /// Load YPIR state for one tier, preferring the on-disk precompute cache
+    /// at `cache_path` over re-running the ~2-minute YPIR setup. Cache miss
+    /// (file absent / hash mismatch / corrupt / version mismatch) falls back
+    /// to the slow path and atomically writes the cache for next boot.
+    ///
+    /// Returns `(state, cache_hit)`. The `cache_hit` flag is purely
+    /// informational; used by `load_serving_state` for hit/miss logging.
+    /// The cache write at the end is best-effort: ENOSPC / EROFS / I/O
+    /// errors during the dump log a warning and return the (correct) state
+    /// anyway. The server stays correct; we just lose the optimization for
+    /// next boot.
+    pub fn new_or_load(
+        tier_path: &Path,
+        scenario: YpirScenario,
+        cache_path: &Path,
+    ) -> Result<(Self, bool)> {
+        // Allocate Params first so both the cache-hit and cache-miss paths
+        // can hand it to the YPIR loader/builder against the same address.
+        let params_box = TierServer::alloc_params(&scenario);
+        // SAFETY: see `TierServer::new`; params_box stable address; YServer
+        // and OfflinePrecomputedValues are dropped before _params via the
+        // ManuallyDrop pattern in `TierServer::Drop`.
+        let params: &'static Params =
+            unsafe { std::mem::transmute::<&Params, &'static Params>(params_box.as_ref()) };
+
+        let t_load = Instant::now();
+        match precompute_cache::try_load_cache(cache_path, tier_path, &scenario, params) {
+            Ok(loaded) => {
+                info!(
+                    cache = %cache_path.display(),
+                    elapsed_s = format!("{:.1}", t_load.elapsed().as_secs_f64()),
+                    "precompute cache hit"
+                );
+                let server = TierServer::wrap(loaded.server, loaded.offline, scenario, params_box);
+                return Ok((Self { server }, true));
+            }
+            Err(reason) => {
+                info!(
+                    cache = %cache_path.display(),
+                    reason = %reason,
+                    "precompute cache miss; recomputing"
+                );
+            }
+        }
+
+        // Slow path: read tier data, run YPIR setup, write cache.
+        let tier_data = std::fs::read(tier_path).with_context(|| {
+            format!("read tier file {}", tier_path.display())
+        })?;
+
+        // Hash the EXACT buffer we're about to feed YPIR. write_cache takes
+        // this hash as a parameter rather than re-reading tier_path, which
+        // closes a TOCTOU window: if tier_path were replaced during the long
+        // YPIR setup, re-hashing the file later would record the new tier
+        // hash with payload built from old bytes -- and the next load would
+        // silently accept the cache and serve wrong responses against the
+        // mismatched tier file. Hashing the in-memory buffer guarantees the
+        // recorded hash describes the bytes the payload was built from.
+        let tier_source_hash: [u8; 32] = blake3::hash(&tier_data).into();
+
+        // SAFETY: see `OwnedTierState::new`; tier_data is moved into this
+        // function and lives until after build_ypir_state returns; YPIR's
+        // FilePtIter consumes it before then, so the &'static borrow does
+        // not outlive the underlying buffer.
+        let data_ref: &'static [u8] =
+            unsafe { std::mem::transmute::<&[u8], &'static [u8]>(&tier_data[..]) };
+        let (server, offline) = TierServer::build_ypir_state(params, data_ref, &scenario);
+
+        // Best-effort cache write. Failure is logged but does not fail
+        // startup; caching is an optimization.
+        if let Err(e) = precompute_cache::write_cache(
+            cache_path,
+            &tier_source_hash,
+            &scenario,
+            &server,
+            &offline,
+        ) {
+            warn!(
+                cache = %cache_path.display(),
+                error = %e,
+                "precompute cache write failed; serving from memory, next boot will recompute"
+            );
+        } else {
+            info!(cache = %cache_path.display(), "precompute cache written");
+        }
+
+        // Drop tier_data only after cache write completes (write_cache borrows
+        // server/offline which still hold the &'static slice). After this
+        // function returns, the YPIR state has copied everything into its
+        // own buffers.
+        drop(tier_data);
+
+        let server = TierServer::wrap(server, offline, scenario, params_box);
+        Ok((Self { server }, false))
     }
 
     pub fn server(&self) -> &TierServer<'static> {
@@ -554,7 +686,6 @@ unsafe impl Sync for OwnedTierState {}
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tracing::warn;
 
 /// RAII guard that decrements an atomic inflight counter on drop.
 pub struct InflightGuard<'a> {
@@ -805,41 +936,57 @@ pub struct ServingState {
     pub metadata: PirMetadata,
 }
 
+/// On-disk file name for the tier-1 plaintext rows.
+pub const TIER1_FILE: &str = "tier1.bin";
+/// On-disk file name for the tier-2 plaintext rows.
+pub const TIER2_FILE: &str = "tier2.bin";
+/// On-disk file name for the tier-1 precompute cache.
+pub const TIER1_PRECOMPUTE_FILE: &str = "tier1.precompute";
+/// On-disk file name for the tier-2 precompute cache.
+pub const TIER2_PRECOMPUTE_FILE: &str = "tier2.precompute";
+
 /// Load tier files from disk, initialize YPIR servers, and return a
 /// ready-to-serve [`ServingState`].
 ///
 /// Reads `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` from
-/// `pir_data_dir`. Raw tier data is consumed during YPIR initialization
-/// and dropped to save ~6 GB.
+/// `pir_data_dir`, plus the precompute caches `tier{1,2}.precompute` if
+/// present and valid. Cache miss falls back to recompute and writes a
+/// fresh cache for next boot.
 pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState> {
     let t_total = Instant::now();
 
     let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
     info!(bytes = tier0_data.len(), "Tier 0 loaded");
 
-    let tier1_data = std::fs::read(pir_data_dir.join("tier1.bin"))?;
+    // Validate tier{1,2}.bin sizes BEFORE attempting cache load. Cache
+    // validation hashes the tier file but doesn't constrain its size; a
+    // malformed tier file must be rejected up front because the server
+    // still serves rows directly from tier{0,1,2}.bin for some operations.
+    let tier1_path = pir_data_dir.join(TIER1_FILE);
+    let tier1_size = std::fs::metadata(&tier1_path)?.len() as usize;
     info!(
-        bytes = tier1_data.len(),
-        rows = tier1_data.len() / TIER1_ROW_BYTES,
-        "Tier 1 loaded"
+        bytes = tier1_size,
+        rows = tier1_size / TIER1_ROW_BYTES,
+        "Tier 1 sized"
     );
     anyhow::ensure!(
-        tier1_data.len() == TIER1_YPIR_ROWS * TIER1_ROW_BYTES,
+        tier1_size == TIER1_YPIR_ROWS * TIER1_ROW_BYTES,
         "tier1.bin size mismatch: got {} bytes, expected {}",
-        tier1_data.len(),
+        tier1_size,
         TIER1_YPIR_ROWS * TIER1_ROW_BYTES
     );
 
-    let tier2_data = std::fs::read(pir_data_dir.join("tier2.bin"))?;
+    let tier2_path = pir_data_dir.join(TIER2_FILE);
+    let tier2_size = std::fs::metadata(&tier2_path)?.len() as usize;
     info!(
-        bytes = tier2_data.len(),
-        rows = tier2_data.len() / TIER2_ROW_BYTES,
-        "Tier 2 loaded"
+        bytes = tier2_size,
+        rows = tier2_size / TIER2_ROW_BYTES,
+        "Tier 2 sized"
     );
     anyhow::ensure!(
-        tier2_data.len() == TIER2_ROWS * TIER2_ROW_BYTES,
+        tier2_size == TIER2_ROWS * TIER2_ROW_BYTES,
         "tier2.bin size mismatch: got {} bytes, expected {}",
-        tier2_data.len(),
+        tier2_size,
         TIER2_ROWS * TIER2_ROW_BYTES
     );
 
@@ -850,17 +997,21 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
 
     info!("Initializing YPIR servers");
     let tier1_scenario = tier1_scenario();
-    let tier1 = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
-    drop(tier1_data);
-    info!("Tier 1 YPIR ready");
+    let tier1_cache_path = pir_data_dir.join(TIER1_PRECOMPUTE_FILE);
+    let (tier1, tier1_hit) =
+        OwnedTierState::new_or_load(&tier1_path, tier1_scenario.clone(), &tier1_cache_path)?;
+    info!(cache_hit = tier1_hit, "Tier 1 YPIR ready");
 
     let tier2_scenario = tier2_scenario();
-    let tier2 = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
-    drop(tier2_data);
-    info!("Tier 2 YPIR ready");
+    let tier2_cache_path = pir_data_dir.join(TIER2_PRECOMPUTE_FILE);
+    let (tier2, tier2_hit) =
+        OwnedTierState::new_or_load(&tier2_path, tier2_scenario.clone(), &tier2_cache_path)?;
+    info!(cache_hit = tier2_hit, "Tier 2 YPIR ready");
 
     info!(
         elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()),
+        tier1_cache_hit = tier1_hit,
+        tier2_cache_hit = tier2_hit,
         "Server ready"
     );
 

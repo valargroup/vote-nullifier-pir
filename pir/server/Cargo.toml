@@ -10,7 +10,7 @@ rayon = ["dep:rayon", "ypir/rayon"]
 
 [dependencies]
 pir-types  = { path = "../types" }
-ypir = { version = "0.1.3", package = "valar-ypir", default-features = false, features = ["server"] }
+ypir = { version = "0.2", package = "valar-ypir", default-features = false, features = ["server"] }
 rayon = { version = "1", optional = true }
 spiral-rs = { version = "0.5", package = "valar-spiral-rs" }
 axum = "0.7"
@@ -22,3 +22,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 ff = "0.13"
 pasta_curves = "0.5"
+blake3 = "1"
+
+[dev-dependencies]
+tempfile = "3"

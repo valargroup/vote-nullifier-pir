@@ -344,6 +344,24 @@ pub fn build_and_export_with_progress(
     Ok(tree)
 }
 
+/// Best-effort eviction of a stale precompute cache (`tier{N}.precompute`)
+/// after the corresponding `tier{N}.bin` has been (re)written. Prevents the
+/// stale cache from sitting on disk between snapshot rotation and the next
+/// `serve` restart. Logs but never errors (the next `serve` would reject the
+/// stale cache via tier-source-hash mismatch anyway).
+fn evict_stale_precompute(tier_path: &std::path::Path) {
+    let cache_path = tier_path.with_extension("precompute");
+    match std::fs::remove_file(&cache_path) {
+        Ok(()) => info!(cache = %cache_path.display(), "evicted stale precompute cache"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!(
+            cache = %cache_path.display(),
+            error = %e,
+            "failed to evict stale precompute cache (next serve will reject via hash)"
+        ),
+    }
+}
+
 /// Export all tier files and metadata to the given directory.
 pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u64>) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
@@ -351,21 +369,29 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
     // Tier 0
     let t0 = Instant::now();
     let tier0_data = tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
-    std::fs::write(output_dir.join("tier0.bin"), &tier0_data)?;
+    let tier0_path = output_dir.join("tier0.bin");
+    std::fs::write(&tier0_path, &tier0_data)?;
+    evict_stale_precompute(&tier0_path);
     info!(bytes = tier0_data.len(), elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()), "Tier 0 exported");
 
     // Tier 1
     let t1 = Instant::now();
-    let mut f1 = std::io::BufWriter::new(std::fs::File::create(output_dir.join("tier1.bin"))?);
+    let tier1_path = output_dir.join("tier1.bin");
+    let mut f1 = std::io::BufWriter::new(std::fs::File::create(&tier1_path)?);
     tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut f1)?;
     f1.flush()?;
+    drop(f1);
+    evict_stale_precompute(&tier1_path);
     info!(elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()), "Tier 1 exported");
 
     // Tier 2
     let t2 = Instant::now();
-    let mut f2 = std::io::BufWriter::new(std::fs::File::create(output_dir.join("tier2.bin"))?);
+    let tier2_path = output_dir.join("tier2.bin");
+    let mut f2 = std::io::BufWriter::new(std::fs::File::create(&tier2_path)?);
     tier2::export(&tree.ranges, &mut f2)?;
     f2.flush()?;
+    drop(f2);
+    evict_stale_precompute(&tier2_path);
     info!(elapsed_s = format!("{:.1}", t2.elapsed().as_secs_f64()), "Tier 2 exported");
 
     // Metadata

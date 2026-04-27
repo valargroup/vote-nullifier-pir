@@ -9,7 +9,7 @@ pir-client = { path = "../client" }
 pir-server = { path = "../server", features = ["rayon"] }
 pir-types  = { path = "../types" }
 nf-ingest = { path = "../../nf-ingest" }
-ypir = { version = "0.1.3", package = "valar-ypir", default-features = false, features = ["server"] }
+ypir = { version = "0.2", package = "valar-ypir", default-features = false, features = ["server"] }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 ff = "0.13"

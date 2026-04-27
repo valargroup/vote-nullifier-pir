@@ -45,13 +45,19 @@ See [Smoke test](#smoke-test) for a post-install check.
 
 ## Recommended hardware
 
-**Production target: `linux-amd64` with AVX-512, 4 vCPU, 32 GB RAM, and at least 35 GB free disk.** Other platforms build but are not recommended for serving traffic (see [Platform support](#platform-support)).
+**Production target: `linux-amd64` with AVX-512, 4 vCPU, 32 GB RAM, and at least 65 GB free disk.** Other platforms build but are not recommended for serving traffic (see [Platform support](#platform-support)).
 
 Why these numbers:
 
 - AVX-512 meaningfully accelerates PIR packing and query-side linear algebra; without it, queries fall back to the scalar path.
-- ~35 GB disk covers ~2 GB nullifier data, ~7 GB tier files, and working space, with headroom.
 - 4 vCPUs parallelize the matrix–vector steps that dominate query latency.
+- **Disk budget:**
+  - ~7 GB tier files (`tier0.bin` + `tier1.bin` + `tier2.bin` + `pir_root.json`)
+  - ~14 GB precompute cache (`tier1.precompute` ≈ 720 MB + `tier2.precompute` ≈ 13 GB), written by `serve` after first YPIR setup; see [Files under `SVOTE_PIR_DATA_DIR`](#files-under-svote_pir_data_dir)
+  - ~14 GB transient peak during cache rewrite (atomic `.tmp` + rename means the new cache exists alongside the old briefly)
+  - ~2 GB nullifier data + working space
+  - Total ~37 GB minimum, ~65 GB recommended for headroom
+  - On synced hosts, also reserve for `nullifiers.bin` growth: it grows linearly with the chain and is ~2 GB at chain tip today. Re-check this number when sizing a host for a new snapshot rotation.
 
 Verify a candidate host with [`nf-server doctor`](#host-health-check-nf-server-doctor) before installing.
 
@@ -205,7 +211,12 @@ To re-bootstrap (for example after editing `/etc/default/nf-server` or after a b
 systemctl restart nullifier-query-server
 ```
 
-**Startup time:** ~2 min cold on the recommended SKU (dominated by tier-2 setup). Warm restarts, when tier files are already on disk, finish in ~15 s — bounded by the CDN check.
+**Startup time:** roughly two phases.
+
+- **Cold (no `tier{1,2}.precompute` cache present)**: bootstrap CDN download + YPIR precomputation + cache write. Bootstrap dominates on a fresh host (~2 min for the 3 GB tier-2 download from the configured CDN region). YPIR setup is ~50 s on a 16-core Apple Silicon dev box; ~2 min on the recommended production SKU. The precompute cache is written at the end (~5 s I/O for the 13 GB tier-2 cache on SSD), enabling fast restarts thereafter.
+- **Warm (`tier{1,2}.precompute` present and valid)**: cache load only. ~10 s on Apple Silicon dev; expected sub-15 s on the production SKU. The expensive YPIR offline precomputation is skipped entirely.
+
+Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
 
 **On startup**, `serve` fetches `voting-config.json`, compares its `snapshot_height` to local `pir_root.json`, and downloads the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. Defaults are correct for production — operators normally configure nothing.
 
@@ -380,8 +391,11 @@ Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for
 | `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
 | `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries (mmap'd by `serve`). Identical to `<precomputed-base>/snapshots/<height>/tier*.bin`. |
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: tree roots, tier byte sizes, and `height`. Source of truth for "what height am I serving"; installed **last** so a half-applied bootstrap retries cleanly next start. |
+| `tier1.precompute`, `tier2.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Skips the ~50–120 s YPIR offline precomputation on subsequent boots. Auto-invalidated by content hash when the corresponding `tier{N}.bin` changes; safe to delete (next boot recomputes). Sizes: tier 1 ≈ 720 MB, tier 2 ≈ 13 GB on the production scenario. **Not** distributed via the CDN; each host writes its own. |
 
-When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN.
+When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN. The precompute caches are wiped along with everything else.
+
+`nf-server doctor` reports cache presence and size per tier; use it for warm-start regression triage ("did the cache disappear?").
 
 ## HTTP endpoints
 
@@ -412,6 +426,8 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 | `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Bootstrapped mode](#bootstrapped-mode) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
 | `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above canonical `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |
 | `nullifiers.tree` rejected as unknown format | Tree file left over from an older build | Delete the file or set `SVOTE_PIR_SYNC_RESET=1` and rerun sync. |
+| Logs show `precompute cache miss; recomputing` after a binary upgrade or snapshot rotation | Expected: cache header binds to the YPIR version, build target, and tier-source hash. Any of those changing forces a recompute. | None. Next `serve` boot writes a fresh cache; subsequent restarts will be warm. |
+| `precompute cache write failed; serving from memory` warning | `tier{N}.precompute.tmp` couldn't be flushed (typically ENOSPC) | Free disk under `SVOTE_PIR_DATA_DIR`; the server is still serving correctly, but the next restart will pay the full cold-start cost. Cache will be written on the next successful boot. |
 
 For deeper investigation, raise verbosity with `RUST_LOG=debug,nf_server=trace` in `/etc/default/nf-server` and restart.
 
