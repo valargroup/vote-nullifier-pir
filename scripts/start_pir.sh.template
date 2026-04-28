@@ -136,7 +136,22 @@ systemctl daemon-reload
 systemctl enable --now nullifier-query-server.service
 
 echo
-echo "Installed nf-server ${START_RELEASE_TAG} (${PLATFORM}) under /opt/nf-ingest."
-echo "Service: systemctl status nullifier-query-server"
-echo "Logs:    journalctl -u nullifier-query-server -f"
-echo "Ready check: curl -fsS http://127.0.0.1:3000/ready"
+echo "============================================="
+echo "  Congratulations, your PIR server is running"
+echo "============================================="
+echo
+echo "Environment data:"
+echo "  Version:               ${START_RELEASE_TAG}"
+echo "  Platform:              ${PLATFORM}"
+echo "  Install directory:     /opt/nf-ingest"
+echo "  Service:               nullifier-query-server (systemd)"
+echo "  Voting config URL:     ${START_VOTING_CONFIG_URL}"
+echo "  Precomputed data URL:  ${START_PRECOMPUTED_BASE_URL}"
+echo
+echo "How to monitor:"
+echo "  Service status:  systemctl status nullifier-query-server"
+echo "  Logs:            journalctl -u nullifier-query-server -f"
+echo "  Ready check:     curl -fsS http://127.0.0.1:3000/ready"
+echo
+echo "Next step: point your validator at this PIR server."
+echo "Set SVOTE_PIR_URL to this host's public URL when starting svoted."
