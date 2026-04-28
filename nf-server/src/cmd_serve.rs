@@ -86,7 +86,15 @@ pub struct Args {
     /// Download matching published YPIR precompute caches during snapshot
     /// bootstrap when the manifest provides them. Non-production targets skip
     /// this automatically. Set false to force local cache generation.
-    #[arg(long, env = "SVOTE_PIR_PRECOMPUTE_BOOTSTRAP", default_value_t = true)]
+    #[arg(
+        long,
+        env = "SVOTE_PIR_PRECOMPUTE_BOOTSTRAP",
+        default_value_t = true,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     precompute_bootstrap: bool,
 
     /// How long the host must continuously serve a snapshot older

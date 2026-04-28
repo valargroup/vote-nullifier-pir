@@ -352,7 +352,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
-| `SVOTE_PIR_PRECOMPUTE_BOOTSTRAP` | Defaults to `true`. When a matching production cache is listed in the snapshot manifest, download it during bootstrap; set `false` to force local cache generation. |
+| `SVOTE_PIR_PRECOMPUTE_BOOTSTRAP` | Defaults to `true`. When a matching production cache is listed in the snapshot manifest, download it during bootstrap; set this env var to `false` or pass `--precompute-bootstrap=false` to force local cache generation. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
 

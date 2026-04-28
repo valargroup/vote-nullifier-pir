@@ -1,11 +1,17 @@
 # Build a PIR snapshot at a given block height and publish it to DO Spaces
 # under s3://vote/snapshots/<height>/ for download by nf-server replicas
 # and the admin UI. Runs on PIR_BACKUP_HOST so the primary stays focused
-# on serving; backup keeps serving its current snapshot throughout.
+# on serving.
 #
-# Pure publish operation: writes tier blobs under /tmp on the host, reads
-# nullifiers from the live /opt/nf-ingest/pir-data/ tree (never mutates it),
-# never restarts the service.
+# The job pauses nullifier-query-server on the backup while it builds and
+# uploads the snapshot. That avoids holding the live serving YPIR state in
+# memory at the same time as the publisher's YPIR precompute generation.
+# On successful publish, the job restarts it and readiness-checks it before
+# exit; on failure, cleanup still attempts to restart it.
+#
+# Publish operation: writes tier blobs under snapshot-staging on the PIR data
+# volume, reads nullifiers from the live /opt/nf-ingest/pir-data/ tree, and
+# never mutates the live tier files.
 #
 # Requires repository secrets:
 #   PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY,
@@ -74,7 +80,10 @@ jobs:
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
             PRECOMPUTE_TARGET="linux-amd64-avx512"
             STAGE_PARENT="${{ env.DEPLOY_PATH }}/snapshot-staging"
+            SERVICE_NAME="nullifier-query-server"
             STAGE=""
+            VERIFY_DIR=""
+            SERVICE_STOPPED_BY_WORKFLOW=0
 
             echo "==> Ensuring s3cmd and jq are installed"
             if ! command -v s3cmd >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -84,7 +93,23 @@ jobs:
 
             echo "==> Writing s3cmd config"
             S3CFG="$(mktemp)"
-            trap 'rm -f "$S3CFG"; rm -rf "$STAGE"' EXIT
+            cleanup() {
+              status=$?
+              rm -f "$S3CFG"
+              if [ -n "$STAGE" ]; then
+                rm -rf "$STAGE"
+              fi
+              if [ -n "$VERIFY_DIR" ]; then
+                rm -rf "$VERIFY_DIR"
+              fi
+              if [ "$SERVICE_STOPPED_BY_WORKFLOW" = "1" ]; then
+                echo "==> Restarting $SERVICE_NAME after interrupted publish job"
+                sudo systemctl start "$SERVICE_NAME" || true
+              fi
+              trap - EXIT
+              exit "$status"
+            }
+            trap cleanup EXIT
             cat > "$S3CFG" <<EOF
             [default]
             access_key = $DO_ACCESS_KEY
@@ -98,6 +123,14 @@ jobs:
             echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
             cd "${{ env.DEPLOY_PATH }}"
             export SVOTE_PIR_VOTING_CONFIG_URL=
+            echo "==> Pausing backup PIR service during heavy snapshot publish"
+            if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+              SERVICE_STOPPED_BY_WORKFLOW=1
+              sudo systemctl stop "$SERVICE_NAME"
+              echo "    $SERVICE_NAME stopped; primary remains serving while backup publishes"
+            else
+              echo "    $SERVICE_NAME was not active; leaving service state unchanged"
+            fi
             mkdir -p "$STAGE_PARENT"
             find "$STAGE_PARENT" -maxdepth 1 -type d -name 'snap-build.*' -mtime +1 -exec rm -rf {} +
             STAGE="$(mktemp -d "$STAGE_PARENT/snap-build.XXXXXX")"
@@ -234,7 +267,6 @@ jobs:
 
             echo "==> Verify round-trip: download manifest + tier0 over HTTPS, re-check sha256"
             VERIFY_DIR=$(mktemp -d)
-            trap 'rm -f "$S3CFG"; rm -rf "$STAGE" "$VERIFY_DIR"' EXIT
             curl -fsSL "$PUBLIC_BASE/$H/manifest.json" -o "$VERIFY_DIR/manifest.json"
             REMOTE_HEIGHT=$(jq -r '.height' "$VERIFY_DIR/manifest.json")
             REMOTE_TIER0_SHA=$(jq -r '.files["tier0.bin"].sha256' "$VERIFY_DIR/manifest.json")
@@ -285,6 +317,28 @@ jobs:
               done
             fi
             echo "==> Snapshot $H published and verified at $PUBLIC_BASE/$H/"
+
+            if [ "$SERVICE_STOPPED_BY_WORKFLOW" = "1" ]; then
+              echo "==> Restarting $SERVICE_NAME and waiting for readiness"
+              sudo systemctl start "$SERVICE_NAME"
+              SERVICE_READY=0
+              for i in $(seq 1 120); do
+                if curl -sf http://localhost:3000/ready >/dev/null; then
+                  echo "$SERVICE_NAME ready after restart (attempt $i)"
+                  SERVICE_READY=1
+                  break
+                fi
+                echo "Waiting for $SERVICE_NAME readiness... attempt $i/120"
+                sleep 5
+              done
+              if [ "$SERVICE_READY" != "1" ]; then
+                echo "ERROR: $SERVICE_NAME did not become ready after publish"
+                sudo systemctl status "$SERVICE_NAME" --no-pager -l 2>/dev/null || true
+                sudo journalctl -u "$SERVICE_NAME" --no-pager -n 80 2>/dev/null || true
+                exit 1
+              fi
+              SERVICE_STOPPED_BY_WORKFLOW=0
+            fi
 
   notify-slack:
     name: Slack Notification
