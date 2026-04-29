@@ -3,22 +3,19 @@
 //! Provides:
 //!   - `doctor` — Pre-flight host checks vs runbook hardware guidance.
 //!   - `sync` — Resumable ingest, `nullifiers.tree` checkpoint, PIR tier export.
-//!   - `precompute-cache` — Generate YPIR warm-start cache files.
 //!   - `serve` — Start the PIR HTTP server (feature-gated behind `serve`).
 
 #[cfg(feature = "serve")]
 mod bootstrap;
 mod cmd_doctor;
-#[cfg(feature = "serve")]
-mod cmd_precompute_cache;
+mod cmd_sync;
+mod sync_pipeline;
 #[cfg(feature = "serve")]
 mod cmd_serve;
-mod cmd_sync;
 #[cfg(feature = "serve")]
 mod metrics;
 #[cfg(feature = "serve")]
 mod serve;
-mod sync_pipeline;
 mod voting_config;
 
 use clap::{Parser, Subcommand};
@@ -42,9 +39,6 @@ enum Command {
     Doctor(cmd_doctor::Args),
     /// Ingest nullifiers, build tree checkpoint, export PIR tiers (resumable)
     Sync(cmd_sync::Args),
-    /// Generate tier precompute caches for a published snapshot
-    #[cfg(feature = "serve")]
-    PrecomputeCache(cmd_precompute_cache::Args),
     /// Start the PIR HTTP server (requires --features serve)
     #[cfg(feature = "serve")]
     Serve(cmd_serve::Args),
@@ -111,8 +105,6 @@ fn main() -> anyhow::Result<()> {
             match cli.command {
                 Command::Doctor(args) => Ok(cmd_doctor::run(args)?),
                 Command::Sync(args) => cmd_sync::run(args).await,
-                #[cfg(feature = "serve")]
-                Command::PrecomputeCache(args) => Ok(cmd_precompute_cache::run(args)?),
                 #[cfg(feature = "serve")]
                 Command::Serve(args) => cmd_serve::run(args).await,
             }

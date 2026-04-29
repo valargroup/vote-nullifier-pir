@@ -381,8 +381,9 @@ impl OwnedTierState {
         }
 
         // Slow path: read tier data, run YPIR setup, write cache.
-        let tier_data = std::fs::read(tier_path)
-            .with_context(|| format!("read tier file {}", tier_path.display()))?;
+        let tier_data = std::fs::read(tier_path).with_context(|| {
+            format!("read tier file {}", tier_path.display())
+        })?;
 
         // Hash the EXACT buffer we're about to feed YPIR. write_cache takes
         // this hash as a parameter rather than re-reading tier_path, which
@@ -600,43 +601,6 @@ pub const TIER2_FILE: &str = "tier2.bin";
 pub const TIER1_PRECOMPUTE_FILE: &str = "tier1.precompute";
 /// On-disk file name for the tier-2 precompute cache.
 pub const TIER2_PRECOMPUTE_FILE: &str = "tier2.precompute";
-
-/// Generate or validate the on-disk precompute caches for both YPIR tiers.
-///
-/// This is used by snapshot publishing to materialize cache artifacts beside a
-/// freshly exported `tier{1,2}.bin` snapshot. It intentionally goes through
-/// the same cache-aware path as server startup, so existing valid caches are
-/// reused and missing/stale caches are regenerated with the production cache
-/// header format.
-pub fn generate_precompute_caches(pir_data_dir: &std::path::Path) -> Result<()> {
-    let tier1_path = pir_data_dir.join(TIER1_FILE);
-    let tier1_size = std::fs::metadata(&tier1_path)?.len() as usize;
-    anyhow::ensure!(
-        tier1_size == TIER1_YPIR_ROWS * TIER1_ROW_BYTES,
-        "tier1.bin size mismatch: got {} bytes, expected {}",
-        tier1_size,
-        TIER1_YPIR_ROWS * TIER1_ROW_BYTES
-    );
-    let tier1_cache_path = pir_data_dir.join(TIER1_PRECOMPUTE_FILE);
-    let (_, tier1_hit) =
-        OwnedTierState::new_or_load(&tier1_path, tier1_scenario(), &tier1_cache_path)?;
-    info!(cache_hit = tier1_hit, "Tier 1 precompute cache ready");
-
-    let tier2_path = pir_data_dir.join(TIER2_FILE);
-    let tier2_size = std::fs::metadata(&tier2_path)?.len() as usize;
-    anyhow::ensure!(
-        tier2_size == TIER2_ROWS * TIER2_ROW_BYTES,
-        "tier2.bin size mismatch: got {} bytes, expected {}",
-        tier2_size,
-        TIER2_ROWS * TIER2_ROW_BYTES
-    );
-    let tier2_cache_path = pir_data_dir.join(TIER2_PRECOMPUTE_FILE);
-    let (_, tier2_hit) =
-        OwnedTierState::new_or_load(&tier2_path, tier2_scenario(), &tier2_cache_path)?;
-    info!(cache_hit = tier2_hit, "Tier 2 precompute cache ready");
-
-    Ok(())
-}
 
 /// Load tier files from disk, initialize YPIR servers, and return a
 /// ready-to-serve [`ServingState`].
