@@ -38,15 +38,15 @@ use tokio::sync::oneshot;
 // bootstrap surface, never the `/metrics` HTTP handler or the URL
 // default constants (those are exercised by `cmd_serve.rs` flag
 // defaults, not by tests here).
-#[path = "../src/bootstrap.rs"]
-#[allow(dead_code)]
-mod bootstrap;
 #[path = "../src/metrics.rs"]
 #[allow(dead_code)]
 mod metrics;
 #[path = "../src/voting_config.rs"]
 #[allow(dead_code)]
 mod voting_config;
+#[path = "../src/bootstrap.rs"]
+#[allow(dead_code)]
+mod bootstrap;
 
 use bootstrap::{Config, Outcome};
 
@@ -70,17 +70,27 @@ impl MockBucket {
     }
 }
 
-async fn handle_get(State(bucket): State<MockBucket>, uri: axum::http::Uri) -> impl IntoResponse {
+async fn handle_get(
+    State(bucket): State<MockBucket>,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
     let path = uri.path().to_string();
     match bucket.routes.read().unwrap().get(&path).cloned() {
-        Some((ct, body)) => (StatusCode::OK, [(header::CONTENT_TYPE, ct)], body).into_response(),
+        Some((ct, body)) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, ct)],
+            body,
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
 /// Spawn an axum server on a random port. Returns `(base_url, shutdown_tx)`.
 async fn spawn_mock(bucket: MockBucket) -> (String, oneshot::Sender<()>) {
-    let app = Router::new().fallback(get(handle_get)).with_state(bucket);
+    let app = Router::new()
+        .fallback(get(handle_get))
+        .with_state(bucket);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
@@ -106,22 +116,6 @@ fn sha256_hex(b: &[u8]) -> String {
 /// `<base>/snapshots/<height>/...` paths. Returns the byte payloads
 /// keyed by file name so tests can assert against installed contents.
 fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>> {
-    stage_snapshot_inner(bucket, height, BTreeMap::new())
-}
-
-fn stage_snapshot_with_precompute(
-    bucket: &MockBucket,
-    height: u64,
-    precompute: BTreeMap<String, Vec<u8>>,
-) -> BTreeMap<String, Vec<u8>> {
-    stage_snapshot_inner(bucket, height, precompute)
-}
-
-fn stage_snapshot_inner(
-    bucket: &MockBucket,
-    height: u64,
-    precompute: BTreeMap<String, Vec<u8>>,
-) -> BTreeMap<String, Vec<u8>> {
     let mut blobs = BTreeMap::new();
     blobs.insert("tier0.bin".to_string(), b"tier0-payload".to_vec());
     blobs.insert("tier1.bin".to_string(), b"tier1-payload".to_vec());
@@ -150,12 +144,6 @@ fn stage_snapshot_inner(
             json!({ "size": body.len() as u64, "sha256": sha256_hex(body) }),
         );
     }
-    for (name, body) in &precompute {
-        files_json.insert(
-            name.clone(),
-            json!({ "size": body.len() as u64, "sha256": sha256_hex(body) }),
-        );
-    }
     let manifest = json!({
         "schema_version": 1,
         "height": height,
@@ -167,13 +155,6 @@ fn stage_snapshot_inner(
 
     let prefix = format!("/snapshots/{height}");
     for (name, body) in &blobs {
-        bucket.put(
-            &format!("{prefix}/{name}"),
-            "application/octet-stream",
-            body.clone(),
-        );
-    }
-    for (name, body) in &precompute {
         bucket.put(
             &format!("{prefix}/{name}"),
             "application/octet-stream",
@@ -215,8 +196,6 @@ async fn full_bootstrap_installs_all_files() {
         precomputed_base_url: base.clone(),
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
@@ -230,179 +209,6 @@ async fn full_bootstrap_installs_all_files() {
         !tmp.path().join(".bootstrap-staging").exists(),
         "staging dir should be cleaned"
     );
-}
-
-#[tokio::test]
-async fn bootstrap_installs_matching_published_precompute_caches() {
-    let bucket = MockBucket::default();
-    let h = 150u64;
-    let mut precompute = BTreeMap::new();
-    let t1_cache = b"tier1-precompute-cache".to_vec();
-    let t2_cache = b"tier2-precompute-cache".to_vec();
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier1.precompute".to_string(),
-        t1_cache.clone(),
-    );
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier2.precompute".to_string(),
-        t2_cache.clone(),
-    );
-    stage_snapshot_with_precompute(&bucket, h, precompute);
-    stage_voting_config(&bucket, Some(h));
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        voting_config_url: format!("{base}/voting-config.json"),
-        precomputed_base_url: base,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: Some(bootstrap::PRECOMPUTE_CACHE_TARGET),
-    };
-
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    assert_eq!(outcome, Outcome::BootstrappedTo(h));
-    assert_eq!(
-        std::fs::read(tmp.path().join("tier1.precompute")).unwrap(),
-        t1_cache
-    );
-    assert_eq!(
-        std::fs::read(tmp.path().join("tier2.precompute")).unwrap(),
-        t2_cache
-    );
-}
-
-#[tokio::test]
-async fn missing_published_precompute_entries_do_not_fail_bootstrap() {
-    let bucket = MockBucket::default();
-    let h = 175u64;
-    stage_snapshot(&bucket, h);
-    stage_voting_config(&bucket, Some(h));
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        voting_config_url: format!("{base}/voting-config.json"),
-        precomputed_base_url: base,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: Some(bootstrap::PRECOMPUTE_CACHE_TARGET),
-    };
-
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    assert_eq!(outcome, Outcome::BootstrappedTo(h));
-    assert!(!tmp.path().join("tier1.precompute").exists());
-    assert!(!tmp.path().join("tier2.precompute").exists());
-}
-
-#[tokio::test]
-async fn bootstrap_bad_published_precompute_hash_continues_without_cache() {
-    let bucket = MockBucket::default();
-    let h = 190u64;
-    let mut precompute = BTreeMap::new();
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier1.precompute".to_string(),
-        b"tier1-precompute-cache".to_vec(),
-    );
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier2.precompute".to_string(),
-        b"tier2-precompute-cache".to_vec(),
-    );
-    stage_snapshot_with_precompute(&bucket, h, precompute);
-    stage_voting_config(&bucket, Some(h));
-    bucket.put(
-        &format!("/snapshots/{h}/precompute/linux-amd64-avx512/tier1.precompute"),
-        "application/octet-stream",
-        b"corrupted-cache".to_vec(),
-    );
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        voting_config_url: format!("{base}/voting-config.json"),
-        precomputed_base_url: base,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: Some(bootstrap::PRECOMPUTE_CACHE_TARGET),
-    };
-
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    assert_eq!(outcome, Outcome::BootstrappedTo(h));
-    assert!(!tmp.path().join("tier1.precompute").exists());
-    assert!(!tmp.path().join("tier2.precompute").exists());
-    assert!(
-        !tmp.path().join(".bootstrap-staging").exists(),
-        "staging dir should be cleaned even after optional cache failure"
-    );
-}
-
-#[tokio::test]
-async fn precompute_bootstrap_false_skips_published_caches() {
-    let bucket = MockBucket::default();
-    let h = 195u64;
-    let mut precompute = BTreeMap::new();
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier1.precompute".to_string(),
-        b"tier1-precompute-cache".to_vec(),
-    );
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier2.precompute".to_string(),
-        b"tier2-precompute-cache".to_vec(),
-    );
-    stage_snapshot_with_precompute(&bucket, h, precompute);
-    stage_voting_config(&bucket, Some(h));
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        voting_config_url: format!("{base}/voting-config.json"),
-        precomputed_base_url: base,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: false,
-        precompute_cache_target_override: Some(bootstrap::PRECOMPUTE_CACHE_TARGET),
-    };
-
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    assert_eq!(outcome, Outcome::BootstrappedTo(h));
-    assert!(!tmp.path().join("tier1.precompute").exists());
-    assert!(!tmp.path().join("tier2.precompute").exists());
-}
-
-#[tokio::test]
-async fn bootstrap_non_production_target_skips_published_caches() {
-    let bucket = MockBucket::default();
-    let h = 198u64;
-    let mut precompute = BTreeMap::new();
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier1.precompute".to_string(),
-        b"tier1-precompute-cache".to_vec(),
-    );
-    precompute.insert(
-        "precompute/linux-amd64-avx512/tier2.precompute".to_string(),
-        b"tier2-precompute-cache".to_vec(),
-    );
-    stage_snapshot_with_precompute(&bucket, h, precompute);
-    stage_voting_config(&bucket, Some(h));
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        voting_config_url: format!("{base}/voting-config.json"),
-        precomputed_base_url: base,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: Some("darwin-arm64"),
-    };
-
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    assert_eq!(outcome, Outcome::BootstrappedTo(h));
-    assert!(!tmp.path().join("tier1.precompute").exists());
-    assert!(!tmp.path().join("tier2.precompute").exists());
 }
 
 #[tokio::test]
@@ -426,8 +232,6 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
         precomputed_base_url: base,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
@@ -465,8 +269,6 @@ async fn missing_remote_snapshot_falls_through() {
         precomputed_base_url: base,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
@@ -515,8 +317,6 @@ async fn manifest_height_mismatch_falls_through() {
         precomputed_base_url: base,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
@@ -565,8 +365,6 @@ async fn already_at_height_is_a_no_op() {
         precomputed_base_url: base,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let outcome = bootstrap::run(&cfg).await.unwrap();
@@ -587,13 +385,14 @@ async fn voting_config_without_height_errors() {
         precomputed_base_url: base,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
     let s = format!("{err:#}");
-    assert!(s.contains("snapshot_height"), "unexpected error: {s}");
+    assert!(
+        s.contains("snapshot_height"),
+        "unexpected error: {s}"
+    );
 }
 
 #[tokio::test]
@@ -605,8 +404,6 @@ async fn unreachable_voting_config_errors() {
         precomputed_base_url: "http://127.0.0.1:1".to_string(),
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(1),
-        precompute_bootstrap: true,
-        precompute_cache_target_override: None,
     };
 
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
