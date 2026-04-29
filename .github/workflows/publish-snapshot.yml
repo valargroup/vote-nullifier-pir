@@ -1,11 +1,17 @@
 # Build a PIR snapshot at a given block height and publish it to DO Spaces
 # under s3://vote/snapshots/<height>/ for download by nf-server replicas
 # and the admin UI. Runs on PIR_BACKUP_HOST so the primary stays focused
-# on serving; backup keeps serving its current snapshot throughout.
+# on serving.
 #
-# Pure publish operation: writes tier blobs under /tmp on the host, reads
-# nullifiers from the live /opt/nf-ingest/pir-data/ tree (never mutates it),
-# never restarts the service.
+# The job pauses nullifier-query-server on the backup while it builds and
+# uploads the snapshot. That avoids holding the live serving YPIR state in
+# memory at the same time as the publisher's YPIR precompute generation.
+# On successful publish, the job restarts it and readiness-checks it before
+# exit; on failure, cleanup still attempts to restart it.
+#
+# Publish operation: writes tier blobs under snapshot-staging on the PIR data
+# volume, reads nullifiers from the live /opt/nf-ingest/pir-data/ tree, and
+# never mutates the live tier files.
 #
 # Requires repository secrets:
 #   PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY,
@@ -69,10 +75,15 @@ jobs:
             set -euo pipefail
 
             REQUESTED_H="${{ steps.round_height.outputs.value }}"
-            STAGE="/tmp/snap-build-$$"
             BUCKET="${{ env.DO_BUCKET }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
+            PRECOMPUTE_TARGET="linux-amd64-avx512"
+            STAGE_PARENT="${{ env.DEPLOY_PATH }}/snapshot-staging"
+            SERVICE_NAME="nullifier-query-server"
+            STAGE=""
+            VERIFY_DIR=""
+            SERVICE_STOPPED_BY_WORKFLOW=0
 
             echo "==> Ensuring s3cmd and jq are installed"
             if ! command -v s3cmd >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -82,7 +93,23 @@ jobs:
 
             echo "==> Writing s3cmd config"
             S3CFG="$(mktemp)"
-            trap 'rm -f "$S3CFG"; rm -rf "$STAGE"' EXIT
+            cleanup() {
+              status=$?
+              rm -f "$S3CFG"
+              if [ -n "$STAGE" ]; then
+                rm -rf "$STAGE"
+              fi
+              if [ -n "$VERIFY_DIR" ]; then
+                rm -rf "$VERIFY_DIR"
+              fi
+              if [ "$SERVICE_STOPPED_BY_WORKFLOW" = "1" ]; then
+                echo "==> Restarting $SERVICE_NAME after interrupted publish job"
+                sudo systemctl start "$SERVICE_NAME" || true
+              fi
+              trap - EXIT
+              exit "$status"
+            }
+            trap cleanup EXIT
             cat > "$S3CFG" <<EOF
             [default]
             access_key = $DO_ACCESS_KEY
@@ -96,8 +123,17 @@ jobs:
             echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
             cd "${{ env.DEPLOY_PATH }}"
             export SVOTE_PIR_VOTING_CONFIG_URL=
-            rm -rf "$STAGE"
-            mkdir -p "$STAGE"
+            echo "==> Pausing backup PIR service during heavy snapshot publish"
+            if sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+              SERVICE_STOPPED_BY_WORKFLOW=1
+              sudo systemctl stop "$SERVICE_NAME"
+              echo "    $SERVICE_NAME stopped; primary remains serving while backup publishes"
+            else
+              echo "    $SERVICE_NAME was not active; leaving service state unchanged"
+            fi
+            mkdir -p "$STAGE_PARENT"
+            find "$STAGE_PARENT" -maxdepth 1 -type d -name 'snap-build.*' -mtime +1 -exec rm -rf {} +
+            STAGE="$(mktemp -d "$STAGE_PARENT/snap-build.XXXXXX")"
             if [ -n "$REQUESTED_H" ]; then
               echo "    up to explicit height $REQUESTED_H"
               ./nf-server sync \
@@ -130,6 +166,9 @@ jobs:
               exit 1
             fi
 
+            echo "==> Generate production precompute caches (required)"
+            ./nf-server precompute-cache --pir-data-dir "$STAGE"
+
             echo "==> Building manifest.json"
             BIN_SHA=$(sha256sum "${{ env.DEPLOY_PATH }}/nf-server" | awk '{print $1}')
             CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -139,6 +178,16 @@ jobs:
                 size=$(stat -c%s "$f")
                 sha=$(sha256sum "$f" | awk '{print $1}')
                 jq -n --arg name "$f" --argjson size "$size" --arg sha "$sha" \
+                  '{($name): {size: $size, sha256: $sha}}'
+              done | jq -s 'add'
+            )
+            PRECOMPUTE_JSON=$(
+              cd "$STAGE"
+              for f in tier1.precompute tier2.precompute; do
+                size=$(stat -c%s "$f")
+                sha=$(sha256sum "$f" | awk '{print $1}')
+                remote="precompute/$PRECOMPUTE_TARGET/$f"
+                jq -n --arg name "$remote" --argjson size "$size" --arg sha "$sha" \
                   '{($name): {size: $size, sha256: $sha}}'
               done | jq -s 'add'
             )
@@ -161,7 +210,7 @@ jobs:
                 done | jq -s 'add'
               )
             fi
-            FILES_JSON=$(jq -n --argjson tier "$TIER_JSON" --argjson nf "$NF_JSON" '$tier + $nf')
+            FILES_JSON=$(jq -n --argjson tier "$TIER_JSON" --argjson precompute "$PRECOMPUTE_JSON" --argjson nf "$NF_JSON" '$tier + $precompute + $nf')
             jq -n \
               --argjson height "$H" \
               --arg created_at "$CREATED_AT" \
@@ -185,6 +234,12 @@ jobs:
               s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
                 --acl-public --force --no-progress
             done
+            for f in tier1.precompute tier2.precompute; do
+              remote="precompute/$PRECOMPUTE_TARGET/$f"
+              echo "  - $remote"
+              s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$remote" \
+                --acl-public --force --no-progress
+            done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
               for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
@@ -200,6 +255,9 @@ jobs:
 
             echo "==> Enforce public-read ACL on all uploaded files"
             ACL_FILES="tier0.bin tier1.bin tier2.bin pir_root.json"
+            for f in tier1.precompute tier2.precompute; do
+              ACL_FILES="$ACL_FILES precompute/$PRECOMPUTE_TARGET/$f"
+            done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               ACL_FILES="$ACL_FILES nullifiers.bin nullifiers.checkpoint nullifiers.tree"
             fi
@@ -209,7 +267,6 @@ jobs:
 
             echo "==> Verify round-trip: download manifest + tier0 over HTTPS, re-check sha256"
             VERIFY_DIR=$(mktemp -d)
-            trap 'rm -f "$S3CFG"; rm -rf "$STAGE" "$VERIFY_DIR"' EXIT
             curl -fsSL "$PUBLIC_BASE/$H/manifest.json" -o "$VERIFY_DIR/manifest.json"
             REMOTE_HEIGHT=$(jq -r '.height' "$VERIFY_DIR/manifest.json")
             REMOTE_TIER0_SHA=$(jq -r '.files["tier0.bin"].sha256' "$VERIFY_DIR/manifest.json")
@@ -225,6 +282,22 @@ jobs:
               echo "  actual:   $ACTUAL_TIER0_SHA"
               exit 1
             fi
+            echo "==> Verify precompute entries: local disk matches published manifest (no multi-GB re-download)"
+            for f in tier1.precompute tier2.precompute; do
+              remote="precompute/$PRECOMPUTE_TARGET/$f"
+              EXPECT=$(jq -r --arg n "$remote" '.files[$n].sha256 // empty' "$VERIFY_DIR/manifest.json")
+              if [ -z "$EXPECT" ]; then
+                echo "ERROR: manifest missing files[$remote] after upload"
+                exit 1
+              fi
+              ACTUAL=$(sha256sum "$STAGE/$f" | awk '{print $1}')
+              if [ "$EXPECT" != "$ACTUAL" ]; then
+                echo "ERROR: local $f sha256 does not match manifest (upload integrity)"
+                echo "  manifest: $EXPECT"
+                echo "  local:    $ACTUAL"
+                exit 1
+              fi
+            done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
               echo "==> Verify nullifier/tree entries: local disk matches published manifest (no multi-GB re-download)"
@@ -244,6 +317,28 @@ jobs:
               done
             fi
             echo "==> Snapshot $H published and verified at $PUBLIC_BASE/$H/"
+
+            if [ "$SERVICE_STOPPED_BY_WORKFLOW" = "1" ]; then
+              echo "==> Restarting $SERVICE_NAME and waiting for readiness"
+              sudo systemctl start "$SERVICE_NAME"
+              SERVICE_READY=0
+              for i in $(seq 1 120); do
+                if curl -sf http://localhost:3000/ready >/dev/null; then
+                  echo "$SERVICE_NAME ready after restart (attempt $i)"
+                  SERVICE_READY=1
+                  break
+                fi
+                echo "Waiting for $SERVICE_NAME readiness... attempt $i/120"
+                sleep 5
+              done
+              if [ "$SERVICE_READY" != "1" ]; then
+                echo "ERROR: $SERVICE_NAME did not become ready after publish"
+                sudo systemctl status "$SERVICE_NAME" --no-pager -l 2>/dev/null || true
+                sudo journalctl -u "$SERVICE_NAME" --no-pager -n 80 2>/dev/null || true
+                exit 1
+              fi
+              SERVICE_STOPPED_BY_WORKFLOW=0
+            fi
 
   notify-slack:
     name: Slack Notification
