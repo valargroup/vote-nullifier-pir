@@ -11,7 +11,22 @@ MOCK
 chmod +x /mockbin/systemctl
 export PATH="/mockbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-bash /start_pir.sh
+installer_output="$(mktemp)"
+if bash /start_pir.sh >"$installer_output" 2>&1; then
+  :
+else
+  status=$?
+  cat "$installer_output" >&2
+  exit "$status"
+fi
+cat "$installer_output"
+if grep -Fq '% Total' "$installer_output"; then
+  echo "start_pir smoke: installer leaked curl progress output" >&2
+  exit 1
+fi
+grep -Fq '==> Downloading nf-server' "$installer_output"
+grep -Fq '==> Verifying nf-server checksum' "$installer_output"
+grep -Fq '==> Starting nullifier-query-server' "$installer_output"
 
 test -x /opt/nf-ingest/nf-server
 test -L /usr/local/bin/nf-server

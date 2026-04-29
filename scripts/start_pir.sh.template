@@ -11,6 +11,10 @@ readonly START_BINARY_BASE_URL='__BINARY_BASE_URL__'
 readonly START_VOTING_CONFIG_URL='__VOTING_CONFIG_URL__'
 readonly START_PRECOMPUTED_BASE_URL='__PRECOMPUTED_BASE_URL__'
 
+log() {
+  printf '==> %s\n' "$*"
+}
+
 if [ "$(uname -s)" != "Linux" ]; then
   echo "This installer targets Linux hosts with systemd." >&2
   echo "macOS and other platforms publish binaries on GitHub releases; use manual setup from the operator docs." >&2
@@ -60,6 +64,7 @@ ensure_curl_and_ca_certificates() {
     echo "On Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y curl ca-certificates" >&2
     exit 1
   fi
+  log "Installing curl and CA certificates"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y --no-install-recommends curl ca-certificates
@@ -75,9 +80,10 @@ SPACES_URL="${START_BINARY_BASE_URL}/nf-server-${START_RELEASE_TAG}-${PLATFORM}"
 GH_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/nf-server-${PLATFORM}"
 BINARY_PATH="${tmp}/nf-server"
 
-if curl -fL --retry 3 --retry-delay 2 -o "$BINARY_PATH" "$SPACES_URL"; then
+log "Downloading nf-server ${START_RELEASE_TAG} for ${PLATFORM}"
+if curl -fsSL --retry 3 --retry-delay 2 -o "$BINARY_PATH" "$SPACES_URL"; then
   :
-elif curl -fL --retry 3 --retry-delay 2 -o "$BINARY_PATH" "$GH_URL"; then
+elif curl -fsSL --retry 3 --retry-delay 2 -o "$BINARY_PATH" "$GH_URL"; then
   echo "Note: downloaded nf-server from GitHub releases (DigitalOcean Spaces fetch failed or object missing)." >&2
 else
   echo "Failed to download nf-server for ${PLATFORM} (tag ${START_RELEASE_TAG}) from Spaces and from GitHub." >&2
@@ -88,15 +94,17 @@ SUMS_SPACES_URL="${START_BINARY_BASE_URL}/SHA256SUMS-${START_RELEASE_TAG}"
 SUMS_GH_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/SHA256SUMS"
 SUMS_PATH="${tmp}/SHA256SUMS"
 
-if curl -fL --retry 3 --retry-delay 2 -o "$SUMS_PATH" "$SUMS_SPACES_URL"; then
+log "Downloading release checksums"
+if curl -fsSL --retry 3 --retry-delay 2 -o "$SUMS_PATH" "$SUMS_SPACES_URL"; then
   :
-elif curl -fL --retry 3 --retry-delay 2 -o "$SUMS_PATH" "$SUMS_GH_URL"; then
+elif curl -fsSL --retry 3 --retry-delay 2 -o "$SUMS_PATH" "$SUMS_GH_URL"; then
   echo "Note: downloaded SHA256SUMS from GitHub releases (DigitalOcean Spaces fetch failed or object missing)." >&2
 else
   echo "Failed to download SHA256SUMS for tag ${START_RELEASE_TAG} from Spaces and from GitHub." >&2
   exit 1
 fi
 
+log "Verifying nf-server checksum"
 EXPECTED="$(awk -v f="nf-server-${PLATFORM}" '$2 == f { print $1; exit }' "$SUMS_PATH")"
 ACTUAL="$(sha256sum "$BINARY_PATH" | awk '{ print $1 }')"
 if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
@@ -109,8 +117,10 @@ chmod +x "$BINARY_PATH"
 
 SERVICE_URL="https://github.com/${START_GITHUB_REPO}/releases/download/${START_RELEASE_TAG}/nullifier-query-server.service"
 SERVICE_PATH="${tmp}/nullifier-query-server.service"
-curl -fL --retry 3 --retry-delay 2 -o "$SERVICE_PATH" "$SERVICE_URL"
+log "Downloading systemd service"
+curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_PATH" "$SERVICE_URL"
 
+log "Installing nf-server under /opt/nf-ingest"
 mkdir -p /opt/nf-ingest/pir-data
 install -m 755 "$BINARY_PATH" /opt/nf-ingest/nf-server
 install -m 644 "$SERVICE_PATH" /etc/systemd/system/nullifier-query-server.service
@@ -126,12 +136,14 @@ EOF
 chmod 644 /etc/default/nf-server
 
 if [ -n "${SENTRY_DSN:-}" ]; then
+  log "Writing Sentry configuration"
   umask 077
   # Single %s so a DSN containing "%" is not interpreted by printf.
   printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" >/opt/nf-ingest/.env
   chmod 600 /opt/nf-ingest/.env
 fi
 
+log "Starting nullifier-query-server"
 systemctl daemon-reload
 systemctl enable --now nullifier-query-server.service
 
