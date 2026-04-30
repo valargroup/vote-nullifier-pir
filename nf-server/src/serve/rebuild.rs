@@ -49,8 +49,11 @@ async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
         .build()?;
     let resp = client.get(&url).send().await?;
 
-    if !resp.status().is_success() {
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!("active round query returned HTTP {}", resp.status());
     }
 
     let body: serde_json::Value = resp.json().await?;
