@@ -11,7 +11,7 @@ use pir_client::{PirClientBlocking, ImtProofData};
 
 let client = PirClientBlocking::connect("https://pir1.example.com")?;
 let proof: ImtProofData = client.fetch_proof(my_nullifier)?;
-assert!(proof.verify(my_nullifier));
+// The client verifies the Merkle path before returning the proof.
 ```
 
 Async equivalent:
@@ -23,12 +23,13 @@ let client = PirClient::connect("https://pir1.example.com").await?;
 let proofs = client.fetch_proofs(&[nf1, nf2, nf3]).await?;
 ```
 
-The returned `ImtProofData { root, nf_bounds, leaf_pos, path: [Fp; 29] }` is then fed as a witness into the Zcash-voting delegation ZKP.
+The returned `ImtProofData { root, nf_bounds, leaf_pos, path: [Fp; 29] }` is verified against the queried nullifier, then fed as a witness into the Zcash-voting delegation ZKP.
 
 ## Security
 
 - The client always sends the Tier 2 query even after a Tier 1 failure, to prevent a malicious server from distinguishing queries via timing.
-- Verify each proof locally with `proof.verify(nullifier)` before trusting the returned root.
+- The client verifies each returned proof with `proof.verify(nullifier)` before returning it.
+- Callers must still compare `proof.root` to their application-level expected root before trusting that the server is serving the correct snapshot.
 
 ## License
 

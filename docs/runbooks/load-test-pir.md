@@ -167,7 +167,7 @@ errors by class: timeout=2 http_503=1 verify_fail=1
 |-------|---------|
 | `timeout` | The HTTP request timed out (reqwest default or server overloaded). |
 | `http_503` | Server returned 503 (typically during a snapshot rebuild). |
-| `verify_fail` | The proof was returned but `proof.verify(nullifier)` failed — indicates data corruption or a PIR bug. |
+| `verify_fail` | The client rejected a returned proof because `proof.verify(nullifier)` failed — indicates data corruption or a PIR bug. |
 | `other` | Any other error (connection refused, DNS failure, malformed response, etc). |
 
 ### JSON summary

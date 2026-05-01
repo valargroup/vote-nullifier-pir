@@ -172,6 +172,14 @@ fn process_tier2_and_build(
     })
 }
 
+fn verify_pir_proof(proof: ImtProofData, nullifier: Fp) -> Result<ImtProofData> {
+    anyhow::ensure!(
+        proof.verify(nullifier),
+        "PIR proof verification failed: Merkle path/root does not authenticate queried nullifier"
+    );
+    Ok(proof)
+}
+
 impl PirClient {
     /// Connect to a PIR server, downloading Tier 0 data and YPIR parameters.
     pub async fn connect(server_url: &str) -> Result<Self> {
@@ -271,8 +279,11 @@ impl PirClient {
 
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
     ///
-    /// All queries run concurrently via `try_join_all`, sharing the same
-    /// `PirClient` (and thus the same HTTP client and Tier 0 data).
+    /// All queries run concurrently, sharing the same `PirClient` (and thus
+    /// the same HTTP client and Tier 0 data). The client waits for every
+    /// per-note fetch to finish before returning the first indexed error, so a
+    /// failing proof cannot cancel other notes before their Tier 2 queries are
+    /// sent.
     pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
         log::debug!(
             "[PIR] Starting parallel fetch for {} notes...",
@@ -284,12 +295,28 @@ impl PirClient {
             .iter()
             .enumerate()
             .map(|(i, &nf)| async move {
-                let (proof, timing) = self.fetch_proof_inner(nf).await?;
+                let (proof, timing) = self
+                    .fetch_proof_inner(nf)
+                    .await
+                    .with_context(|| format!("PIR proof fetch failed for note[{i}]"))?;
                 Ok::<_, anyhow::Error>((i, proof, timing))
             })
             .collect();
 
-        let results_with_timing = futures::future::try_join_all(futures).await?;
+        let joined = futures::future::join_all(futures).await;
+        let mut results_with_timing = Vec::with_capacity(joined.len());
+        let mut first_error = None;
+        for result in joined {
+            match result {
+                Ok(item) => results_with_timing.push(item),
+                Err(err) if first_error.is_none() => first_error = Some(err),
+                Err(_) => {}
+            }
+        }
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+
         let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
 
         print_timing_table(&results_with_timing, wall_ms);
@@ -393,6 +420,7 @@ impl PirClient {
             &self.empty_hashes,
             self.root29,
         )?;
+        let proof = verify_pir_proof(proof, nullifier)?;
 
         let total_ms = note_start.elapsed().as_secs_f64() * 1000.0;
         Ok((
@@ -715,7 +743,7 @@ pub fn fetch_proof_local(
         tier2_data.len()
     );
 
-    process_tier2_and_build(
+    let proof = process_tier2_and_build(
         &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES],
         t2_row_idx,
         num_ranges,
@@ -723,7 +751,8 @@ pub fn fetch_proof_local(
         &mut path,
         empty_hashes,
         root29,
-    )
+    )?;
+    verify_pir_proof(proof, nullifier)
 }
 
 #[cfg(test)]
@@ -823,6 +852,30 @@ mod tests {
 
         assert_eq!(proof.root, fix.root29);
         assert_eq!(proof.path.len(), TREE_DEPTH);
+    }
+
+    #[test]
+    fn fetch_proof_local_rejects_wrong_root() {
+        let raw_nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
+        let fix = TestFixture::build(&raw_nfs);
+
+        let value = fix.ranges[0][0] + Fp::one();
+        let wrong_root = fix.root29 + Fp::one();
+        let err = fetch_proof_local(
+            &fix.tier0_data,
+            &fix.tier1_data,
+            &fix.tier2_data,
+            fix.ranges.len(),
+            value,
+            &fix.empty_hashes,
+            wrong_root,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("PIR proof verification failed"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── process_tier0 ────────────────────────────────────────────────────
@@ -1099,10 +1152,9 @@ mod tests {
     /// decode fails would re-introduce the "K vs K' tier-2 requests"
     /// oracle the per-note mitigation closes.
     ///
-    /// The 50 ms tier 2 delay is a coarse-grained guard against
-    /// `try_join_all` cancellation: it ensures all five fetch_proof_inner
-    /// futures dispatch their tier 2 POST before the first one resolves
-    /// to `Err`, so wiremock's request log is deterministic.
+    /// This guards against batch-level cancellation: all five
+    /// fetch_proof_inner futures must dispatch their tier 2 POST before
+    /// fetch_proofs returns the first error.
     #[tokio::test]
     async fn batched_tier2_queries_all_sent_despite_tier1_decode_failure() {
         use ff::PrimeField as _;

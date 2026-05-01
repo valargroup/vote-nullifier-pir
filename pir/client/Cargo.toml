@@ -1,6 +1,6 @@
 [package]
 name = "pir-client"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Private Information Retrieval client for Zcash nullifier non-membership proofs. Fetches circuit-ready Merkle authentication paths without revealing the queried nullifier to the server."
 license = "MIT OR Apache-2.0"
