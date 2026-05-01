@@ -213,13 +213,32 @@ jobs:
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
             s3://vote/start_pir.sh
           VOTING_CONFIG_URL="https://valargroup.github.io/token-holder-voting-config/voting-config.json"
-          HEIGHT="$(
-            curl -fsSL "$VOTING_CONFIG_URL" \
-              | jq -e -r '.snapshot_height | tonumber | tostring'
-          )"
+          CONFIG_JSON="$(curl -fsSL "$VOTING_CONFIG_URL")"
+          HEIGHT=""
+          while IFS= read -r VOTE_SERVER_URL; do
+            [ -n "$VOTE_SERVER_URL" ] || continue
+            ACTIVE_ROUND_URL="${VOTE_SERVER_URL%/}/shielded-vote/v1/rounds/active"
+            echo "Resolving active round snapshot height from ${ACTIVE_ROUND_URL}"
+            if HEIGHT="$(
+              curl -fsSL "$ACTIVE_ROUND_URL" \
+                | jq -e -r '.round.snapshot_height | tonumber | tostring'
+            )"; then
+              break
+            fi
+            ROUNDS_URL="${VOTE_SERVER_URL%/}/shielded-vote/v1/rounds"
+            echo "Active round unavailable; resolving snapshot height from ${ROUNDS_URL}"
+            if HEIGHT="$(
+              curl -fsSL "$ROUNDS_URL" \
+                | jq -e -r '.rounds[]?.snapshot_height | tonumber | tostring' \
+                | head -n 1
+            )"; then
+              break
+            fi
+            HEIGHT=""
+          done < <(printf '%s\n' "$CONFIG_JSON" | jq -e -r '.vote_servers[]?.url // empty')
           case "$HEIGHT" in
             '' | *[!0-9]*)
-              echo "snapshot_height from voting-config must be a non-negative integer, got: ${HEIGHT:-<empty>}" >&2
+              echo "active round snapshot_height must be a non-negative integer, got: ${HEIGHT:-<empty>}" >&2
               exit 1
               ;;
           esac

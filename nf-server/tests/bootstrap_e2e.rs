@@ -168,6 +168,10 @@ fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_heig
         Some(h) => json!({ "round": { "snapshot_height": h } }),
         None => json!({ "round": {} }),
     };
+    let rounds = match snapshot_height {
+        Some(h) => json!({ "rounds": [{ "snapshot_height": h }] }),
+        None => json!({ "rounds": [{}] }),
+    };
     bucket.put(
         "/voting-config.json",
         "application/json",
@@ -177,6 +181,11 @@ fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_heig
         "/shielded-vote/v1/rounds/active",
         "application/json",
         serde_json::to_vec(&active_round).unwrap(),
+    );
+    bucket.put(
+        "/shielded-vote/v1/rounds",
+        "application/json",
+        serde_json::to_vec(&rounds).unwrap(),
     );
 }
 
