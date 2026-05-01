@@ -176,7 +176,8 @@ curl -fsS http://127.0.0.1:3000/root   | jq '{height, pir_depth, num_ranges}'
 
 `GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
-Compare the `height` from `/root` to `voting-config.json` `snapshot_height`; they should match while bootstrap is enabled.
+Compare the `height` from `/root` to the active round's `snapshot_height` from
+the configured vote server; they should match while bootstrap is enabled.
 
 ## Host health check (`nf-server doctor`)
 
@@ -218,7 +219,17 @@ systemctl restart nullifier-query-server
 
 Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
 
-**On startup**, `serve` fetches `voting-config.json`, compares its `snapshot_height` to local `pir_root.json`, and downloads the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. Defaults are correct for production — operators normally configure nothing.
+**On startup**, `serve` fetches `voting-config.json`, queries the configured
+vote server for the active round's `snapshot_height`, compares that height to
+local `pir_root.json`, and downloads the matching snapshot tiers from
+`SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. Defaults are correct for
+production — operators normally configure nothing.
+
+If there is no active round, `serve` keeps serving the existing local snapshot.
+On a fresh host with no local `pir_root.json`, set
+`SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT=<height>` to bootstrap a specific published
+snapshot. The override is ignored while an active round exists; chain state wins
+for live rounds.
 
 **Policy:** if local tier state is unusable and bootstrap can't fix it (e.g. CDN fetch failed and no valid files under `SVOTE_PIR_DATA_DIR`), startup fails. Fix the network / configuration, fall back to [Synced mode](#synced-mode), or pre-stage files.
 
@@ -232,10 +243,12 @@ The shipped systemd unit only covers `serve`; sync is operator-driven. Stop the 
 
 ```bash
 systemctl stop nullifier-query-server
-# Optional: load the same env as systemd so sync picks up voting-config height cap
+# Optional: load the same env as systemd so sync picks up the active-round height cap
 # sudo set -a && . /etc/default/nf-server && set +a
 
-SNAPSHOT=$(curl -fsSL https://valargroup.github.io/token-holder-voting-config/voting-config.json | jq -r '.snapshot_height')
+CONFIG=$(curl -fsSL https://valargroup.github.io/token-holder-voting-config/voting-config.json)
+VOTE_SERVER=$(jq -r '.vote_servers[0].url' <<<"$CONFIG")
+SNAPSHOT=$(curl -fsSL "${VOTE_SERVER%/}/shielded-vote/v1/rounds/active" | jq -r '.round.snapshot_height')
 
 sudo /opt/nf-ingest/nf-server sync \
     --pir-data-dir /opt/nf-ingest/pir-data \
@@ -250,7 +263,7 @@ Useful flags:
 
 - `--non-interactive` — required from CI / unattended SSH (no TTY prompts).
 - `--invalidate-after-blocks` — force `nullifiers.tree` and tier blobs to rebuild when new blocks stream in.
-- `--max-height <H>` — stop at `H` (must be a multiple of 10). Without it, syncs to mainnet chain tip, capped by `voting-config.snapshot_height` when bootstrap is enabled.
+- `--max-height <H>` — stop at `H` (must be a multiple of 10). Without it, syncs to mainnet chain tip, capped by the active round snapshot height when bootstrap is enabled.
 
 `nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped. To start clean, set `SVOTE_PIR_SYNC_RESET=1`.
 
@@ -260,7 +273,7 @@ After sync, tier files are local — but CDN bootstrap still runs on the next `s
 
 ### Height-mismatch wipe (`RESYNC`)
 
-When bootstrap is enabled and your local nullifier checkpoint is **above** the canonical `snapshot_height`, `nf-server sync` refuses to silently roll back. Confirm by typing `RESYNC` at the prompt, or — under `--non-interactive` — set:
+When bootstrap is enabled and your local nullifier checkpoint is **above** the active round `snapshot_height`, `nf-server sync` refuses to silently roll back. Confirm by typing `RESYNC` at the prompt, or — under `--non-interactive` — set:
 
 ```bash
 SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC
@@ -318,7 +331,7 @@ Browse `/metrics` once after install for the full series list; names are stable 
 
 ## Backup and disaster recovery
 
-`SVOTE_PIR_DATA_DIR` is **disposable** for bootstrapped hosts: tier files come from the CDN and the snapshot height is fixed by `voting-config.json`. To recover, reinstall and restart — `start_pir.sh` and the systemd unit will re-bootstrap. No backups required for serve-only hosts.
+`SVOTE_PIR_DATA_DIR` is **disposable** for bootstrapped hosts: tier files come from the CDN and the snapshot height is fixed by the active on-chain voting round. To recover, reinstall and restart — `start_pir.sh` and the systemd unit will re-bootstrap. No backups required for serve-only hosts.
 
 For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index` represent ~16 minutes of lightwalletd streaming work; back them up if you want to skip a re-stream after disk loss. Tier files are derivable.
 
@@ -332,7 +345,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 **When to upgrade:**
 
-- A new voting round publishes a new `snapshot_height` in `voting-config.json`. A bootstrapped server picks it up on next restart, but you should also confirm the pinned binary is still supported.
+- A new voting round with a new `snapshot_height` becomes active on chain. A bootstrapped server picks it up on next restart, but you should also confirm the pinned binary is still supported.
 - A new `v*` release with security or correctness fixes (watch GitHub Releases; subscribe via the repo's release feed).
 - Otherwise, no need to chase patch releases mid-round.
 
@@ -352,6 +365,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
+| `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` | Optional fallback height for fresh hosts when the chain has no active voting round and no local snapshot exists. Ignored when an active round exists. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
 
@@ -374,8 +388,8 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 | `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`). |
 | `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`). |
 | `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run. |
-| `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above voting `snapshot_height`. |
-| `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `snapshot_height`. |
+| `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above the active round `snapshot_height`. |
+| `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `vote_servers` that expose an active round with `snapshot_height`. |
 
 See [Synced mode](#synced-mode) for the common ad-hoc flags (`--non-interactive`, `--invalidate-after-blocks`, `--max-height`). `nf-server sync --help` has the full list.
 
@@ -419,12 +433,12 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
 | `status` stays `"starting"` for >2 min, log shows `voting-config.json` fetch errors | Outbound HTTPS to `valargroup.github.io` blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
-| `status` stays `"starting"`, log shows `snapshot_height required` | Bootstrap is enabled but `voting-config.json` lacks `snapshot_height` (or you pointed at a non-canonical URL) | Restore the default URL or use a config that defines `snapshot_height`. |
+| `status` stays `"starting"`, log shows no active voting round and no local snapshot | Bootstrap is enabled on a fresh host while no round is active. | Set `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or wait until a round is active. |
 | `status` stays `"starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
 | `status` is `"error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |
 | `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Bootstrapped mode](#bootstrapped-mode) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
-| `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above canonical `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |
+| `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above the active round `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |
 | `nullifiers.tree` rejected as unknown format | Tree file left over from an older build | Delete the file or set `SVOTE_PIR_SYNC_RESET=1` and rerun sync. |
 | Logs show `precompute cache miss; recomputing` after a binary upgrade or snapshot rotation | Expected: cache header binds to the YPIR version, build target, and tier-source hash. Any of those changing forces a recompute. | None. Next `serve` boot writes a fresh cache; subsequent restarts will be warm. |
 | `precompute cache write failed; serving from memory` warning | `tier{N}.precompute.tmp` couldn't be flushed (typically ENOSPC) | Free disk under `SVOTE_PIR_DATA_DIR`; the server is still serving correctly, but the next restart will pay the full cold-start cost. Cache will be written on the next successful boot. |

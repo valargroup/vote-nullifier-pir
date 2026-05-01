@@ -6,8 +6,8 @@
 //!   * full success (manifest + tier files installed),
 //!   * sha256 mismatch detection (file removed, fall-through outcome),
 //!   * wrong-height manifest detection,
-//!   * skip when local height already matches the active on-chain round,
-//!   * hard fail when the active on-chain round has no `snapshot_height`,
+//!   * skip when local height already matches the active round,
+//!   * local/override behavior when no active round exposes `snapshot_height`,
 //!   * fall-through when voting-config URL is unreachable.
 //!
 //! All tests run with `serve` enabled because that's the only build
@@ -162,15 +162,21 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
 
 fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_height: Option<u64>) {
     let body = json!({
-        "vote_servers": [{ "url": vote_server_url, "label": "mock-vote-server" }],
+        "vote_servers": [
+            { "url": vote_server_url, "label": "mock-vote-server" }
+        ]
     });
     let active_round = match snapshot_height {
-        Some(h) => json!({ "round": { "snapshot_height": h } }),
+        Some(h) => {
+            json!({ "round": { "snapshot_height": h, "vote_round_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" } })
+        }
         None => json!({ "round": {} }),
     };
     let rounds = match snapshot_height {
-        Some(h) => json!({ "rounds": [{ "snapshot_height": h }] }),
-        None => json!({ "rounds": [{}] }),
+        Some(h) => {
+            json!({ "rounds": [{ "snapshot_height": h, "vote_round_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }] })
+        }
+        None => json!({ "rounds": [] }),
     };
     bucket.put(
         "/voting-config.json",
@@ -189,6 +195,39 @@ fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_heig
     );
 }
 
+fn stage_rounds_snapshot_height(bucket: &MockBucket, snapshot_height: u64) {
+    let rounds = json!({
+        "rounds": [
+            { "snapshot_height": snapshot_height, "vote_round_id": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
+        ]
+    });
+    bucket.put(
+        "/shielded-vote/v1/rounds",
+        "application/json",
+        serde_json::to_vec(&rounds).unwrap(),
+    );
+}
+
+fn write_local_pir_root(dir: &std::path::Path, height: u64) {
+    std::fs::write(
+        dir.join("pir_root.json"),
+        serde_json::to_vec(&json!({
+            "root25": "00",
+            "root29": "00",
+            "num_ranges": 0,
+            "pir_depth": 0,
+            "tier0_bytes": 0,
+            "tier1_rows": 0,
+            "tier1_row_bytes": 0,
+            "tier2_rows": 0,
+            "tier2_row_bytes": 0,
+            "height": height,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn full_bootstrap_installs_all_files() {
     let bucket = MockBucket::default();
@@ -201,6 +240,7 @@ async fn full_bootstrap_installs_all_files() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base.clone(),
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
@@ -237,6 +277,7 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
@@ -265,7 +306,7 @@ async fn missing_remote_snapshot_falls_through() {
     let bucket = MockBucket::default();
     let h = 300u64;
     stage_snapshot(&bucket, h);
-    // Active round asks for h+10, but only h is published — the
+    // The active round asks for h+10, but only h is published — the
     // bootstrap will hit a 404 on `/snapshots/{h+10}/manifest.json`.
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, Some(h + 10));
@@ -274,6 +315,7 @@ async fn missing_remote_snapshot_falls_through() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
@@ -321,6 +363,7 @@ async fn manifest_height_mismatch_falls_through() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
@@ -348,27 +391,12 @@ async fn already_at_height_is_a_no_op() {
 
     let tmp = TempDir::new().unwrap();
     // Pre-stage a local pir_root.json at the same height.
-    std::fs::write(
-        tmp.path().join("pir_root.json"),
-        serde_json::to_vec(&json!({
-            "root25": "00",
-            "root29": "00",
-            "num_ranges": 0,
-            "pir_depth": 0,
-            "tier0_bytes": 0,
-            "tier1_rows": 0,
-            "tier1_row_bytes": 0,
-            "tier2_rows": 0,
-            "tier2_row_bytes": 0,
-            "height": h,
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    write_local_pir_root(tmp.path(), h);
 
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
@@ -380,7 +408,83 @@ async fn already_at_height_is_a_no_op() {
 }
 
 #[tokio::test]
-async fn voting_config_without_height_errors() {
+async fn no_active_round_uses_local_snapshot_when_present() {
+    let bucket = MockBucket::default();
+    let local_height = 410u64;
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, None);
+
+    let tmp = TempDir::new().unwrap();
+    write_local_pir_root(tmp.path(), local_height);
+    let cfg = Config {
+        voting_config_url: format!("{base}/voting-config.json"),
+        precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    assert_eq!(outcome, Outcome::UsingLocalSnapshot(local_height));
+}
+
+#[tokio::test]
+async fn no_active_round_uses_explicit_bootstrap_height_when_no_local_snapshot() {
+    let bucket = MockBucket::default();
+    let h = 420u64;
+    let blobs = stage_snapshot(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, None);
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = Config {
+        voting_config_url: format!("{base}/voting-config.json"),
+        precomputed_base_url: base,
+        bootstrap_snapshot_height_override: Some(h),
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    assert_eq!(outcome, Outcome::BootstrappedTo(h));
+    for (name, expected) in &blobs {
+        let actual = std::fs::read(tmp.path().join(name)).expect(name);
+        assert_eq!(&actual, expected, "{name} contents");
+    }
+}
+
+#[tokio::test]
+async fn no_active_round_ignores_rounds_list_without_explicit_override() {
+    let bucket = MockBucket::default();
+    let h = 430u64;
+    stage_snapshot(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, None);
+    stage_rounds_snapshot_height(&bucket, h);
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = Config {
+        voting_config_url: format!("{base}/voting-config.json"),
+        precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let err = bootstrap::run(&cfg).await.err().expect("expected error");
+    let s = format!("{err:#}");
+    assert!(
+        s.contains("no active voting round"),
+        "unexpected error: {s}"
+    );
+    assert!(
+        !tmp.path().join("pir_root.json").exists(),
+        "bootstrap must not use /rounds as a height fallback"
+    );
+}
+
+#[tokio::test]
+async fn no_active_round_without_local_or_override_errors() {
     let bucket = MockBucket::default();
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, None);
@@ -389,13 +493,17 @@ async fn voting_config_without_height_errors() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
 
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
     let s = format!("{err:#}");
-    assert!(s.contains("snapshot_height"), "unexpected error: {s}");
+    assert!(
+        s.contains("no active voting round"),
+        "unexpected error: {s}"
+    );
 }
 
 #[tokio::test]
@@ -405,6 +513,7 @@ async fn unreachable_voting_config_errors() {
         // Localhost on a port we don't bind: connection refused.
         voting_config_url: "http://127.0.0.1:1/voting-config.json".to_string(),
         precomputed_base_url: "http://127.0.0.1:1".to_string(),
+        bootstrap_snapshot_height_override: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(1),
     };

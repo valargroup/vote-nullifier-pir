@@ -17,8 +17,7 @@ use crate::voting_config;
 /// Env: set to `1` or `true` to delete nullifier + PIR artifacts before syncing.
 pub const ENV_SYNC_RESET: &str = "SVOTE_PIR_SYNC_RESET";
 /// Env: when `--non-interactive` and local checkpoint is ahead of the active
-/// on-chain round's `snapshot_height`, must be exactly `RESYNC` to wipe
-/// artifacts and continue.
+/// voting round snapshot height, must be exactly `RESYNC` to wipe artifacts and continue.
 pub const ENV_SYNC_ACK_MISMATCH: &str = "SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH";
 
 fn env_truthy(name: &str) -> bool {
@@ -65,7 +64,7 @@ fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
 
 fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -> Result<()> {
     eprintln!(
-        "Local nullifier checkpoint height ({local}) is above active-round snapshot_height ({snap}).\n\
+        "Local nullifier checkpoint height ({local}) is above active voting round snapshot height ({snap}).\n\
          Delete local nullifiers + PIR artifacts and re-sync, or abort.\n\
          Type RESYNC to wipe nullifiers, tree checkpoint, and tier files, then continue."
     );
@@ -113,14 +112,13 @@ pub struct Args {
     lwd_url: String,
 
     /// Stop syncing at this block height (must be a multiple of 10). Capped by
-    /// chain tip and, when configured, by the active on-chain round's
-    /// `snapshot_height`.
+    /// chain tip and, when set, by the active voting round snapshot height.
     #[arg(long)]
     max_height: Option<u64>,
 
-    /// voting-config.json URL. When non-empty, its first vote server is queried
-    /// for the active on-chain round, whose `snapshot_height` caps the sync
-    /// target. Empty disables this check (offline / dev).
+    /// voting-config.json URL. When non-empty, `vote_servers` are used to query
+    /// the chain's active round snapshot height, which caps the sync target.
+    /// Empty disables this check (offline / dev).
     #[arg(long, env = "SVOTE_PIR_VOTING_CONFIG_URL", default_value = "")]
     voting_config_url: String,
 
@@ -164,11 +162,9 @@ pub async fn run(args: Args) -> Result<()> {
         None
     } else {
         Some(
-            voting_config::fetch_required_active_round_snapshot_height(voting_url, timeout)
+            voting_config::fetch_required_snapshot_height(voting_url, timeout)
                 .await
-                .with_context(|| {
-                    format!("discover active-round snapshot height via voting-config {voting_url}")
-                })?,
+                .with_context(|| format!("fetch voting-config from {voting_url}"))?,
         )
     };
 
@@ -189,7 +185,7 @@ pub async fn run(args: Args) -> Result<()> {
         target = target.min(s);
     }
 
-    // PIR snapshots and active-round `snapshot_height` are defined on 10-block
+    // PIR snapshots and voting-config `snapshot_height` are defined on 10-block
     // boundaries (see `nf_ingest::config::validate_export_height`).
     let export_target = (target / 10) * 10;
     config::validate_export_height(export_target).with_context(|| {

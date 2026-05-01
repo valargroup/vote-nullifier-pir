@@ -25,6 +25,10 @@ on:
         description: "Load phase duration (e.g. 60s, 5m)"
         type: string
         default: "60s"
+      snapshot_height:
+        description: "Published snapshot height to load nullifiers from"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -63,10 +67,10 @@ jobs:
       - name: Fetch nullifiers snapshot
         run: |
           set -euo pipefail
-          HEIGHT="$(jq -r '.snapshot_height | tonumber | tostring' voting-config.json)"
+          HEIGHT="${{ inputs.snapshot_height }}"
           case "$HEIGHT" in
             '' | *[!0-9]*)
-              echo "voting-config snapshot_height must be a non-negative integer, got: ${HEIGHT:-<empty>}" >&2
+              echo "snapshot_height input must be a non-negative integer, got: ${HEIGHT:-<empty>}" >&2
               exit 1
               ;;
           esac

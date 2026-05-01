@@ -12,7 +12,7 @@ when GitHub Actions is unavailable.
 
 | Scenario | Action |
 |----------|--------|
-| You bumped `voting-config.snapshot_height` and need replicas to pick up the new snapshot. | Run `Restart PIR fleet` with `targets=both`. |
+| A new on-chain voting round with a new `snapshot_height` is active and replicas need to pick up the new snapshot. | Run `Restart PIR fleet` with `targets=both`. |
 | Sentry fired `alert:snapshot_stale` for one host and the underlying issue is resolved. | Run `Restart PIR fleet` with `targets=primary` or `targets=backup`. |
 | You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_PIR_VOTING_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
 | You're deploying a new `nf-server` binary. | Use `Deploy nf-server` instead — it does the binary swap *and* the restart. |

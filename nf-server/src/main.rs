@@ -8,14 +8,14 @@
 #[cfg(feature = "serve")]
 mod bootstrap;
 mod cmd_doctor;
-mod cmd_sync;
-mod sync_pipeline;
 #[cfg(feature = "serve")]
 mod cmd_serve;
+mod cmd_sync;
 #[cfg(feature = "serve")]
 mod metrics;
 #[cfg(feature = "serve")]
 mod serve;
+mod sync_pipeline;
 mod voting_config;
 
 use clap::{Parser, Subcommand};

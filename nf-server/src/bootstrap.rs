@@ -2,9 +2,9 @@
 //!
 //! Runs once at `serve` startup, before [`pir_server::load_serving_state`].
 //! Resolves the canonical snapshot height from the active on-chain round
-//! discovered via the published voting-config's vote servers and, if local
-//! state is missing or at the wrong height, downloads the pre-computed tier
-//! files from the bucket configured by
+//! discovered through the published voting-config and, if local state is
+//! missing or at the wrong height, downloads the
+//! pre-computed tier files from the bucket configured by
 //! `--precomputed-base-url` and verifies them against the manifest's
 //! sha256s before swapping them into `--pir-data-dir`.
 //!
@@ -38,10 +38,11 @@
 //! `--voting-config-url` (see [`Config::DEFAULT_VOTING_CONFIG_URL`]), so normal
 //! operators do nothing: bootstrap runs against the published URL. **Strict
 //! rule:** whenever that URL is non-empty (the default, or any override you
-//! set), the published JSON must be fetchable over HTTP(S), must contain at
-//! least one `vote_servers` entry, and a vote server must expose an active
-//! round with `snapshot_height`; otherwise [`run`] returns an error and startup
-//! stops.
+//! set), the published JSON must be fetchable over HTTP(S). If no active round
+//! exposes `snapshot_height`, [`run`] falls back to an existing local snapshot.
+//! A fresh host with no local snapshot must provide
+//! `--bootstrap-snapshot-height` / `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT`;
+//! otherwise startup stops with a clear error.
 //! **Opt out:** set `--voting-config-url` / `SVOTE_PIR_VOTING_CONFIG_URL` to an
 //! **empty string** to disable bootstrap and serve only pre-staged `pir-data/`
 //! (offline dev, air-gapped hosts).
@@ -110,14 +111,16 @@ struct PublishedManifest {
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Where to fetch `voting-config.json` from. The CLI default is
-    /// [`DEFAULT_VOTING_CONFIG_URL`]. The config is used only to discover the
-    /// vote servers that expose the active round. Set to an empty string to
-    /// disable bootstrap (operator manages `pir-data/` entirely on disk).
+    /// [`DEFAULT_VOTING_CONFIG_URL`]; set to an empty string to disable
+    /// bootstrap (operator manages `pir-data/` entirely on disk).
     pub voting_config_url: String,
     /// Bucket origin for pre-computed snapshots. Empty disables download
-    /// even if the active-round height differs from local state — we
+    /// even if the active round height differs from local state — we
     /// surface a warning so the operator notices.
     pub precomputed_base_url: String,
+    /// Explicit snapshot height to bootstrap when the chain has no active
+    /// round and no local snapshot exists. Ignored when an active round exists.
+    pub bootstrap_snapshot_height_override: Option<u64>,
     /// Where the live snapshot lives. Bootstrap writes here.
     pub pir_data_dir: PathBuf,
     /// Cap on each individual HTTP request. Tier files are large
@@ -136,6 +139,16 @@ impl Config {
         "https://vote.fra1.digitaloceanspaces.com";
 }
 
+fn validate_bootstrap_snapshot_height(height: u64) -> Result<()> {
+    if height == 0 {
+        bail!("bootstrap snapshot height override must be greater than zero");
+    }
+    if height % 10 != 0 {
+        bail!("bootstrap snapshot height override must be a multiple of 10, got {height}");
+    }
+    Ok(())
+}
+
 /// Outcome of [`run`], used for logging/metrics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -143,6 +156,8 @@ pub enum Outcome {
     Disabled,
     /// Local snapshot is already at the expected height; nothing fetched.
     AlreadyAtHeight(u64),
+    /// No active round was available, so the existing local snapshot is served.
+    UsingLocalSnapshot(u64),
     /// Local snapshot was missing or stale; CDN fetch succeeded.
     BootstrappedTo(u64),
     /// Local snapshot is stale and CDN fetch failed (or
@@ -152,11 +167,12 @@ pub enum Outcome {
 
 /// Run the bootstrap. See module docs for the algorithm.
 ///
-/// Returns [`Outcome::FellThrough`] when the active-round height is known
-/// but the CDN path cannot refresh local tiers (empty precomputed URL,
-/// download failure, etc.). Returns `Err` when bootstrap is enabled (URL
-/// non-empty, including the baked-in default) but config/chain discovery cannot
-/// resolve an active-round `snapshot_height`, or for I/O errors while
+/// Returns [`Outcome::UsingLocalSnapshot`] when no active round is available
+/// and local state exists. Returns [`Outcome::FellThrough`] when the target
+/// height is known but the CDN path cannot refresh local tiers (empty
+/// precomputed URL, download failure, etc.). Returns `Err` when bootstrap is
+/// enabled (URL non-empty, including the baked-in default) but the config
+/// cannot be read, no target height can be resolved, or for I/O errors while
 /// installing from the CDN.
 pub async fn run(cfg: &Config) -> Result<Outcome> {
     let started = Instant::now();
@@ -173,29 +189,48 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
         metrics::served_height_set(h);
     }
 
-    let expected_height = match crate::voting_config::fetch_active_round_snapshot_height(
+    let expected_height = match crate::voting_config::fetch_voting_snapshot_height(
         &cfg.voting_config_url,
         cfg.http_timeout,
     )
     .await
     {
         Ok(Some(h)) => {
-            info!(height = h, "active-round snapshot_height resolved");
+            info!(height = h, "active round snapshot_height resolved");
             metrics::expected_height_set(h);
             h
         }
         Ok(None) => {
-            metrics::bootstrap_outcome_inc("failed_voting_config");
-            bail!(
-                "no active on-chain round with snapshot_height discovered via {}; set SVOTE_PIR_VOTING_CONFIG_URL= or \
-                 --voting-config-url \"\" to disable bootstrap and serve pre-staged pir-data only",
-                cfg.voting_config_url
-            );
+            if let Some(h) = local_height {
+                info!(
+                    height = h,
+                    "no active round snapshot_height discovered; serving local snapshot"
+                );
+                metrics::bootstrap_duration_observe(started.elapsed());
+                metrics::bootstrap_outcome_inc("using_local_snapshot");
+                return Ok(Outcome::UsingLocalSnapshot(h));
+            }
+            if let Some(h) = cfg.bootstrap_snapshot_height_override {
+                validate_bootstrap_snapshot_height(h)?;
+                info!(
+                    height = h,
+                    "no active round snapshot_height discovered; using explicit bootstrap override"
+                );
+                metrics::expected_height_set(h);
+                h
+            } else {
+                metrics::bootstrap_outcome_inc("failed_voting_config");
+                bail!(
+                    "no active voting round with snapshot_height discovered via {} and no local snapshot exists; \
+                     set SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT / --bootstrap-snapshot-height to bootstrap a fresh host",
+                    cfg.voting_config_url
+                );
+            }
         }
         Err(e) => {
             metrics::bootstrap_outcome_inc("failed_voting_config");
             return Err(e.context(format!(
-                "active-round snapshot discovery failed (strict bootstrap; config URL={})",
+                "voting-config fetch failed (strict bootstrap; URL={})",
                 cfg.voting_config_url
             )));
         }
@@ -215,7 +250,7 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
         warn!(
             local = ?local_height,
             expected = expected_height,
-            "local snapshot does not match active on-chain round but precomputed-base-url is empty; falling through"
+            "local snapshot does not match active round but precomputed-base-url is empty; falling through"
         );
         metrics::bootstrap_outcome_inc("fell_through");
         return Ok(Outcome::FellThrough {
@@ -539,6 +574,7 @@ mod tests {
         let cfg = Config {
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
+            bootstrap_snapshot_height_override: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
         };
@@ -567,6 +603,7 @@ mod tests {
         let cfg = Config {
             voting_config_url: format!("http://127.0.0.1:{}/cfg.json", addr.port()),
             precomputed_base_url: String::new(),
+            bootstrap_snapshot_height_override: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(5),
         };
@@ -581,6 +618,7 @@ mod tests {
         let cfg = Config {
             voting_config_url: "http://127.0.0.1:1/voting-config.json".into(),
             precomputed_base_url: String::new(),
+            bootstrap_snapshot_height_override: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_millis(500),
         };

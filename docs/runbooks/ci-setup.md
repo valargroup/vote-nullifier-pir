@@ -118,7 +118,7 @@ Then check `http://localhost:3000/health` and `http://localhost:3000/root`.
 
 `nf-server` ships an in-process watchdog that fires a Sentry error
 event when a host serves a snapshot older than the canonical
-voting-config height for longer than
+active-round height for longer than
 `SVOTE_PIR_STALE_THRESHOLD_SECS` (default 30 minutes). Sentry's Slack
 integration then routes the event to the on-call channel.
 
@@ -166,9 +166,10 @@ Configure the alert in Sentry (one rule per project):
 
 ### Verification
 
-Stand up a verification fire by temporarily setting a tiny threshold
-and bumping `voting-config.snapshot_height` to a value that has no
-published snapshot (or tail one host's `/metrics` while you do it):
+Stand up a verification fire by temporarily setting a tiny threshold and
+pointing `SVOTE_PIR_VOTING_CONFIG_URL` at a staging config whose vote server
+reports a higher active-round `snapshot_height` than the host can serve (or
+tail one host's `/metrics` while you do it):
 
 ```bash
 ssh root@<host> 'echo SVOTE_PIR_STALE_THRESHOLD_SECS=120 >> /etc/default/nf-server && systemctl restart nullifier-query-server'
