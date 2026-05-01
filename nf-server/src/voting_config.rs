@@ -24,6 +24,12 @@ struct ActiveRoundResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct RoundsResponse {
+    #[serde(default)]
+    rounds: Vec<ChainRound>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ChainRound {
     #[serde(default)]
     snapshot_height: Option<JsonU64>,
@@ -48,7 +54,7 @@ impl JsonU64 {
 }
 
 /// GET the wallet-facing config, then query configured vote servers until one
-/// returns an active round `snapshot_height`.
+/// returns a chain round `snapshot_height`.
 pub async fn fetch_active_round_snapshot_height(
     config_url: &str,
     timeout: Duration,
@@ -124,9 +130,39 @@ async fn fetch_vote_server_active_snapshot_height(
         .await
         .with_context(|| format!("decode {active_url} as active round"))?;
 
-    active
+    let height = active
         .round
         .and_then(|round| round.snapshot_height)
+        .map(JsonU64::parse)
+        .transpose()?;
+    if height.is_some() {
+        return Ok(height);
+    }
+
+    fetch_vote_server_rounds_snapshot_height(client, vote_server).await
+}
+
+async fn fetch_vote_server_rounds_snapshot_height(
+    client: &reqwest::Client,
+    vote_server: &str,
+) -> Result<Option<u64>> {
+    let rounds_url = format!("{vote_server}/shielded-vote/v1/rounds");
+    let resp = client
+        .get(&rounds_url)
+        .send()
+        .await
+        .with_context(|| format!("GET {rounds_url}"))?
+        .error_for_status()
+        .with_context(|| format!("GET {rounds_url} (non-2xx)"))?;
+    let rounds: RoundsResponse = resp
+        .json()
+        .await
+        .with_context(|| format!("decode {rounds_url} as rounds"))?;
+
+    rounds
+        .rounds
+        .into_iter()
+        .find_map(|round| round.snapshot_height)
         .map(JsonU64::parse)
         .transpose()
 }
@@ -140,7 +176,7 @@ pub async fn fetch_required_active_round_snapshot_height(
         Some(height) => Ok(height),
         None => {
             bail!(
-                "no active on-chain round with snapshot_height discovered via voting-config at {config_url}; \
+                "no on-chain round with snapshot_height discovered via voting-config at {config_url}; \
                  disable check with empty --voting-config-url / SVOTE_PIR_VOTING_CONFIG_URL"
             )
         }
@@ -189,6 +225,25 @@ mod tests {
         format!("http://127.0.0.1:{}", addr.port())
     }
 
+    fn spawn_two_request_server(first_body: &'static str, second_body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for body in [first_body, second_body] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn resolves_snapshot_height_from_active_round() {
         let active_server = spawn_one_request_server(r#"{"round":{"snapshot_height":"3317510"}}"#);
@@ -204,6 +259,26 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(height, 3_317_510);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn falls_back_to_rounds_list_when_active_round_is_null() {
+        let active_server = spawn_two_request_server(
+            r#"{"round":null}"#,
+            r#"{"rounds":[{"snapshot_height":3317515}]}"#,
+        );
+        let config_body = format!(
+            r#"{{"vote_servers":[{{"url":"{}","label":"primary"}}]}}"#,
+            active_server
+        );
+        let config_server = spawn_one_request_server(Box::leak(config_body.into_boxed_str()));
+        let height = fetch_required_active_round_snapshot_height(
+            &format!("{config_server}/voting-config.json"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(height, 3_317_515);
     }
 
     #[tokio::test(flavor = "current_thread")]
