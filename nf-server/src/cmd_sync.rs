@@ -16,8 +16,9 @@ use crate::voting_config;
 
 /// Env: set to `1` or `true` to delete nullifier + PIR artifacts before syncing.
 pub const ENV_SYNC_RESET: &str = "SVOTE_PIR_SYNC_RESET";
-/// Env: when `--non-interactive` and local checkpoint is ahead of voting
-/// `snapshot_height`, must be exactly `RESYNC` to wipe artifacts and continue.
+/// Env: when `--non-interactive` and local checkpoint is ahead of the active
+/// on-chain round's `snapshot_height`, must be exactly `RESYNC` to wipe
+/// artifacts and continue.
 pub const ENV_SYNC_ACK_MISMATCH: &str = "SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH";
 
 fn env_truthy(name: &str) -> bool {
@@ -64,7 +65,7 @@ fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
 
 fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -> Result<()> {
     eprintln!(
-        "Local nullifier checkpoint height ({local}) is above voting-config snapshot_height ({snap}).\n\
+        "Local nullifier checkpoint height ({local}) is above active-round snapshot_height ({snap}).\n\
          Delete local nullifiers + PIR artifacts and re-sync, or abort.\n\
          Type RESYNC to wipe nullifiers, tree checkpoint, and tier files, then continue."
     );
@@ -78,9 +79,7 @@ fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -
         );
     }
     if !io::stdin().is_terminal() {
-        bail!(
-            "stdin is not a terminal; use --non-interactive with {ENV_SYNC_ACK_MISMATCH}=RESYNC"
-        );
+        bail!("stdin is not a terminal; use --non-interactive with {ENV_SYNC_ACK_MISMATCH}=RESYNC");
     }
     print!("> ");
     io::stdout().flush()?;
@@ -106,16 +105,22 @@ pub struct Args {
     output_dir: Option<PathBuf>,
 
     /// Lightwalletd endpoint URL. Overridden by LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
+    #[arg(
+        long,
+        default_value = "https://zec.rocks:443",
+        env = "SVOTE_PIR_MAINNET_RPC_URL"
+    )]
     lwd_url: String,
 
     /// Stop syncing at this block height (must be a multiple of 10). Capped by
-    /// chain tip and, when set, by voting-config `snapshot_height`.
+    /// chain tip and, when configured, by the active on-chain round's
+    /// `snapshot_height`.
     #[arg(long)]
     max_height: Option<u64>,
 
-    /// voting-config.json URL. When non-empty, `snapshot_height` is required
-    /// and caps the sync target. Empty disables this check (offline / dev).
+    /// voting-config.json URL. When non-empty, its first vote server is queried
+    /// for the active on-chain round, whose `snapshot_height` caps the sync
+    /// target. Empty disables this check (offline / dev).
     #[arg(long, env = "SVOTE_PIR_VOTING_CONFIG_URL", default_value = "")]
     voting_config_url: String,
 
@@ -142,8 +147,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     std::fs::create_dir_all(&nullifier_root)
         .with_context(|| format!("create {}", nullifier_root.display()))?;
-    std::fs::create_dir_all(&tier_dir)
-        .with_context(|| format!("create {}", tier_dir.display()))?;
+    std::fs::create_dir_all(&tier_dir).with_context(|| format!("create {}", tier_dir.display()))?;
 
     if env_truthy(ENV_SYNC_RESET) {
         println!(
@@ -160,9 +164,11 @@ pub async fn run(args: Args) -> Result<()> {
         None
     } else {
         Some(
-            voting_config::fetch_required_snapshot_height(voting_url, timeout)
+            voting_config::fetch_required_active_round_snapshot_height(voting_url, timeout)
                 .await
-                .with_context(|| format!("fetch voting-config from {voting_url}"))?,
+                .with_context(|| {
+                    format!("discover active-round snapshot height via voting-config {voting_url}")
+                })?,
         )
     };
 
@@ -183,13 +189,11 @@ pub async fn run(args: Args) -> Result<()> {
         target = target.min(s);
     }
 
-    // PIR snapshots and voting-config `snapshot_height` are defined on 10-block
+    // PIR snapshots and active-round `snapshot_height` are defined on 10-block
     // boundaries (see `nf_ingest::config::validate_export_height`).
     let export_target = (target / 10) * 10;
     config::validate_export_height(export_target).with_context(|| {
-        format!(
-            "aligned export height {export_target} (from cap {target}, chain_tip={chain_tip})"
-        )
+        format!("aligned export height {export_target} (from cap {target}, chain_tip={chain_tip})")
     })?;
 
     let data_dir = &nullifier_root;
@@ -217,28 +221,31 @@ pub async fn run(args: Args) -> Result<()> {
 
         println!("Nullifier / tree directory: {}", data_dir.display());
         println!("Tier output directory: {}", pir_dir.display());
-        println!(
-            "Export block height: {export_target} (cap {target}, chain_tip={chain_tip})"
-        );
+        println!("Export block height: {export_target} (cap {target}, chain_tip={chain_tip})");
         if needs_nullifier_sync {
             println!(
                 "Stage 1/3: syncing Orchard nullifiers via {} lightwalletd server(s)",
                 lwd_urls.len()
             );
             let t_start = std::time::Instant::now();
-            let nullifier_sync = sync_nullifiers::sync(data_dir, &lwd_urls, Some(export_target), |height, tgt, batch, total| {
-                let elapsed = t_start.elapsed().as_secs_f64();
-                let bps = if elapsed > 0.0 {
-                    (height - sync_nullifiers::NU5_ACTIVATION_HEIGHT) as f64 / elapsed
-                } else {
-                    0.0
-                };
-                let remaining = (tgt - height) as f64 / bps.max(1.0);
-                println!(
+            let nullifier_sync = sync_nullifiers::sync(
+                data_dir,
+                &lwd_urls,
+                Some(export_target),
+                |height, tgt, batch, total| {
+                    let elapsed = t_start.elapsed().as_secs_f64();
+                    let bps = if elapsed > 0.0 {
+                        (height - sync_nullifiers::NU5_ACTIVATION_HEIGHT) as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+                    let remaining = (tgt - height) as f64 / bps.max(1.0);
+                    println!(
                     "  height {}/{} | +{} nfs | {} total nfs | {:.0} blocks/s | ~{:.0}s remaining",
                     height, tgt, batch, total, bps, remaining
                 );
-            })
+                },
+            )
             .await?;
             if args.invalidate_after_blocks && nullifier_sync.blocks_synced > 0 {
                 for name in config::INVALIDATE_AFTER_BLOCKS_TREE_FILES {

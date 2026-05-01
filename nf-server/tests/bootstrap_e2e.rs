@@ -6,8 +6,8 @@
 //!   * full success (manifest + tier files installed),
 //!   * sha256 mismatch detection (file removed, fall-through outcome),
 //!   * wrong-height manifest detection,
-//!   * skip when local height already matches voting-config,
-//!   * skip when voting-config has no `snapshot_height`,
+//!   * skip when local height already matches the active on-chain round,
+//!   * hard fail when the active on-chain round has no `snapshot_height`,
 //!   * fall-through when voting-config URL is unreachable.
 //!
 //! All tests run with `serve` enabled because that's the only build
@@ -38,15 +38,15 @@ use tokio::sync::oneshot;
 // bootstrap surface, never the `/metrics` HTTP handler or the URL
 // default constants (those are exercised by `cmd_serve.rs` flag
 // defaults, not by tests here).
+#[path = "../src/bootstrap.rs"]
+#[allow(dead_code)]
+mod bootstrap;
 #[path = "../src/metrics.rs"]
 #[allow(dead_code)]
 mod metrics;
 #[path = "../src/voting_config.rs"]
 #[allow(dead_code)]
 mod voting_config;
-#[path = "../src/bootstrap.rs"]
-#[allow(dead_code)]
-mod bootstrap;
 
 use bootstrap::{Config, Outcome};
 
@@ -70,27 +70,17 @@ impl MockBucket {
     }
 }
 
-async fn handle_get(
-    State(bucket): State<MockBucket>,
-    uri: axum::http::Uri,
-) -> impl IntoResponse {
+async fn handle_get(State(bucket): State<MockBucket>, uri: axum::http::Uri) -> impl IntoResponse {
     let path = uri.path().to_string();
     match bucket.routes.read().unwrap().get(&path).cloned() {
-        Some((ct, body)) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, ct)],
-            body,
-        )
-            .into_response(),
+        Some((ct, body)) => (StatusCode::OK, [(header::CONTENT_TYPE, ct)], body).into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
 /// Spawn an axum server on a random port. Returns `(base_url, shutdown_tx)`.
 async fn spawn_mock(bucket: MockBucket) -> (String, oneshot::Sender<()>) {
-    let app = Router::new()
-        .fallback(get(handle_get))
-        .with_state(bucket);
+    let app = Router::new().fallback(get(handle_get)).with_state(bucket);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
@@ -170,15 +160,23 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
     blobs
 }
 
-fn stage_voting_config(bucket: &MockBucket, snapshot_height: Option<u64>) {
-    let body = match snapshot_height {
-        Some(h) => json!({ "snapshot_height": h }),
-        None => json!({}),
+fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_height: Option<u64>) {
+    let body = json!({
+        "vote_servers": [{ "url": vote_server_url, "label": "mock-vote-server" }],
+    });
+    let active_round = match snapshot_height {
+        Some(h) => json!({ "round": { "snapshot_height": h } }),
+        None => json!({ "round": {} }),
     };
     bucket.put(
         "/voting-config.json",
         "application/json",
         serde_json::to_vec(&body).unwrap(),
+    );
+    bucket.put(
+        "/shielded-vote/v1/rounds/active",
+        "application/json",
+        serde_json::to_vec(&active_round).unwrap(),
     );
 }
 
@@ -187,8 +185,8 @@ async fn full_bootstrap_installs_all_files() {
     let bucket = MockBucket::default();
     let h = 100u64;
     let blobs = stage_snapshot(&bucket, h);
-    stage_voting_config(&bucket, Some(h));
-    let (base, _shutdown) = spawn_mock(bucket).await;
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, Some(h));
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
@@ -216,7 +214,6 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
     let bucket = MockBucket::default();
     let h = 200u64;
     stage_snapshot(&bucket, h);
-    stage_voting_config(&bucket, Some(h));
     // Corrupt tier1.bin: serve different bytes than the manifest hash
     // covers. The manifest still claims the original sha.
     bucket.put(
@@ -224,7 +221,8 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
         "application/octet-stream",
         b"corrupted-payload-different-length".to_vec(),
     );
-    let (base, _shutdown) = spawn_mock(bucket).await;
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, Some(h));
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
@@ -258,10 +256,10 @@ async fn missing_remote_snapshot_falls_through() {
     let bucket = MockBucket::default();
     let h = 300u64;
     stage_snapshot(&bucket, h);
-    // Voting-config asks for h+10, but only h is published — the
+    // Active round asks for h+10, but only h is published — the
     // bootstrap will hit a 404 on `/snapshots/{h+10}/manifest.json`.
-    stage_voting_config(&bucket, Some(h + 10));
-    let (base, _shutdown) = spawn_mock(bucket).await;
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, Some(h + 10));
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
@@ -289,7 +287,8 @@ async fn manifest_height_mismatch_falls_through() {
     let bucket = MockBucket::default();
     let h = 350u64;
     stage_snapshot(&bucket, h);
-    stage_voting_config(&bucket, Some(h));
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, Some(h));
 
     // Overwrite the manifest at /snapshots/h/manifest.json with one
     // whose embedded height claims h+1.
@@ -309,8 +308,6 @@ async fn manifest_height_mismatch_falls_through() {
         "application/json",
         serde_json::to_vec(&bogus_manifest).unwrap(),
     );
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
@@ -337,8 +334,8 @@ async fn already_at_height_is_a_no_op() {
     let bucket = MockBucket::default();
     let h = 400u64;
     stage_snapshot(&bucket, h); // available but should not be downloaded
-    stage_voting_config(&bucket, Some(h));
-    let (base, _shutdown) = spawn_mock(bucket).await;
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, Some(h));
 
     let tmp = TempDir::new().unwrap();
     // Pre-stage a local pir_root.json at the same height.
@@ -376,8 +373,8 @@ async fn already_at_height_is_a_no_op() {
 #[tokio::test]
 async fn voting_config_without_height_errors() {
     let bucket = MockBucket::default();
-    stage_voting_config(&bucket, None);
-    let (base, _shutdown) = spawn_mock(bucket).await;
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, None);
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
@@ -389,10 +386,7 @@ async fn voting_config_without_height_errors() {
 
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
     let s = format!("{err:#}");
-    assert!(
-        s.contains("snapshot_height"),
-        "unexpected error: {s}"
-    );
+    assert!(s.contains("snapshot_height"), "unexpected error: {s}");
 }
 
 #[tokio::test]

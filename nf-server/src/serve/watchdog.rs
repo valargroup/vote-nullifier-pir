@@ -1,5 +1,5 @@
 //! Snapshot-stale watchdog: per-host alerting when this nf-server is
-//! serving a snapshot older than the canonical voting-config height.
+//! serving a snapshot older than the canonical active-round height.
 //!
 //! ## Why this lives in-process
 //!

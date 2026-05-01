@@ -38,7 +38,11 @@ pub struct Args {
 
     /// Lightwalletd endpoint URL(s) for syncing during rebuild.
     /// Can also be set via LWD_URLS env (comma-separated).
-    #[arg(long, default_value = "https://zec.rocks:443", env = "SVOTE_PIR_MAINNET_RPC_URL")]
+    #[arg(
+        long,
+        default_value = "https://zec.rocks:443",
+        env = "SVOTE_PIR_MAINNET_RPC_URL"
+    )]
     lwd_url: String,
 
     /// Chain SDK URL for checking active rounds before rebuild.
@@ -46,12 +50,12 @@ pub struct Args {
     #[arg(long, env = "SVOTE_PIR_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
-    /// URL of the published `voting-config.json` whose `snapshot_height`
-    /// is treated as the canonical height every PIR replica should serve.
-    /// Defaults to the production GitHub Pages URL; leave unset so operators
-    /// pick up the baked-in default, or set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty)
-    /// to disable startup self-bootstrap and serve only pre-staged files under
-    /// `pir_data_dir`.
+    /// URL of the published `voting-config.json` used to discover the vote
+    /// servers whose active round declares the canonical snapshot height every
+    /// PIR replica should serve. Defaults to the production GitHub Pages URL;
+    /// leave unset so operators pick up the baked-in default, or set
+    /// `SVOTE_PIR_VOTING_CONFIG_URL=` (empty) to disable startup self-bootstrap
+    /// and serve only pre-staged files under `pir_data_dir`.
     #[arg(
         long,
         env = "SVOTE_PIR_VOTING_CONFIG_URL",
@@ -158,7 +162,7 @@ pub async fn run(args: Args) -> Result<()> {
     // Self-bootstrap from the published snapshot CDN before we try to
     // load tier files. On a fresh host this populates `pir_data_dir/`
     // from scratch; on an existing host this is a no-op when the local
-    // pir_root.json already matches voting-config.snapshot_height.
+    // pir_root.json already matches the active on-chain round's snapshot height.
     let warm_bootstrap_cfg = bootstrap::Config {
         voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
         precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
