@@ -79,8 +79,7 @@ async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
 /// To move a server to a newer height, restart `nf-server serve` and let
 /// `bootstrap::run` pull the latest published snapshot from the CDN
 /// (`<precomputed_base_url>/snapshots/<height>/...`); the canonical height
-/// comes from the active on-chain round discovered via voting-config. The
-/// handler is kept (and
+/// comes from the active on-chain voting round. The handler is kept (and
 /// wired into the router) for historical reasons so that callers get a
 /// clear, structured 410 response instead of a 404.
 pub(crate) async fn post_snapshot_prepare(
@@ -90,7 +89,7 @@ pub(crate) async fn post_snapshot_prepare(
         StatusCode::GONE,
         axum::Json(serde_json::json!({
             "error": "POST /snapshot/prepare is disabled",
-            "recommendation": "restart nf-server serve to bootstrap from the published snapshot for the active on-chain round",
+            "recommendation": "restart nf-server serve to bootstrap from the published snapshot for the active voting round",
         })),
     )
         .into_response()

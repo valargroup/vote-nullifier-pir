@@ -98,7 +98,7 @@ fn metrics() -> &'static Metrics {
         let stale_seconds = IntGauge::new(
             "nf_snapshot_stale_seconds",
             "Seconds this host has been continuously observed serving a snapshot \
-             older than the canonical voting-config height (0 if currently converged).",
+             older than the canonical active-round height (0 if currently converged).",
         )
         .expect("valid metric");
 

@@ -50,12 +50,12 @@ pub struct Args {
     #[arg(long, env = "SVOTE_PIR_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
-    /// URL of the published `voting-config.json` used to discover the vote
-    /// servers whose active round declares the canonical snapshot height every
-    /// PIR replica should serve. Defaults to the production GitHub Pages URL;
-    /// leave unset so operators pick up the baked-in default, or set
-    /// `SVOTE_PIR_VOTING_CONFIG_URL=` (empty) to disable startup self-bootstrap
-    /// and serve only pre-staged files under `pir_data_dir`.
+    /// URL of the published `voting-config.json` whose `vote_servers`
+    /// identify the chain API used to discover the active round snapshot height.
+    /// Defaults to the production GitHub Pages URL; leave unset so operators
+    /// pick up the baked-in default, or set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty)
+    /// to disable startup self-bootstrap and serve only pre-staged files under
+    /// `pir_data_dir`.
     #[arg(
         long,
         env = "SVOTE_PIR_VOTING_CONFIG_URL",
@@ -68,7 +68,7 @@ pub struct Args {
     /// `<base>/snapshots/<height>/{manifest.json,tier0.bin,...}`.
     /// Trailing slashes are trimmed. Empty disables the download
     /// portion of the bootstrap (operators relying on out-of-band
-    /// staging can keep the voting-config height check enabled).
+    /// staging can keep the active-round height check enabled).
     #[arg(
         long,
         env = "SVOTE_PIR_PRECOMPUTED_BASE_URL",
@@ -83,8 +83,13 @@ pub struct Args {
     #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
     bootstrap_timeout_secs: u64,
 
+    /// Snapshot height to bootstrap when the chain has no active voting round
+    /// and no local snapshot exists. Ignored while an active round exists.
+    #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT")]
+    bootstrap_snapshot_height: Option<u64>,
+
     /// How long the host must continuously serve a snapshot older
-    /// than the canonical voting-config height before the watchdog
+    /// than the canonical active-round height before the watchdog
     /// emits a Sentry error event (which Sentry's Slack integration
     /// then routes to the on-call channel). Default 30 minutes.
     /// Set to 0 to disable the watchdog entirely.
@@ -162,10 +167,11 @@ pub async fn run(args: Args) -> Result<()> {
     // Self-bootstrap from the published snapshot CDN before we try to
     // load tier files. On a fresh host this populates `pir_data_dir/`
     // from scratch; on an existing host this is a no-op when the local
-    // pir_root.json already matches the active on-chain round's snapshot height.
+    // pir_root.json already matches the active round snapshot height.
     let warm_bootstrap_cfg = bootstrap::Config {
         voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
         precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
+        bootstrap_snapshot_height_override: args.bootstrap_snapshot_height,
         pir_data_dir: args.pir_data_dir.clone(),
         http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
     };
