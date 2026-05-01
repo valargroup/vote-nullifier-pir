@@ -47,8 +47,8 @@ impl JsonU64 {
     }
 }
 
-/// GET the wallet-facing config, then query the first vote server's active
-/// round endpoint and return its `snapshot_height` when an active round exists.
+/// GET the wallet-facing config, then query configured vote servers until one
+/// returns an active round `snapshot_height`.
 pub async fn fetch_active_round_snapshot_height(
     config_url: &str,
     timeout: Duration,
@@ -172,6 +172,23 @@ mod tests {
         format!("http://127.0.0.1:{}", addr.port())
     }
 
+    fn spawn_one_status_server(status: &'static str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn resolves_snapshot_height_from_active_round() {
         let active_server = spawn_one_request_server(r#"{"round":{"snapshot_height":"3317510"}}"#);
@@ -204,6 +221,25 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(height, 3_317_520);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn falls_back_after_non_success_vote_server() {
+        let failing_server =
+            spawn_one_status_server("500 Internal Server Error", r#"{"error":"boom"}"#);
+        let active_server = spawn_one_request_server(r#"{"round":{"snapshot_height":3317530}}"#);
+        let config_body = format!(
+            r#"{{"vote_servers":[{{"url":"{}","label":"failing"}},{{"url":"{}","label":"secondary"}}]}}"#,
+            failing_server, active_server
+        );
+        let config_server = spawn_one_request_server(Box::leak(config_body.into_boxed_str()));
+        let height = fetch_required_active_round_snapshot_height(
+            &format!("{config_server}/voting-config.json"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(height, 3_317_530);
     }
 
     #[tokio::test(flavor = "current_thread")]
