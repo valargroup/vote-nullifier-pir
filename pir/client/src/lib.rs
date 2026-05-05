@@ -4,7 +4,7 @@
 //! retrieves circuit-ready `ImtProofData` without revealing the
 //! queried nullifier to the server.
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
@@ -14,6 +14,9 @@ use pasta_curves::Fp;
 // Re-exported so downstream crates (e.g. zcash_voting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
 pub use imt_tree::ImtProofData;
+
+mod transport;
+pub use transport::{Transport, TransportFuture, TransportResponse};
 
 use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
@@ -82,7 +85,7 @@ pub struct NoteTiming {
 /// performs private queries via `fetch_proof()`.
 pub struct PirClient {
     server_url: String,
-    http: reqwest::Client,
+    transport: Arc<dyn Transport>,
     tier0: Tier0Data,
     tier1_scenario: YpirScenario,
     tier2_scenario: YpirScenario,
@@ -173,30 +176,25 @@ fn process_tier2_and_build(
 }
 
 impl PirClient {
-    /// Connect to a PIR server, downloading Tier 0 data and YPIR parameters.
-    pub async fn connect(server_url: &str) -> Result<Self> {
-        Self::connect_with_http(server_url, reqwest::Client::new()).await
-    }
-
-    /// Like [`connect`](Self::connect) but with a caller-provided
-    /// [`reqwest::Client`]. Used by `pir-test bench-server --mode single-tls`
-    /// to force HTTP/1.1 with a single connection (no HTTP/2 stream
-    /// multiplexing) so we can isolate per-query upload bandwidth from
-    /// HTTP/2 stream contention.
-    pub async fn connect_with_http(server_url: &str, http: reqwest::Client) -> Result<Self> {
+    /// Connect using a caller-provided HTTP transport.
+    pub async fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
         // Download Tier 0 data, YPIR params, and root concurrently
         let t0 = Instant::now();
+        let tier0_url = format!("{base}/tier0");
+        let tier1_url = format!("{base}/params/tier1");
+        let tier2_url = format!("{base}/params/tier2");
+        let root_url = format!("{base}/root");
         let (tier0_resp, tier1_resp, tier2_resp, root_resp) = tokio::try_join!(
-            http.get(format!("{base}/tier0")).send(),
-            http.get(format!("{base}/params/tier1")).send(),
-            http.get(format!("{base}/params/tier2")).send(),
-            http.get(format!("{base}/root")).send(),
+            transport.get(&tier0_url),
+            transport.get(&tier1_url),
+            transport.get(&tier2_url),
+            transport.get(&root_url),
         )
         .map_err(|e| anyhow::anyhow!("connect fetch failed: {e}"))?;
 
-        let tier0_bytes = tier0_resp.error_for_status()?.bytes().await?;
+        let tier0_bytes = body_for_status(tier0_resp, "GET /tier0 failed")?;
         log::debug!(
             "Downloaded Tier 0: {} bytes in {:.1}s",
             tier0_bytes.len(),
@@ -204,22 +202,16 @@ impl PirClient {
         );
         let tier0 = Tier0Data::from_bytes(tier0_bytes.to_vec())?;
 
-        let tier1_scenario: YpirScenario = tier1_resp
-            .error_for_status()
-            .context("GET /params/tier1 failed")?
-            .json()
-            .await?;
-        let tier2_scenario: YpirScenario = tier2_resp
-            .error_for_status()
-            .context("GET /params/tier2 failed")?
-            .json()
-            .await?;
+        let tier1_scenario: YpirScenario =
+            serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
+                .context("parse /params/tier1 response")?;
+        let tier2_scenario: YpirScenario =
+            serde_json::from_slice(&body_for_status(tier2_resp, "GET /params/tier2 failed")?)
+                .context("parse /params/tier2 response")?;
 
-        let root_info: RootInfo = root_resp
-            .error_for_status()
-            .context("GET /root failed")?
-            .json()
-            .await?;
+        let root_info: RootInfo =
+            serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
+                .context("parse /root response")?;
         anyhow::ensure!(
             root_info.pir_depth == PIR_DEPTH,
             "server pir_depth {} != expected {}",
@@ -241,7 +233,7 @@ impl PirClient {
 
         Ok(Self {
             server_url: base.to_string(),
-            http,
+            transport,
             tier0,
             tier1_scenario,
             tier2_scenario,
@@ -446,23 +438,23 @@ impl PirClient {
         // Send the request
         let t1 = Instant::now();
         let url = format!("{}/{}/query", self.server_url, tier_name);
-        let send_result = self.http.post(&url).body(payload).send().await;
+        let send_result = self.transport.post(&url, payload).await;
         let send_ms = t1.elapsed().as_secs_f64() * 1000.0;
         let resp = match send_result {
             Ok(r) => r,
             Err(e) => {
                 log::warn!("YPIR {} send error: {:?}", tier_name, e);
-                return Err(e.into());
+                return Err(e);
             }
         };
-        let server_req_id = parse_header_u64(resp.headers(), "x-pir-req-id");
-        let server_total_ms = parse_header_f64(resp.headers(), "x-pir-server-total-ms");
-        let server_validate_ms = parse_header_f64(resp.headers(), "x-pir-server-validate-ms");
-        let server_decode_copy_ms = parse_header_f64(resp.headers(), "x-pir-server-decode-copy-ms");
-        let server_compute_ms = parse_header_f64(resp.headers(), "x-pir-server-compute-ms");
-        let status = resp.status();
-        let response_bytes = resp.bytes().await?;
-        if !status.is_success() {
+        let server_req_id = parse_header_u64(&resp.headers, "x-pir-req-id");
+        let server_total_ms = parse_header_f64(&resp.headers, "x-pir-server-total-ms");
+        let server_validate_ms = parse_header_f64(&resp.headers, "x-pir-server-validate-ms");
+        let server_decode_copy_ms = parse_header_f64(&resp.headers, "x-pir-server-decode-copy-ms");
+        let server_compute_ms = parse_header_f64(&resp.headers, "x-pir-server-compute-ms");
+        let status = resp.status;
+        let response_bytes = resp.body;
+        if !is_success(status) {
             anyhow::bail!(
                 "{} query failed: HTTP {} body={}",
                 tier_name,
@@ -536,6 +528,23 @@ fn fmt_opt_time(ms: Option<f64>) -> String {
     match ms {
         Some(v) => fmt_time(v),
         None => "  n/a ".to_string(),
+    }
+}
+
+fn is_success(status: u16) -> bool {
+    (200..300).contains(&status)
+}
+
+fn body_for_status(response: TransportResponse, context: &'static str) -> Result<Vec<u8>> {
+    if is_success(response.status) {
+        Ok(response.body)
+    } else {
+        anyhow::bail!(
+            "{}: HTTP {} body={}",
+            context,
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        )
     }
 }
 
@@ -619,19 +628,19 @@ fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f6
 }
 
 /// Parse an HTTP response header value as `f64`, returning `None` on missing or malformed values.
-fn parse_header_f64(headers: &reqwest::header::HeaderMap, name: &'static str) -> Option<f64> {
+fn parse_header_f64(headers: &[(String, String)], name: &'static str) -> Option<f64> {
     headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<f64>().ok())
+        .iter()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .and_then(|(_, value)| value.parse::<f64>().ok())
 }
 
 /// Parse an HTTP response header value as `u64`, returning `None` on missing or malformed values.
-fn parse_header_u64(headers: &reqwest::header::HeaderMap, name: &'static str) -> Option<u64> {
+fn parse_header_u64(headers: &[(String, String)], name: &'static str) -> Option<u64> {
     headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
+        .iter()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .and_then(|(_, value)| value.parse::<u64>().ok())
 }
 
 // ── Blocking wrapper ─────────────────────────────────────────────────────────
@@ -646,10 +655,10 @@ pub struct PirClientBlocking {
 }
 
 impl PirClientBlocking {
-    /// Connect to a PIR server (blocking). Downloads Tier 0 data and YPIR params.
-    pub fn connect(server_url: &str) -> Result<Self> {
+    /// Connect to a PIR server with a caller-provided HTTP transport.
+    pub fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
         let rt = tokio::runtime::Runtime::new()?;
-        let inner = rt.block_on(PirClient::connect(server_url))?;
+        let inner = rt.block_on(PirClient::with_transport(server_url, transport))?;
         Ok(Self { inner, rt })
     }
 
@@ -979,236 +988,178 @@ mod tests {
 
     // ── Error-oracle mitigation ─────────────────────────────────────────
 
-    /// Verify that the tier 2 query is always sent to the server even when
-    /// the tier 1 response is corrupted.
-    ///
-    /// A malicious server could craft a tier 1 response whose decryption
-    /// outcome depends on the client's secret key material (e.g. by
-    /// triggering an assert in the LWE decode path). Without the
-    /// mitigation, a decode failure would prevent the tier 2 query from
-    /// being sent, and the server could use the absence of query 2 as a
-    /// single-bit oracle. This test asserts that both queries are always
-    /// issued regardless of tier 1 outcome.
-    #[tokio::test]
-    async fn tier2_query_sent_despite_tier1_decode_failure() {
-        use ff::PrimeField as _;
-        use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+    struct MockTransport {
+        gets: std::collections::HashMap<&'static str, TransportResponse>,
+        posts: std::collections::HashMap<&'static str, TransportResponse>,
+        hits: std::sync::Mutex<Vec<String>>,
+    }
 
-        // Build real tier0 data so PirClient::connect() succeeds and
-        // process_tier0() produces a valid subtree index.
+    impl MockTransport {
+        fn new(tree: &pir_export::PirTree) -> Self {
+            use ff::PrimeField as _;
+            use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+
+            let tier0_data = pir_export::tier0::export(
+                &tree.root25,
+                &tree.levels,
+                &tree.ranges,
+                &tree.empty_hashes,
+            );
+            let root_info = pir_types::RootInfo {
+                root29: hex::encode(tree.root29.to_repr()),
+                root25: hex::encode(tree.root25.to_repr()),
+                num_ranges: tree.ranges.len(),
+                pir_depth: PIR_DEPTH,
+                height: None,
+            };
+            let tier1_scenario = YpirScenario {
+                num_items: TIER1_YPIR_ROWS,
+                item_size_bits: TIER1_ITEM_BITS,
+            };
+            let tier2_scenario = YpirScenario {
+                num_items: TIER1_YPIR_ROWS,
+                item_size_bits: TIER2_ITEM_BITS,
+            };
+
+            let gets = [
+                ("/tier0", response(tier0_data)),
+                (
+                    "/params/tier1",
+                    response(serde_json::to_vec(&tier1_scenario).unwrap()),
+                ),
+                (
+                    "/params/tier2",
+                    response(serde_json::to_vec(&tier2_scenario).unwrap()),
+                ),
+                ("/root", response(serde_json::to_vec(&root_info).unwrap())),
+            ]
+            .into_iter()
+            .collect();
+            let posts = [
+                ("/tier1/query", response(vec![0xDE; 65536])),
+                ("/tier2/query", response(vec![0xAD; 65536])),
+            ]
+            .into_iter()
+            .collect();
+
+            Self {
+                gets,
+                posts,
+                hits: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn count_hits(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.as_str() == path)
+                .count()
+        }
+    }
+
+    fn response(body: Vec<u8>) -> TransportResponse {
+        TransportResponse {
+            status: 200,
+            headers: Vec::new(),
+            body,
+        }
+    }
+
+    fn request_path(url: &str) -> &str {
+        let without_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+        without_scheme
+            .find('/')
+            .map(|idx| &without_scheme[idx..])
+            .unwrap_or("/")
+    }
+
+    impl Transport for MockTransport {
+        fn get<'a>(&'a self, url: &'a str) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                self.gets
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("unexpected GET {path}"))
+            })
+        }
+
+        fn post<'a>(&'a self, url: &'a str, _body: Vec<u8>) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                if path == "/tier2/query" {
+                    // Coarse-grained guard against `try_join_all` cancellation:
+                    // all fetch_proof_inner futures should dispatch tier 2 before
+                    // the first corrupted tier 1 response resolves to Err.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                self.posts
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("unexpected POST {path}"))
+            })
+        }
+    }
+
+    async fn corrupting_client() -> (
+        PirClient,
+        std::sync::Arc<MockTransport>,
+        pir_export::PirTree,
+    ) {
         let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
         let ranges = build_ranges_with_sentinels(&raw_nfs);
         let tree = pir_export::build_pir_tree(ranges).unwrap();
-        let tier0_data =
-            pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+        let transport = std::sync::Arc::new(MockTransport::new(&tree));
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .unwrap();
+        (client, transport, tree)
+    }
 
-        let root_info = pir_types::RootInfo {
-            root29: hex::encode(tree.root29.to_repr()),
-            root25: hex::encode(tree.root25.to_repr()),
-            num_ranges: tree.ranges.len(),
-            pir_depth: PIR_DEPTH,
-            height: None,
-        };
-
-        // Use the real item_size_bits to satisfy YPIR's internal
-        // parameter constraints. num_items=TIER1_YPIR_ROWS (2048) matches
-        // production tier1 (which pads TIER1_ROWS=512 up to the YPIR
-        // poly_len floor) and is large enough for any s1 value.
-        let tier1_scenario = YpirScenario {
-            num_items: TIER1_YPIR_ROWS,
-            item_size_bits: TIER1_ITEM_BITS,
-        };
-        let tier2_scenario = YpirScenario {
-            num_items: TIER1_YPIR_ROWS,
-            item_size_bits: TIER2_ITEM_BITS,
-        };
-
-        let server = MockServer::start().await;
-
-        // ── setup endpoints (valid data) ────────────────────────────────
-        Mock::given(method("GET"))
-            .and(path("/tier0"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(tier0_data))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/params/tier1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&tier1_scenario))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/params/tier2"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&tier2_scenario))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/root"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&root_info))
-            .mount(&server)
-            .await;
-
-        // ── query endpoints (corrupted responses) ───────────────────────
-        Mock::given(method("POST"))
-            .and(path("/tier1/query"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xDE; 65536]))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/tier2/query"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xAD; 65536]))
-            .mount(&server)
-            .await;
-
-        // ── run the client ──────────────────────────────────────────────
-        let client = PirClient::connect(&server.uri()).await.unwrap();
-        let nullifier = tree.ranges[0][0];
-        let result = client.fetch_proof(nullifier).await;
+    /// Verify that the tier 2 query is always sent to the server even when
+    /// the tier 1 response is corrupted.
+    #[tokio::test]
+    async fn tier2_query_sent_despite_tier1_decode_failure() {
+        let (client, transport, tree) = corrupting_client().await;
+        let result = client.fetch_proof(tree.ranges[0][0]).await;
 
         assert!(
             result.is_err(),
             "fetch_proof should fail with corrupted tier1 response"
         );
-
-        // ── verify both queries were sent ───────────────────────────────
-        let received = server.received_requests().await.unwrap();
-        let tier1_hits = received
-            .iter()
-            .filter(|r| r.url.path() == "/tier1/query")
-            .count();
-        let tier2_hits = received
-            .iter()
-            .filter(|r| r.url.path() == "/tier2/query")
-            .count();
-
-        assert_eq!(tier1_hits, 1, "tier1 query should have been sent");
-        assert_eq!(
-            tier2_hits, 1,
-            "tier2 query must still be sent when tier1 decode fails \
-             (error-oracle mitigation)"
-        );
+        assert_eq!(transport.count_hits("/tier1/query"), 1);
+        assert_eq!(transport.count_hits("/tier2/query"), 1);
     }
 
-    /// Multi-note analog of [`tier2_query_sent_despite_tier1_decode_failure`].
-    ///
-    /// Asserts the **K-note granularity** of the error-oracle mitigation:
-    /// when `fetch_proofs(K=5)` is called and **every** tier 1 response is
-    /// corrupted, the server must still observe **K tier 1 POSTs and
-    /// K tier 2 POSTs**. Aborting tier 2 dispatch the moment any tier 1
-    /// decode fails would re-introduce the "K vs K' tier-2 requests"
-    /// oracle the per-note mitigation closes.
-    ///
-    /// The 50 ms tier 2 delay is a coarse-grained guard against
-    /// `try_join_all` cancellation: it ensures all five fetch_proof_inner
-    /// futures dispatch their tier 2 POST before the first one resolves
-    /// to `Err`, so wiremock's request log is deterministic.
+    /// Asserts the K-note granularity of the error-oracle mitigation: when
+    /// `fetch_proofs(K=5)` is called and every tier 1 response is corrupted,
+    /// the server must still observe K tier 1 POSTs and K tier 2 POSTs.
+    /// Aborting tier 2 dispatch the moment any tier 1 decode fails would
+    /// re-introduce the "K vs K' tier-2 requests" oracle the per-note
+    /// mitigation closes.
     #[tokio::test]
     async fn batched_tier2_queries_all_sent_despite_tier1_decode_failure() {
-        use ff::PrimeField as _;
-        use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
-        use std::time::Duration;
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         const K: usize = 5;
 
-        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
-        let ranges = build_ranges_with_sentinels(&raw_nfs);
-        let tree = pir_export::build_pir_tree(ranges).unwrap();
-        let tier0_data =
-            pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
-
-        let root_info = pir_types::RootInfo {
-            root29: hex::encode(tree.root29.to_repr()),
-            root25: hex::encode(tree.root25.to_repr()),
-            num_ranges: tree.ranges.len(),
-            pir_depth: PIR_DEPTH,
-            height: None,
-        };
-
-        let tier1_scenario = YpirScenario {
-            num_items: TIER1_YPIR_ROWS,
-            item_size_bits: TIER1_ITEM_BITS,
-        };
-        let tier2_scenario = YpirScenario {
-            num_items: TIER1_YPIR_ROWS,
-            item_size_bits: TIER2_ITEM_BITS,
-        };
-
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/tier0"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(tier0_data))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/params/tier1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&tier1_scenario))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/params/tier2"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&tier2_scenario))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/root"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&root_info))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/tier1/query"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0xDE; 65536]))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/tier2/query"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_bytes(vec![0xAD; 65536])
-                    .set_delay(Duration::from_millis(50)),
-            )
-            .mount(&server)
-            .await;
-
-        let client = PirClient::connect(&server.uri()).await.unwrap();
-
+        let (client, transport, tree) = corrupting_client().await;
         let nullifiers: Vec<Fp> = tree
             .ranges
             .iter()
             .take(K)
             .map(|r| r[0] + Fp::one())
             .collect();
-        assert_eq!(nullifiers.len(), K);
 
         let result = client.fetch_proofs(&nullifiers).await;
+
         assert!(
             result.is_err(),
             "fetch_proofs should fail with corrupted tier1 responses"
         );
-
-        let received = server.received_requests().await.unwrap();
-        let tier1_hits = received
-            .iter()
-            .filter(|r| r.url.path() == "/tier1/query")
-            .count();
-        let tier2_hits = received
-            .iter()
-            .filter(|r| r.url.path() == "/tier2/query")
-            .count();
-
-        assert_eq!(
-            tier1_hits, K,
-            "all K tier1 queries should have been sent (got {})",
-            tier1_hits,
-        );
-        assert_eq!(
-            tier2_hits, K,
-            "all K tier2 queries must still be sent when their tier1 \
-             decodes fail (batch-level error-oracle mitigation)",
-        );
+        assert_eq!(transport.count_hits("/tier1/query"), K);
+        assert_eq!(transport.count_hits("/tier2/query"), K);
     }
 }

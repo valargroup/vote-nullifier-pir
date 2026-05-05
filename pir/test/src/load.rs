@@ -11,6 +11,8 @@ use tokio::sync::{mpsc, Semaphore};
 
 use pir_client::PirClient;
 
+use crate::transport::HyperTransport;
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 pub struct LoadConfig {
@@ -215,14 +217,8 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
         eprintln!("  rps:         {:.1}", rps);
         eprintln!("  max_inflight:{}", cfg.max_inflight);
     }
-    eprintln!(
-        "  duration:    {}s",
-        cfg.duration.as_secs_f64()
-    );
-    eprintln!(
-        "  warmup:      {}s",
-        cfg.warmup.as_secs_f64()
-    );
+    eprintln!("  duration:    {}s", cfg.duration.as_secs_f64());
+    eprintln!("  warmup:      {}s", cfg.warmup.as_secs_f64());
     eprintln!();
 
     // Load nullifiers
@@ -241,7 +237,8 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
 
     // Connect
     eprintln!("  Connecting to PIR server...");
-    let client = Arc::new(PirClient::connect(&cfg.url).await?);
+    let client =
+        Arc::new(PirClient::with_transport(&cfg.url, Arc::new(HyperTransport::new())).await?);
     eprintln!("  Connected.\n");
 
     // Warmup: a single proof to verify connectivity
@@ -257,27 +254,16 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     // Extended warmup period
     if !cfg.warmup.is_zero() {
         eprintln!("  Extended warmup ({:.0}s)...", cfg.warmup.as_secs_f64());
-        run_phase(
-            &client,
-            &pool,
-            &cfg,
-            cfg.warmup,
-            false,
-        )
-        .await?;
+        run_phase(&client, &pool, &cfg, cfg.warmup, false).await?;
         eprintln!("  Warmup complete.\n");
     }
 
     // Timed phase
-    eprintln!("  Starting load phase ({:.0}s)...\n", cfg.duration.as_secs_f64());
-    let summary = run_phase(
-        &client,
-        &pool,
-        &cfg,
-        cfg.duration,
-        true,
-    )
-    .await?;
+    eprintln!(
+        "  Starting load phase ({:.0}s)...\n",
+        cfg.duration.as_secs_f64()
+    );
+    let summary = run_phase(&client, &pool, &cfg, cfg.duration, true).await?;
 
     // Print summary
     print_summary(&summary);
@@ -303,10 +289,7 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     if let Some(slo) = cfg.slo_p99_ms {
         if let Some(e2e) = summary.stages.first() {
             if e2e.p99_ms > slo {
-                eprintln!(
-                    "\nFAIL: p99 {:.0}ms > SLO {:.0}ms",
-                    e2e.p99_ms, slo
-                );
+                eprintln!("\nFAIL: p99 {:.0}ms > SLO {:.0}ms", e2e.p99_ms, slo);
                 failed = true;
             }
         }
