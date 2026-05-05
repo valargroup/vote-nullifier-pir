@@ -1092,6 +1092,9 @@ mod tests {
                 let path = request_path(url);
                 self.hits.lock().unwrap().push(path.to_string());
                 if path == "/tier2/query" {
+                    // Coarse-grained guard against `try_join_all` cancellation:
+                    // all fetch_proof_inner futures should dispatch tier 2 before
+                    // the first corrupted tier 1 response resolves to Err.
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
                 self.posts
@@ -1132,7 +1135,12 @@ mod tests {
         assert_eq!(transport.count_hits("/tier2/query"), 1);
     }
 
-    /// Multi-note analog of [`tier2_query_sent_despite_tier1_decode_failure`].
+    /// Asserts the K-note granularity of the error-oracle mitigation: when
+    /// `fetch_proofs(K=5)` is called and every tier 1 response is corrupted,
+    /// the server must still observe K tier 1 POSTs and K tier 2 POSTs.
+    /// Aborting tier 2 dispatch the moment any tier 1 decode fails would
+    /// re-introduce the "K vs K' tier-2 requests" oracle the per-note
+    /// mitigation closes.
     #[tokio::test]
     async fn batched_tier2_queries_all_sent_despite_tier1_decode_failure() {
         const K: usize = 5;
