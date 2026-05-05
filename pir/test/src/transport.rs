@@ -1,3 +1,10 @@
+//! HTTP transport used only by the `pir-test` harness.
+//!
+//! `pir-client` deliberately exposes an abstract transport so library
+//! consumers do not inherit a particular HTTP stack. The test binary still
+//! needs a real network client for `server`, `bench-server`, and `load` modes,
+//! so it keeps this Hyper/Rustls implementation locally.
+
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http::{Method, Request};
@@ -17,10 +24,16 @@ pub struct HyperTransport {
 }
 
 impl HyperTransport {
+    /// Default harness transport: allow HTTP/2 so production smoke tests and
+    /// load tests exercise the same multiplexed path wallets normally use.
     pub fn new() -> Self {
         Self::builder(true)
     }
 
+    /// Force HTTP/1.1 on a single pooled TLS connection.
+    ///
+    /// `bench-server --mode single-tls` uses this to separate per-query upload
+    /// bandwidth from HTTP/2 stream contention when investigating latency.
     pub fn http1_only() -> Self {
         Self::builder(false)
     }
@@ -43,6 +56,8 @@ impl HyperTransport {
     }
 
     async fn request(&self, method: Method, url: &str, body: Vec<u8>) -> Result<TransportResponse> {
+        // Keep request/response conversion here so the client crate's
+        // Transport trait can stay small and independent of Hyper's body types.
         let request = Request::builder()
             .method(method)
             .uri(url)
