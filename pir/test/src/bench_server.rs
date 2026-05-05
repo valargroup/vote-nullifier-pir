@@ -22,6 +22,8 @@ use serde::Serialize;
 
 use pir_client::{NoteTiming, PirClient, TierTiming};
 
+use crate::transport::HyperTransport;
+
 // ── Config ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug)]
@@ -334,7 +336,10 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     eprintln!("  url:        {}", cfg.url);
     eprintln!("  mode:       {}", cfg.mode.as_str());
     eprintln!("  batch_size: {}", cfg.batch_size);
-    eprintln!("  iterations: {} (after {} warmup)", cfg.iterations, cfg.warmup);
+    eprintln!(
+        "  iterations: {} (after {} warmup)",
+        cfg.iterations, cfg.warmup
+    );
     if let Some(s) = cfg.seed {
         eprintln!("  seed:       {}", s);
     }
@@ -343,7 +348,11 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     let nf_data = std::fs::read(&cfg.nullifiers_path)
         .with_context(|| format!("reading {:?}", cfg.nullifiers_path))?;
     let nfs = nf_ingest::file_store::parse_nullifier_bytes(&nf_data)?;
-    eprintln!("  Loaded {} nullifiers from {:?}", nfs.len(), cfg.nullifiers_path);
+    eprintln!(
+        "  Loaded {} nullifiers from {:?}",
+        nfs.len(),
+        cfg.nullifiers_path
+    );
     anyhow::ensure!(!nfs.is_empty(), "nullifiers file is empty");
 
     let ranges = pir_export::prepare_nullifiers(nfs);
@@ -491,23 +500,14 @@ async fn run_iteration(
     }
 }
 
-/// Build a [`PirClient`] for `mode`. For everything except
-/// [`BenchMode::SingleTls`] this uses the default reqwest client (HTTP/2,
-/// connection pooling). [`BenchMode::SingleTls`] forces HTTP/1.1 with at
-/// most one idle connection per host so each query rides the same TCP/TLS
-/// session sequentially.
+/// Build a [`PirClient`] for `mode`. [`BenchMode::SingleTls`] forces HTTP/1.1
+/// so each query avoids HTTP/2 stream multiplexing.
 async fn connect_client(mode: BenchMode, url: &str) -> Result<PirClient> {
-    match mode {
-        BenchMode::SingleTls => {
-            let http = reqwest::Client::builder()
-                .http1_only()
-                .pool_max_idle_per_host(1)
-                .build()
-                .context("building http1-only reqwest client")?;
-            PirClient::connect_with_http(url, http).await
-        }
-        _ => PirClient::connect(url).await,
-    }
+    let transport = match mode {
+        BenchMode::SingleTls => HyperTransport::http1_only(),
+        _ => HyperTransport::new(),
+    };
+    PirClient::with_transport(url, Arc::new(transport)).await
 }
 
 fn pick_values<R: Rng + ?Sized>(ranges: &[[Fp; 3]], k: usize, rng: &mut R) -> Vec<Fp> {

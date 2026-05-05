@@ -7,9 +7,12 @@ Used by Zcash wallets integrating shielded voting: before building a delegation 
 ## Usage
 
 ```rust
-use pir_client::{PirClientBlocking, ImtProofData};
+use std::sync::Arc;
 
-let client = PirClientBlocking::connect("https://pir1.example.com")?;
+use pir_client::{ImtProofData, PirClientBlocking, Transport};
+
+let transport: Arc<dyn Transport> = Arc::new(my_http_transport);
+let client = PirClientBlocking::with_transport("https://pir1.example.com", transport)?;
 let proof: ImtProofData = client.fetch_proof(my_nullifier)?;
 assert!(proof.verify(my_nullifier));
 ```
@@ -17,9 +20,12 @@ assert!(proof.verify(my_nullifier));
 Async equivalent:
 
 ```rust
-use pir_client::PirClient;
+use std::sync::Arc;
 
-let client = PirClient::connect("https://pir1.example.com").await?;
+use pir_client::{PirClient, Transport};
+
+let transport: Arc<dyn Transport> = Arc::new(my_http_transport);
+let client = PirClient::with_transport("https://pir1.example.com", transport).await?;
 let proofs = client.fetch_proofs(&[nf1, nf2, nf3]).await?;
 ```
 

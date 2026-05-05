@@ -9,6 +9,7 @@
 
 mod bench_server;
 mod load;
+mod transport;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -234,7 +235,10 @@ fn main() -> Result<()> {
         }
         Command::VerifyYpir => run_verify_ypir(),
         Command::Bench { num_queries } => run_bench(num_queries),
-        Command::BenchSplits { num_queries, config } => run_bench_splits(num_queries, config),
+        Command::BenchSplits {
+            num_queries,
+            config,
+        } => run_bench_splits(num_queries, config),
         Command::BenchServer {
             url,
             nullifiers,
@@ -448,7 +452,11 @@ async fn run_server(
     eprintln!("  Loaded {} nullifiers", nfs.len());
 
     // Connect to server
-    let client = pir_client::PirClient::connect(&url).await?;
+    let client = pir_client::PirClient::with_transport(
+        &url,
+        std::sync::Arc::new(transport::HyperTransport::new()),
+    )
+    .await?;
     eprintln!("  Connected to PIR server");
 
     // Pick random values
@@ -657,7 +665,10 @@ fn run_bench(num_queries: usize) -> Result<()> {
     let tier1_scenario = pir_server::tier1_scenario();
     let tier2_scenario = pir_server::tier2_scenario();
 
-    eprintln!("=== PIR Benchmark: in-process YPIR ({} queries per tier) ===\n", num_queries);
+    eprintln!(
+        "=== PIR Benchmark: in-process YPIR ({} queries per tier) ===\n",
+        num_queries
+    );
     eprintln!(
         "  Config: TIER1_LAYERS={}, TIER2_LAYERS={}",
         pir_types::TIER1_LAYERS,
@@ -691,12 +702,18 @@ fn run_bench(num_queries: usize) -> Result<()> {
     eprintln!("\nInitializing YPIR servers...");
     let t0 = Instant::now();
     let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
-    eprintln!("  Tier 1 YPIR server ready in {:.1}s", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "  Tier 1 YPIR server ready in {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
     drop(tier1_data);
 
     let t0 = Instant::now();
     let tier2_server = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
-    eprintln!("  Tier 2 YPIR server ready in {:.1}s", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "  Tier 2 YPIR server ready in {:.1}s",
+        t0.elapsed().as_secs_f64()
+    );
     drop(tier2_data);
 
     // Run tier 1 benchmarks
@@ -765,19 +782,41 @@ struct SplitConfig {
 }
 
 impl SplitConfig {
-    fn tier1_logical_rows(&self) -> usize { 1 << self.t0 }
+    fn tier1_logical_rows(&self) -> usize {
+        1 << self.t0
+    }
     /// YPIR requires at least poly_len=2048 rows; pad up if t0 < 11.
-    fn tier1_rows(&self) -> usize { (1usize << self.t0).max(2048) }
-    fn tier2_rows(&self) -> usize { 1 << (self.t0 + self.t1) }
-    fn tier1_leaves(&self) -> usize { 1 << self.t1 }
-    fn tier2_leaves(&self) -> usize { 1 << self.t2 }
-    fn tier1_row_bytes(&self) -> usize { self.tier1_leaves() * 64 }
-    fn tier2_row_bytes(&self) -> usize { self.tier2_leaves() * 96 }
+    fn tier1_rows(&self) -> usize {
+        (1usize << self.t0).max(2048)
+    }
+    fn tier2_rows(&self) -> usize {
+        1 << (self.t0 + self.t1)
+    }
+    fn tier1_leaves(&self) -> usize {
+        1 << self.t1
+    }
+    fn tier2_leaves(&self) -> usize {
+        1 << self.t2
+    }
+    fn tier1_row_bytes(&self) -> usize {
+        self.tier1_leaves() * 64
+    }
+    fn tier2_row_bytes(&self) -> usize {
+        self.tier2_leaves() * 96
+    }
     /// YPIR requires item_size_bits >= 2048*14 = 28672 (one SimplePIR column).
-    fn tier1_item_bits(&self) -> usize { (self.tier1_row_bytes() * 8).max(28672) }
-    fn tier2_item_bits(&self) -> usize { (self.tier2_row_bytes() * 8).max(28672) }
-    fn tier1_db_bytes(&self) -> usize { self.tier1_rows() * (self.tier1_item_bits() / 8) }
-    fn tier2_db_bytes(&self) -> usize { self.tier2_rows() * (self.tier2_item_bits() / 8) }
+    fn tier1_item_bits(&self) -> usize {
+        (self.tier1_row_bytes() * 8).max(28672)
+    }
+    fn tier2_item_bits(&self) -> usize {
+        (self.tier2_row_bytes() * 8).max(28672)
+    }
+    fn tier1_db_bytes(&self) -> usize {
+        self.tier1_rows() * (self.tier1_item_bits() / 8)
+    }
+    fn tier2_db_bytes(&self) -> usize {
+        self.tier2_rows() * (self.tier2_item_bits() / 8)
+    }
 
     fn tier0_bytes(&self) -> usize {
         let internal_nodes = (1usize << self.t0) - 1;
@@ -793,6 +832,7 @@ struct SplitResults {
     config: SplitConfig,
     tier1: BenchResults,
     tier2: BenchResults,
+    #[allow(dead_code)]
     tier1_init_s: f64,
     tier2_init_s: f64,
 }
@@ -802,18 +842,53 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
     use pir_types::YpirScenario;
 
     let all_configs = vec![
-        SplitConfig { t0: 11, t1: 7, t2: 7 },
-        SplitConfig { t0: 10, t1: 6, t2: 9 },
-        SplitConfig { t0: 9, t1: 6, t2: 10 },
-        SplitConfig { t0: 9, t1: 7, t2: 9 },
-        SplitConfig { t0: 8, t1: 6, t2: 11 },
-        SplitConfig { t0: 8, t1: 7, t2: 10 },
-        SplitConfig { t0: 10, t1: 5, t2: 10 },
-        SplitConfig { t0: 10, t1: 4, t2: 11 },
+        SplitConfig {
+            t0: 11,
+            t1: 7,
+            t2: 7,
+        },
+        SplitConfig {
+            t0: 10,
+            t1: 6,
+            t2: 9,
+        },
+        SplitConfig {
+            t0: 9,
+            t1: 6,
+            t2: 10,
+        },
+        SplitConfig {
+            t0: 9,
+            t1: 7,
+            t2: 9,
+        },
+        SplitConfig {
+            t0: 8,
+            t1: 6,
+            t2: 11,
+        },
+        SplitConfig {
+            t0: 8,
+            t1: 7,
+            t2: 10,
+        },
+        SplitConfig {
+            t0: 10,
+            t1: 5,
+            t2: 10,
+        },
+        SplitConfig {
+            t0: 10,
+            t1: 4,
+            t2: 11,
+        },
     ];
 
     let configs: Vec<SplitConfig> = if let Some(ref f) = filter {
-        all_configs.into_iter().filter(|c| c.label() == *f).collect()
+        all_configs
+            .into_iter()
+            .filter(|c| c.label() == *f)
+            .collect()
     } else {
         all_configs
     };
@@ -822,12 +897,19 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
         anyhow::bail!("no config matched filter {:?}", filter);
     }
 
-    eprintln!("=== PIR Split Comparison ({} queries per tier per config) ===\n", num_queries);
+    eprintln!(
+        "=== PIR Split Comparison ({} queries per tier per config) ===\n",
+        num_queries
+    );
 
     let mut results = Vec::new();
 
     for cfg in &configs {
-        assert_eq!(cfg.t0 + cfg.t1 + cfg.t2, 25, "splits must sum to PIR_DEPTH=25");
+        assert_eq!(
+            cfg.t0 + cfg.t1 + cfg.t2,
+            25,
+            "splits must sum to PIR_DEPTH=25"
+        );
 
         let t1_scenario = YpirScenario {
             num_items: cfg.tier1_rows(),
@@ -838,7 +920,10 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
             item_size_bits: cfg.tier2_item_bits(),
         };
 
-        eprintln!("── Config {} ──────────────────────────────────────────", cfg.label());
+        eprintln!(
+            "── Config {} ──────────────────────────────────────────",
+            cfg.label()
+        );
         eprintln!(
             "  Tier 0: {} (plaintext download)",
             format_bytes(cfg.tier0_bytes()),
@@ -850,13 +935,18 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
         };
         eprintln!(
             "  Tier 1: {} rows{} × {} B/row = {}, item_bits={}",
-            cfg.tier1_rows(), pad_note, cfg.tier1_row_bytes(),
-            format_bytes(cfg.tier1_db_bytes()), cfg.tier1_item_bits(),
+            cfg.tier1_rows(),
+            pad_note,
+            cfg.tier1_row_bytes(),
+            format_bytes(cfg.tier1_db_bytes()),
+            cfg.tier1_item_bits(),
         );
         eprintln!(
             "  Tier 2: {} rows × {} B/row = {}, item_bits={}",
-            cfg.tier2_rows(), cfg.tier2_row_bytes(),
-            format_bytes(cfg.tier2_db_bytes()), cfg.tier2_item_bits(),
+            cfg.tier2_rows(),
+            cfg.tier2_row_bytes(),
+            format_bytes(cfg.tier2_db_bytes()),
+            cfg.tier2_item_bits(),
         );
 
         // Tier 1: create zeroed dummy data of the right size
@@ -898,7 +988,11 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
         drop(t2_server);
 
         results.push(SplitResults {
-            config: SplitConfig { t0: cfg.t0, t1: cfg.t1, t2: cfg.t2 },
+            config: SplitConfig {
+                t0: cfg.t0,
+                t1: cfg.t1,
+                t2: cfg.t2,
+            },
             tier1: tier1_results,
             tier2: tier2_results,
             tier1_init_s,
@@ -914,7 +1008,15 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
     eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
     eprintln!(
         "  {:>7} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10}",
-        "Split", "Tier0(dn)", "T1 DB", "T2 DB", "Query(up)", "Resp(dn)", "T1 Srvr", "T2 Srvr", "T2 Init"
+        "Split",
+        "Tier0(dn)",
+        "T1 DB",
+        "T2 DB",
+        "Query(up)",
+        "Resp(dn)",
+        "T1 Srvr",
+        "T2 Srvr",
+        "T2 Init"
     );
     eprintln!("  {}", "-".repeat(100));
     for r in &results {
@@ -938,7 +1040,15 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
     eprintln!("  {}", "-".repeat(100));
     eprintln!(
         "  {:>7} {:>12} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10} {:>10}",
-        "Split", "T1 Q(up)", "T1 R(dn)", "T2 Q(up)", "T2 R(dn)", "T1 Gen", "T2 Gen", "T1 Dec", "T2 Dec"
+        "Split",
+        "T1 Q(up)",
+        "T1 R(dn)",
+        "T2 Q(up)",
+        "T2 R(dn)",
+        "T1 Gen",
+        "T2 Gen",
+        "T1 Dec",
+        "T2 Dec"
     );
     eprintln!("  {}", "-".repeat(100));
     for r in &results {
