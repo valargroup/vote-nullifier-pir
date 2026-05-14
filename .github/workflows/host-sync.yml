@@ -1,6 +1,10 @@
-# Run `nf-server sync` on the PIR backup host, then restart the service.
-# Matches publish-snapshot.yml (backup stays the operator surface for heavy jobs).
-# Requires repository secrets: PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY.
+# Sync PIR data on production hosts, then restart the service.
+#
+# Heavy sync/export work writes tier files into a staging directory first.
+# The live service is stopped only for the final tier-file swap and restart.
+# When targets=both, backup is updated and verified before primary is touched.
+#
+# Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY.
 
 name: Host PIR data sync
 
@@ -11,6 +15,15 @@ on:
         description: "Stop syncing at this block height. Non-multiples of 10 are rounded down. If not provided, defaults to the latest chain tip rounded down to the nearest multiple of 10."
         required: false
         type: string
+      targets:
+        description: "Which hosts to sync and restart"
+        required: true
+        type: choice
+        options:
+          - both
+          - primary
+          - backup
+        default: both
 
 permissions:
   contents: read
@@ -19,34 +32,229 @@ env:
   DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
-  host_sync:
-    name: Sync and restart
+  plan:
+    name: Resolve target height
     runs-on: ubuntu-latest
+    outputs:
+      target_height: ${{ steps.round_height.outputs.value }}
     steps:
       - name: Round max_height down to nearest multiple of 10
         id: round_height
         run: |
+          set -euo pipefail
           MAX_HEIGHT="${{ github.event.inputs.max_height }}"
           if [ -z "$MAX_HEIGHT" ]; then
             MAX_HEIGHT=$(curl -sf "https://api.blockchair.com/zcash/stats" | jq -r '.data.best_block_height')
           fi
+          case "$MAX_HEIGHT" in
+            ''|*[!0-9]*)
+              echo "max_height must be a positive integer, got: ${MAX_HEIGHT:-<empty>}" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$MAX_HEIGHT" -le 0 ]; then
+            echo "max_height must be greater than zero, got: $MAX_HEIGHT" >&2
+            exit 1
+          fi
           ROUNDED=$(( (MAX_HEIGHT / 10) * 10 ))
+          if [ "$ROUNDED" -le 0 ]; then
+            echo "rounded max_height must be greater than zero, got: $ROUNDED" >&2
+            exit 1
+          fi
           echo "value=$ROUNDED" >> "$GITHUB_OUTPUT"
+          echo "Target height: $ROUNDED"
 
-      - name: Sync and restart service
+  sync_backup:
+    name: Sync backup
+    needs: plan
+    if: inputs.targets == 'both' || inputs.targets == 'backup'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync, install, and restart backup
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          command_timeout: 60m
+          command_timeout: 90m
           script: |
-            cd /opt/nf-ingest && \
-              export SVOTE_PIR_VOTING_CONFIG_URL= && \
-              ./nf-server sync \
-                --pir-data-dir /opt/nf-ingest/pir-data \
-                --lwd-url https://zec.rocks:443 \
-                --non-interactive \
-                --invalidate-after-blocks \
-                --max-height ${{ steps.round_height.outputs.value }} && \
-              sudo systemctl restart nullifier-query-server
+            set -euo pipefail
+
+            TARGET_HEIGHT="${{ needs.plan.outputs.target_height }}"
+            DEPLOY_PATH="${{ env.DEPLOY_PATH }}"
+            STAGE="${DEPLOY_PATH}/snapshot-staging/host-sync.${TARGET_HEIGHT}.$$"
+
+            cleanup() {
+              rm -rf "$STAGE"
+            }
+            trap cleanup EXIT
+
+            if ! command -v jq >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq jq
+            fi
+
+            mkdir -p "$(dirname "$STAGE")" "$STAGE"
+
+            echo "==> Syncing PIR data to $TARGET_HEIGHT into staging"
+            cd "$DEPLOY_PATH"
+            export SVOTE_PIR_VOTING_CONFIG_URL=
+            ./nf-server sync \
+              --pir-data-dir "${DEPLOY_PATH}/pir-data" \
+              --output-dir "$STAGE" \
+              --lwd-url https://zec.rocks:443 \
+              --non-interactive \
+              --invalidate-after-blocks \
+              --max-height "$TARGET_HEIGHT"
+
+            EXPORTED_HEIGHT=$(jq -r '.height // empty' "$STAGE/pir_root.json")
+            if [ "$EXPORTED_HEIGHT" != "$TARGET_HEIGHT" ]; then
+              echo "FAIL: staged height ($EXPORTED_HEIGHT) != target ($TARGET_HEIGHT)" >&2
+              exit 1
+            fi
+
+            echo "==> Disabling voting-config bootstrap so the forced height is served until the next round is created"
+            TMP_ENV=$(mktemp)
+            if [ -f /etc/default/nf-server ]; then
+              cp /etc/default/nf-server "$TMP_ENV"
+            fi
+            sed -i '/^SVOTE_PIR_VOTING_CONFIG_URL=/d' "$TMP_ENV"
+            printf '%s\n' 'SVOTE_PIR_VOTING_CONFIG_URL=' >> "$TMP_ENV"
+            sudo install -m 0644 -o root -g root "$TMP_ENV" /etc/default/nf-server
+            rm -f "$TMP_ENV"
+
+            echo "==> Installing staged tier files"
+            sudo systemctl stop nullifier-query-server
+            sudo install -d -m 0755 "${DEPLOY_PATH}/pir-data"
+            for f in tier0.bin tier1.bin tier2.bin; do
+              sudo mv -f "$STAGE/$f" "${DEPLOY_PATH}/pir-data/$f"
+            done
+            sudo mv -f "$STAGE/pir_root.json" "${DEPLOY_PATH}/pir-data/pir_root.json"
+
+            echo "==> Restarting nullifier-query-server"
+            sudo systemctl start nullifier-query-server
+
+            echo "==> Waiting for /ready to return 200"
+            for i in $(seq 1 120); do
+              if curl -sf --max-time 4 http://localhost:3000/ready >/dev/null; then
+                echo "Readiness check passed (attempt $i)"
+                break
+              fi
+              echo "Waiting for readiness... attempt $i/120"
+              sleep 5
+            done
+
+            if ! curl -sf --max-time 4 http://localhost:3000/ready >/dev/null; then
+              echo "Readiness check FAILED after 10m" >&2
+              sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+              sudo journalctl -u nullifier-query-server --no-pager -n 80 2>/dev/null || true
+              exit 1
+            fi
+
+            ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
+            SERVED_HEIGHT=$(printf '%s\n' "$ROOT" | jq -r '.height // empty')
+            echo "Served height: $SERVED_HEIGHT"
+            if [ "$SERVED_HEIGHT" != "$TARGET_HEIGHT" ]; then
+              echo "FAIL: served height ($SERVED_HEIGHT) != target ($TARGET_HEIGHT)" >&2
+              printf '%s\n' "$ROOT" >&2
+              exit 1
+            fi
+
+  sync_primary:
+    name: Sync primary
+    needs: [plan, sync_backup]
+    if: |
+      always() &&
+      (inputs.targets == 'both' || inputs.targets == 'primary') &&
+      (needs.sync_backup.result == 'success' || needs.sync_backup.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync, install, and restart primary
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PIR_PRIMARY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          command_timeout: 90m
+          script: |
+            set -euo pipefail
+
+            TARGET_HEIGHT="${{ needs.plan.outputs.target_height }}"
+            DEPLOY_PATH="${{ env.DEPLOY_PATH }}"
+            STAGE="${DEPLOY_PATH}/snapshot-staging/host-sync.${TARGET_HEIGHT}.$$"
+
+            cleanup() {
+              rm -rf "$STAGE"
+            }
+            trap cleanup EXIT
+
+            if ! command -v jq >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq jq
+            fi
+
+            mkdir -p "$(dirname "$STAGE")" "$STAGE"
+
+            echo "==> Syncing PIR data to $TARGET_HEIGHT into staging"
+            cd "$DEPLOY_PATH"
+            export SVOTE_PIR_VOTING_CONFIG_URL=
+            ./nf-server sync \
+              --pir-data-dir "${DEPLOY_PATH}/pir-data" \
+              --output-dir "$STAGE" \
+              --lwd-url https://zec.rocks:443 \
+              --non-interactive \
+              --invalidate-after-blocks \
+              --max-height "$TARGET_HEIGHT"
+
+            EXPORTED_HEIGHT=$(jq -r '.height // empty' "$STAGE/pir_root.json")
+            if [ "$EXPORTED_HEIGHT" != "$TARGET_HEIGHT" ]; then
+              echo "FAIL: staged height ($EXPORTED_HEIGHT) != target ($TARGET_HEIGHT)" >&2
+              exit 1
+            fi
+
+            echo "==> Disabling voting-config bootstrap so the forced height is served until the next round is created"
+            TMP_ENV=$(mktemp)
+            if [ -f /etc/default/nf-server ]; then
+              cp /etc/default/nf-server "$TMP_ENV"
+            fi
+            sed -i '/^SVOTE_PIR_VOTING_CONFIG_URL=/d' "$TMP_ENV"
+            printf '%s\n' 'SVOTE_PIR_VOTING_CONFIG_URL=' >> "$TMP_ENV"
+            sudo install -m 0644 -o root -g root "$TMP_ENV" /etc/default/nf-server
+            rm -f "$TMP_ENV"
+
+            echo "==> Installing staged tier files"
+            sudo systemctl stop nullifier-query-server
+            sudo install -d -m 0755 "${DEPLOY_PATH}/pir-data"
+            for f in tier0.bin tier1.bin tier2.bin; do
+              sudo mv -f "$STAGE/$f" "${DEPLOY_PATH}/pir-data/$f"
+            done
+            sudo mv -f "$STAGE/pir_root.json" "${DEPLOY_PATH}/pir-data/pir_root.json"
+
+            echo "==> Restarting nullifier-query-server"
+            sudo systemctl start nullifier-query-server
+
+            echo "==> Waiting for /ready to return 200"
+            for i in $(seq 1 120); do
+              if curl -sf --max-time 4 http://localhost:3000/ready >/dev/null; then
+                echo "Readiness check passed (attempt $i)"
+                break
+              fi
+              echo "Waiting for readiness... attempt $i/120"
+              sleep 5
+            done
+
+            if ! curl -sf --max-time 4 http://localhost:3000/ready >/dev/null; then
+              echo "Readiness check FAILED after 10m" >&2
+              sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+              sudo journalctl -u nullifier-query-server --no-pager -n 80 2>/dev/null || true
+              exit 1
+            fi
+
+            ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
+            SERVED_HEIGHT=$(printf '%s\n' "$ROOT" | jq -r '.height // empty')
+            echo "Served height: $SERVED_HEIGHT"
+            if [ "$SERVED_HEIGHT" != "$TARGET_HEIGHT" ]; then
+              echo "FAIL: served height ($SERVED_HEIGHT) != target ($TARGET_HEIGHT)" >&2
+              printf '%s\n' "$ROOT" >&2
+              exit 1
+            fi
