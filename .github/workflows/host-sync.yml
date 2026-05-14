@@ -30,6 +30,7 @@ permissions:
 
 env:
   DEPLOY_PATH: /opt/nf-ingest
+  SNAPSHOTS_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
 
 jobs:
   plan:
@@ -96,16 +97,26 @@ jobs:
 
             mkdir -p "$(dirname "$STAGE")" "$STAGE"
 
-            echo "==> Syncing PIR data to $TARGET_HEIGHT into staging"
-            cd "$DEPLOY_PATH"
-            export SVOTE_PIR_VOTING_CONFIG_URL=
-            ./nf-server sync \
-              --pir-data-dir "${DEPLOY_PATH}/pir-data" \
-              --output-dir "$STAGE" \
-              --lwd-url https://zec.rocks:443 \
-              --non-interactive \
-              --invalidate-after-blocks \
-              --max-height "$TARGET_HEIGHT"
+            echo "==> Downloading published PIR data for $TARGET_HEIGHT into staging"
+            SNAPSHOT_URL="${{ env.SNAPSHOTS_BASE }}/${TARGET_HEIGHT}"
+            curl -fsSL --retry 3 --retry-delay 5 "$SNAPSHOT_URL/manifest.json" -o "$STAGE/manifest.json"
+
+            for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+              echo "Downloading $f"
+              curl -fL --retry 3 --retry-delay 5 "$SNAPSHOT_URL/$f" -o "$STAGE/$f"
+              EXPECTED_SHA=$(jq -r --arg f "$f" '.files[$f].sha256 // empty' "$STAGE/manifest.json")
+              if [ -z "$EXPECTED_SHA" ]; then
+                echo "FAIL: manifest is missing sha256 for $f" >&2
+                exit 1
+              fi
+              ACTUAL_SHA=$(sha256sum "$STAGE/$f" | awk '{print $1}')
+              if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+                echo "FAIL: $f sha256 mismatch" >&2
+                echo "expected=$EXPECTED_SHA" >&2
+                echo "actual=$ACTUAL_SHA" >&2
+                exit 1
+              fi
+            done
 
             EXPORTED_HEIGHT=$(jq -r '.height // empty' "$STAGE/pir_root.json")
             if [ "$EXPORTED_HEIGHT" != "$TARGET_HEIGHT" ]; then
@@ -195,16 +206,26 @@ jobs:
 
             mkdir -p "$(dirname "$STAGE")" "$STAGE"
 
-            echo "==> Syncing PIR data to $TARGET_HEIGHT into staging"
-            cd "$DEPLOY_PATH"
-            export SVOTE_PIR_VOTING_CONFIG_URL=
-            ./nf-server sync \
-              --pir-data-dir "${DEPLOY_PATH}/pir-data" \
-              --output-dir "$STAGE" \
-              --lwd-url https://zec.rocks:443 \
-              --non-interactive \
-              --invalidate-after-blocks \
-              --max-height "$TARGET_HEIGHT"
+            echo "==> Downloading published PIR data for $TARGET_HEIGHT into staging"
+            SNAPSHOT_URL="${{ env.SNAPSHOTS_BASE }}/${TARGET_HEIGHT}"
+            curl -fsSL --retry 3 --retry-delay 5 "$SNAPSHOT_URL/manifest.json" -o "$STAGE/manifest.json"
+
+            for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+              echo "Downloading $f"
+              curl -fL --retry 3 --retry-delay 5 "$SNAPSHOT_URL/$f" -o "$STAGE/$f"
+              EXPECTED_SHA=$(jq -r --arg f "$f" '.files[$f].sha256 // empty' "$STAGE/manifest.json")
+              if [ -z "$EXPECTED_SHA" ]; then
+                echo "FAIL: manifest is missing sha256 for $f" >&2
+                exit 1
+              fi
+              ACTUAL_SHA=$(sha256sum "$STAGE/$f" | awk '{print $1}')
+              if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+                echo "FAIL: $f sha256 mismatch" >&2
+                echo "expected=$EXPECTED_SHA" >&2
+                echo "actual=$ACTUAL_SHA" >&2
+                exit 1
+              fi
+            done
 
             EXPORTED_HEIGHT=$(jq -r '.height // empty' "$STAGE/pir_root.json")
             if [ "$EXPORTED_HEIGHT" != "$TARGET_HEIGHT" ]; then
