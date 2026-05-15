@@ -145,8 +145,7 @@ jobs:
               tmp=$(mktemp)
               cat > "$tmp" <<EOF
             [Service]
-            Environment=SVOTE_PIR_VOTING_CONFIG_URL=
-            Environment=SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+            Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
             Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
             EOF
               sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"
@@ -274,8 +273,7 @@ jobs:
               tmp=$(mktemp)
               cat > "$tmp" <<EOF
             [Service]
-            Environment=SVOTE_PIR_VOTING_CONFIG_URL=
-            Environment=SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+            Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
             Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
             EOF
               sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"

@@ -40,13 +40,13 @@ systemd drop-in:
 
 ```ini
 [Service]
-Environment=SVOTE_PIR_VOTING_CONFIG_URL=
-Environment=SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT=<height>
+Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=<height>
 Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
 ```
 
-That disables active-round discovery for the restart and forces `nf-server` to
-download from `snapshots/<height>/`. After `/ready` succeeds and
+That explicit force setting takes precedence over voting-config / active-round
+discovery and makes `nf-server` download from `snapshots/<height>/`. After
+`/ready` succeeds and
 `nf_snapshot_served_height == height`, the workflow removes the drop-in and
 runs `systemctl daemon-reload` again. The running process keeps serving the
 loaded snapshot, but future restarts return to normal config-driven behavior.
