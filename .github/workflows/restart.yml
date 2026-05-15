@@ -35,6 +35,11 @@ on:
         required: false
         type: boolean
         default: true
+      height:
+        description: "Optional published DO snapshot height to force for this restart"
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       targets:
@@ -45,13 +50,73 @@ on:
         required: false
         type: boolean
         default: true
+      height:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
+  validate_height:
+    name: Validate forced snapshot height
+    runs-on: ubuntu-latest
+    outputs:
+      forced_height: ${{ steps.validate.outputs.forced_height }}
+    env:
+      SNAPSHOTS_BASE_URL: https://vote.fra1.digitaloceanspaces.com/snapshots
+    steps:
+      - name: Validate optional height
+        id: validate
+        env:
+          REQUESTED_HEIGHT: ${{ inputs.height }}
+        run: |
+          set -euo pipefail
+          HEIGHT="$REQUESTED_HEIGHT"
+          HEIGHT="$(printf '%s' "$HEIGHT" | tr -d '[:space:]')"
+
+          if [ -z "$HEIGHT" ]; then
+            echo "forced_height=" >> "$GITHUB_OUTPUT"
+            echo "No forced snapshot height requested."
+            exit 0
+          fi
+
+          case "$HEIGHT" in
+            *[!0-9]*)
+              echo "height must be numeric, got: $HEIGHT" >&2
+              exit 1
+              ;;
+          esac
+          if [ $((HEIGHT % 10)) -ne 0 ]; then
+            echo "height must be a multiple of 10, got: $HEIGHT" >&2
+            exit 1
+          fi
+
+          MANIFEST_URL="$SNAPSHOTS_BASE_URL/$HEIGHT/manifest.json"
+          echo "==> Fetching $MANIFEST_URL"
+          curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
+
+          MANIFEST_HEIGHT="$(jq -r '.height // empty' manifest.json)"
+          if [ "$MANIFEST_HEIGHT" != "$HEIGHT" ]; then
+            echo "manifest height ($MANIFEST_HEIGHT) does not match requested height ($HEIGHT)" >&2
+            exit 1
+          fi
+
+          for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+            if ! jq -e --arg f "$f" '.files[$f].sha256 and .files[$f].size' manifest.json >/dev/null; then
+              echo "manifest is missing required file entry: $f" >&2
+              exit 1
+            fi
+            curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$HEIGHT/$f" >/dev/null
+          done
+
+          echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
+          echo "Snapshot $HEIGHT is published and has all required tier files."
+
   restart_backup:
     name: Restart backup
+    needs: validate_height
     if: inputs.targets == 'both' || inputs.targets == 'backup'
     runs-on: ubuntu-latest
     steps:
@@ -61,7 +126,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           # Cold-start budget: snapshot self-bootstrap (~30s for the
           # ~6 GB CDN download in-region) + load_serving_state (mmaps
           # and parses ~6 GB of tier files into memory, 60-90s on the
@@ -70,6 +135,27 @@ jobs:
           command_timeout: 11m
           script: |
             set -eu
+
+            DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
+            DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+
+            if [ -n "$FORCED_HEIGHT" ]; then
+              echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
+              sudo install -d -m 0755 "$DROPIN_DIR"
+              tmp=$(mktemp)
+              cat > "$tmp" <<EOF
+            [Service]
+            Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+            Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
+            EOF
+              sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"
+              rm -f "$tmp"
+              sudo systemctl daemon-reload
+            elif sudo test -f "$DROPIN_FILE"; then
+              echo "==> Removing stale forced snapshot drop-in"
+              sudo rm -f "$DROPIN_FILE"
+              sudo systemctl daemon-reload
+            fi
 
             echo "==> Restarting nullifier-query-server on backup"
             sudo systemctl restart nullifier-query-server
@@ -116,18 +202,23 @@ jobs:
             echo "==> Bootstrap outcomes:"
             printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
 
-            if [ "$VERIFY_HEIGHT" = "true" ]; then
+            if [ -n "$FORCED_HEIGHT" ]; then
+              if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
+                echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
+                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                exit 1
+              fi
+              echo "OK: backup is serving forced snapshot height $SERVED"
+            elif [ "$VERIFY_HEIGHT" = "true" ]; then
               if [ "$EXPECTED" -gt 0 ] && [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
                 echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
                 exit 1
-              fi
-              if [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
+              elif [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
                 echo "FAIL: expected height is zero and no served snapshot was reported."
                 echo "Hint: this can mean no active round plus no local snapshot, or a voting-config/bootstrap failure. Check bootstrap outcomes and journalctl."
                 exit 1
-              fi
-              if [ "$EXPECTED" -eq 0 ]; then
+              elif [ "$EXPECTED" -eq 0 ]; then
                 echo "OK: backup is ready and serving local snapshot height $SERVED (no active round expected height)."
               else
                 echo "OK: backup converged on height $SERVED"
@@ -135,12 +226,20 @@ jobs:
             else
               echo "Skipping height verification (verify_height_converged=false)"
             fi
+
+            if [ -n "$FORCED_HEIGHT" ]; then
+              echo "==> Removing forced snapshot drop-in after successful restart"
+              sudo rm -f "$DROPIN_FILE"
+              sudo systemctl daemon-reload
+            fi
         env:
           VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
+          FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
+          PRECOMPUTED_BASE_URL: https://vote.fra1.digitaloceanspaces.com
 
   restart_primary:
     name: Restart primary
-    needs: restart_backup
+    needs: [validate_height, restart_backup]
     # Run when:
     #  - target includes primary, AND
     #  - backup either succeeded OR was skipped (target=primary only).
@@ -150,6 +249,7 @@ jobs:
     if: |
       always() &&
       (inputs.targets == 'both' || inputs.targets == 'primary') &&
+      needs.validate_height.result == 'success' &&
       (needs.restart_backup.result == 'success' || needs.restart_backup.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
@@ -159,10 +259,31 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           command_timeout: 11m
           script: |
             set -eu
+
+            DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
+            DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+
+            if [ -n "$FORCED_HEIGHT" ]; then
+              echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
+              sudo install -d -m 0755 "$DROPIN_DIR"
+              tmp=$(mktemp)
+              cat > "$tmp" <<EOF
+            [Service]
+            Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+            Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
+            EOF
+              sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"
+              rm -f "$tmp"
+              sudo systemctl daemon-reload
+            elif sudo test -f "$DROPIN_FILE"; then
+              echo "==> Removing stale forced snapshot drop-in"
+              sudo rm -f "$DROPIN_FILE"
+              sudo systemctl daemon-reload
+            fi
 
             echo "==> Restarting nullifier-query-server on primary"
             sudo systemctl restart nullifier-query-server
@@ -205,18 +326,23 @@ jobs:
             echo "==> Bootstrap outcomes:"
             printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
 
-            if [ "$VERIFY_HEIGHT" = "true" ]; then
+            if [ -n "$FORCED_HEIGHT" ]; then
+              if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
+                echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
+                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                exit 1
+              fi
+              echo "OK: primary is serving forced snapshot height $SERVED"
+            elif [ "$VERIFY_HEIGHT" = "true" ]; then
               if [ "$EXPECTED" -gt 0 ] && [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
                 echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
                 exit 1
-              fi
-              if [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
+              elif [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
                 echo "FAIL: expected height is zero and no served snapshot was reported."
                 echo "Hint: this can mean no active round plus no local snapshot, or a voting-config/bootstrap failure. Check bootstrap outcomes and journalctl."
                 exit 1
-              fi
-              if [ "$EXPECTED" -eq 0 ]; then
+              elif [ "$EXPECTED" -eq 0 ]; then
                 echo "OK: primary is ready and serving local snapshot height $SERVED (no active round expected height)."
               else
                 echo "OK: primary converged on height $SERVED"
@@ -224,13 +350,21 @@ jobs:
             else
               echo "Skipping height verification (verify_height_converged=false)"
             fi
+
+            if [ -n "$FORCED_HEIGHT" ]; then
+              echo "==> Removing forced snapshot drop-in after successful restart"
+              sudo rm -f "$DROPIN_FILE"
+              sudo systemctl daemon-reload
+            fi
         env:
           VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
+          FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
+          PRECOMPUTED_BASE_URL: https://vote.fra1.digitaloceanspaces.com
 
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [restart_backup, restart_primary]
+    needs: [validate_height, restart_backup, restart_primary]
     runs-on: ubuntu-latest
     steps:
       - name: Notify Slack on failure
