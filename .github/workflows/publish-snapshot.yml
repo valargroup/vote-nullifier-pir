@@ -1,14 +1,14 @@
 # Build a PIR snapshot at a given block height and publish it to DO Spaces
 # under s3://vote/snapshots/<height>/ for download by nf-server replicas
-# and the admin UI. Runs on PIR_BACKUP_HOST so the primary stays focused
-# on serving; backup keeps serving its current snapshot throughout.
+# and the admin UI. Runs on the canonical snapshot publisher host so
+# fleet-specific staging/production targeting cannot change the output path.
 #
 # Pure publish operation: writes tier blobs under /tmp on the host, reads
 # nullifiers from the live /opt/nf-ingest/pir-data/ tree (never mutates it),
 # never restarts the service.
 #
 # Requires repository secrets:
-#   PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY,
+#   PIR_SNAPSHOT_PUBLISHER_HOST, DEPLOY_USER, SSH_KEY,
 #   DO_ACCESS_KEY, DO_SECRET_KEY.
 
 name: Publish nullifier snapshot
@@ -16,14 +16,6 @@ name: Publish nullifier snapshot
 on:
   workflow_dispatch:
     inputs:
-      target_environment:
-        description: "GitHub Environment to read publisher secrets and vars from"
-        required: true
-        type: choice
-        options:
-          - staging
-          - production
-        default: staging
       height:
         description: "Target block height (rounded down to nearest multiple of 10). If empty, uses the latest chain tip."
         required: false
@@ -41,14 +33,12 @@ env:
   DEPLOY_PATH: /opt/nf-ingest
   DO_BUCKET: vote
   DO_PREFIX: snapshots
+  DO_PUBLIC_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
 
 jobs:
   publish:
     name: Build and upload snapshot
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment }}
-    env:
-      DO_PUBLIC_BASE: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
       - name: Round explicit height (if provided)
         id: round_height
@@ -70,7 +60,7 @@ jobs:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
           DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
         with:
-          host: ${{ secrets.PIR_BACKUP_HOST }}
+          host: ${{ secrets.PIR_SNAPSHOT_PUBLISHER_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           envs: DO_ACCESS_KEY,DO_SECRET_KEY
@@ -84,7 +74,7 @@ jobs:
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
             if [ -z "$PUBLIC_BASE" ]; then
-              echo "SNAPSHOTS_BASE_URL environment variable is required." >&2
+              echo "DO_PUBLIC_BASE is required." >&2
               exit 1
             fi
 
@@ -264,7 +254,6 @@ jobs:
     if: ${{ always() && needs.publish.result == 'failure' }}
     needs: [publish]
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment }}
     steps:
       - name: Notify Slack on failure
         uses: slackapi/slack-github-action@v2.1.0
