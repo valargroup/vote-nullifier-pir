@@ -244,20 +244,10 @@ jobs:
             echo "No active round snapshot_height found; skipping per-height start_pir.sh upload."
           fi
 
-  deploy:
-    name: Deploy to PIR hosts
-    needs: distribute
-    uses: ./.github/workflows/deploy.yml
-    with:
-      release_tag: ${{ github.ref_name }}
-      target_environment: staging
-      targets: both
-    secrets: inherit
-
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [build, release, distribute, deploy]
+    needs: [build, release, distribute]
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -283,7 +273,7 @@ jobs:
                 },
                 {
                   "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBuild: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}` | Deploy: `${{ needs.deploy.result }}`" }
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBuild: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}`" }
                 }
               ]
             }
