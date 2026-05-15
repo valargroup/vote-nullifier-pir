@@ -8,6 +8,11 @@
 //! `--precomputed-base-url` and verifies them against the manifest's
 //! sha256s before swapping them into `--pir-data-dir`.
 //!
+//! Operators can bypass voting-config discovery with
+//! `--force-snapshot-height` / `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT`. That mode is
+//! intended for runbook-controlled fleet restarts against a known-published
+//! snapshot and always takes precedence over the active-round height.
+//!
 //! ## URL layout (matches `.github/workflows/publish-snapshot.yml`)
 //!
 //! ```text
@@ -40,9 +45,9 @@
 //! rule:** whenever that URL is non-empty (the default, or any override you
 //! set), the published JSON must be fetchable over HTTP(S). If no active round
 //! exposes `snapshot_height`, [`run`] falls back to an existing local snapshot.
-//! A fresh host with no local snapshot must provide
-//! `--bootstrap-snapshot-height` / `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT`;
-//! otherwise startup stops with a clear error.
+//! A fresh host with no local snapshot and no active round must provide
+//! `--force-snapshot-height` / `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT`; otherwise
+//! startup stops with a clear error.
 //! **Opt out:** set `--voting-config-url` / `SVOTE_PIR_VOTING_CONFIG_URL` to an
 //! **empty string** to disable bootstrap and serve only pre-staged `pir-data/`
 //! (offline dev, air-gapped hosts).
@@ -118,9 +123,9 @@ pub struct Config {
     /// even if the active round height differs from local state — we
     /// surface a warning so the operator notices.
     pub precomputed_base_url: String,
-    /// Explicit snapshot height to bootstrap when the chain has no active
-    /// round and no local snapshot exists. Ignored when an active round exists.
-    pub bootstrap_snapshot_height_override: Option<u64>,
+    /// Explicit snapshot height to serve, regardless of voting config or active
+    /// round state. Intended for operator-controlled forced restarts.
+    pub force_snapshot_height: Option<u64>,
     /// Where the live snapshot lives. Bootstrap writes here.
     pub pir_data_dir: PathBuf,
     /// Cap on each individual HTTP request. Tier files are large
@@ -139,12 +144,12 @@ impl Config {
         "https://vote.fra1.digitaloceanspaces.com";
 }
 
-fn validate_bootstrap_snapshot_height(height: u64) -> Result<()> {
+fn validate_force_snapshot_height(height: u64) -> Result<()> {
     if height == 0 {
-        bail!("bootstrap snapshot height override must be greater than zero");
+        bail!("force snapshot height must be greater than zero");
     }
     if height % 10 != 0 {
-        bail!("bootstrap snapshot height override must be a multiple of 10, got {height}");
+        bail!("force snapshot height must be a multiple of 10, got {height}");
     }
     Ok(())
 }
@@ -178,15 +183,26 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
     let started = Instant::now();
     metrics::bootstrap_attempts_inc();
 
+    let local_height = read_local_height(&cfg.pir_data_dir);
+    if let Some(h) = local_height {
+        metrics::served_height_set(h);
+    }
+
+    if let Some(h) = cfg.force_snapshot_height {
+        validate_force_snapshot_height(h)?;
+        metrics::expected_height_set(h);
+        info!(
+            local = ?local_height,
+            expected = h,
+            "using forced snapshot height; skipping voting-config discovery"
+        );
+        return bootstrap_to_height(cfg, h, local_height, started, true).await;
+    }
+
     if cfg.voting_config_url.is_empty() {
         info!("snapshot bootstrap disabled (voting-config-url is empty)");
         metrics::bootstrap_outcome_inc("disabled");
         return Ok(Outcome::Disabled);
-    }
-
-    let local_height = read_local_height(&cfg.pir_data_dir);
-    if let Some(h) = local_height {
-        metrics::served_height_set(h);
     }
 
     let expected_height = match crate::voting_config::fetch_voting_snapshot_height(
@@ -210,22 +226,12 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
                 metrics::bootstrap_outcome_inc("using_local_snapshot");
                 return Ok(Outcome::UsingLocalSnapshot(h));
             }
-            if let Some(h) = cfg.bootstrap_snapshot_height_override {
-                validate_bootstrap_snapshot_height(h)?;
-                info!(
-                    height = h,
-                    "no active round snapshot_height discovered; using explicit bootstrap override"
-                );
-                metrics::expected_height_set(h);
-                h
-            } else {
-                metrics::bootstrap_outcome_inc("failed_voting_config");
-                bail!(
-                    "no active voting round with snapshot_height discovered via {} and no local snapshot exists; \
-                     set SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT / --bootstrap-snapshot-height to bootstrap a fresh host",
-                    cfg.voting_config_url
-                );
-            }
+            metrics::bootstrap_outcome_inc("failed_voting_config");
+            bail!(
+                "no active voting round with snapshot_height discovered via {} and no local snapshot exists; \
+                 set SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT / --force-snapshot-height to bootstrap a specific published snapshot",
+                cfg.voting_config_url
+            );
         }
         Err(e) => {
             metrics::bootstrap_outcome_inc("failed_voting_config");
@@ -236,6 +242,16 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
         }
     };
 
+    bootstrap_to_height(cfg, expected_height, local_height, started, false).await
+}
+
+async fn bootstrap_to_height(
+    cfg: &Config,
+    expected_height: u64,
+    local_height: Option<u64>,
+    started: Instant,
+    forced: bool,
+) -> Result<Outcome> {
     if local_height == Some(expected_height) {
         info!(
             height = expected_height,
@@ -247,6 +263,12 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
     }
 
     if cfg.precomputed_base_url.is_empty() {
+        if forced {
+            metrics::bootstrap_outcome_inc("failed_precomputed_config");
+            bail!(
+                "force snapshot height {expected_height} requires a non-empty precomputed-base-url"
+            );
+        }
         warn!(
             local = ?local_height,
             expected = expected_height,
@@ -278,6 +300,12 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
                 "snapshot bootstrap complete"
             );
             Ok(Outcome::BootstrappedTo(expected_height))
+        }
+        Err(e) if forced => {
+            metrics::bootstrap_outcome_inc("failed_cdn_fetch");
+            Err(e.context(format!(
+                "forced snapshot bootstrap to height {expected_height} failed"
+            )))
         }
         Err(e) => {
             warn!(
@@ -574,12 +602,65 @@ mod tests {
         let cfg = Config {
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
-            bootstrap_snapshot_height_override: None,
+            force_snapshot_height: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
         };
         let outcome = run(&cfg).await.unwrap();
         assert_eq!(outcome, Outcome::Disabled);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_force_height_takes_precedence_over_empty_voting_config() {
+        let tmp = TempDir::new().unwrap();
+        write_pir_root(tmp.path(), Some(100));
+        let cfg = Config {
+            voting_config_url: String::new(),
+            precomputed_base_url: "ignored".into(),
+            force_snapshot_height: Some(100),
+            pir_data_dir: tmp.path().to_path_buf(),
+            http_timeout: Duration::from_secs(1),
+        };
+        let outcome = run(&cfg).await.unwrap();
+        assert_eq!(outcome, Outcome::AlreadyAtHeight(100));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_force_height_requires_precomputed_base_when_local_differs() {
+        let tmp = TempDir::new().unwrap();
+        write_pir_root(tmp.path(), Some(90));
+        let cfg = Config {
+            voting_config_url: String::new(),
+            precomputed_base_url: String::new(),
+            force_snapshot_height: Some(100),
+            pir_data_dir: tmp.path().to_path_buf(),
+            http_timeout: Duration::from_secs(1),
+        };
+        let err = run(&cfg)
+            .await
+            .expect_err("expected forced bootstrap error");
+        let s = format!("{err:#}");
+        assert!(
+            s.contains("requires a non-empty precomputed-base-url"),
+            "unexpected error: {s}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_force_height_rejects_invalid_height() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config {
+            voting_config_url: String::new(),
+            precomputed_base_url: "ignored".into(),
+            force_snapshot_height: Some(101),
+            pir_data_dir: tmp.path().to_path_buf(),
+            http_timeout: Duration::from_secs(1),
+        };
+        let err = run(&cfg)
+            .await
+            .expect_err("expected forced bootstrap error");
+        let s = format!("{err:#}");
+        assert!(s.contains("multiple of 10"), "unexpected error: {s}");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -603,7 +684,7 @@ mod tests {
         let cfg = Config {
             voting_config_url: format!("http://127.0.0.1:{}/cfg.json", addr.port()),
             precomputed_base_url: String::new(),
-            bootstrap_snapshot_height_override: None,
+            force_snapshot_height: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(5),
         };
@@ -618,7 +699,7 @@ mod tests {
         let cfg = Config {
             voting_config_url: "http://127.0.0.1:1/voting-config.json".into(),
             precomputed_base_url: String::new(),
-            bootstrap_snapshot_height_override: None,
+            force_snapshot_height: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_millis(500),
         };

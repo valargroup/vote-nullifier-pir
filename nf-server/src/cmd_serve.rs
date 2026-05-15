@@ -83,10 +83,11 @@ pub struct Args {
     #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_TIMEOUT_SECS", default_value = "1800")]
     bootstrap_timeout_secs: u64,
 
-    /// Snapshot height to bootstrap when the chain has no active voting round
-    /// and no local snapshot exists. Ignored while an active round exists.
-    #[arg(long, env = "SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT")]
-    bootstrap_snapshot_height: Option<u64>,
+    /// Snapshot height to force from the precomputed snapshot bucket at startup.
+    /// When set, this bypasses voting-config / active-round discovery and must
+    /// match the height eventually served by the process.
+    #[arg(long, env = "SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT")]
+    force_snapshot_height: Option<u64>,
 
     /// How long the host must continuously serve a snapshot older
     /// than the canonical active-round height before the watchdog
@@ -171,7 +172,7 @@ pub async fn run(args: Args) -> Result<()> {
     let warm_bootstrap_cfg = bootstrap::Config {
         voting_config_url: args.voting_config_url.trim_end_matches('/').to_string(),
         precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').to_string(),
-        bootstrap_snapshot_height_override: args.bootstrap_snapshot_height,
+        force_snapshot_height: args.force_snapshot_height,
         pir_data_dir: args.pir_data_dir.clone(),
         http_timeout: Duration::from_secs(args.bootstrap_timeout_secs),
     };
