@@ -15,6 +15,7 @@ when GitHub Actions is unavailable.
 | A new on-chain voting round with a new `snapshot_height` is active and replicas need to pick up the new snapshot. | Run `Restart PIR fleet` with `targets=both`. |
 | Sentry fired `alert:snapshot_stale` for one host and the underlying issue is resolved. | Run `Restart PIR fleet` with `targets=primary` or `targets=backup`. |
 | You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_PIR_VOTING_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
+| You need to force replicas onto a specific already-published DO snapshot, regardless of active-round config. | Run `Restart PIR fleet` with `height=<snapshot_height>`. |
 | You're deploying a new `nf-server` binary. | Use `Deploy nf-server` instead — it does the binary swap *and* the restart. |
 | You need a new snapshot from chain (nothing published at the new height yet). | Run `Publish nullifier snapshot` first, then this workflow. |
 
@@ -30,6 +31,27 @@ snapshot. There is no harm in running it again.
 |-------|---------|-------|
 | `targets` | `both` | `both`, `primary`, or `backup`. |
 | `verify_height_converged` | `true` | After restart, fail the job if `nf_snapshot_served_height < nf_snapshot_expected_height`. Set `false` if you intentionally want to restart without checking convergence (e.g. you're rolling back to an older config and `expected` is going to be lower than `served`). |
+| `height` | *(empty)* | Optional forced DO snapshot height. Must be numeric, a multiple of 10, and already published under `https://vote.fra1.digitaloceanspaces.com/snapshots/<height>/`. |
+
+When `height` is set, the workflow first validates the DO snapshot manifest and
+the required tier objects (`tier0.bin`, `tier1.bin`, `tier2.bin`,
+`pir_root.json`) before touching any host. Each host then gets a temporary
+systemd drop-in:
+
+```ini
+[Service]
+Environment=SVOTE_PIR_VOTING_CONFIG_URL=
+Environment=SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT=<height>
+Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
+```
+
+That disables active-round discovery for the restart and forces `nf-server` to
+download from `snapshots/<height>/`. After `/ready` succeeds and
+`nf_snapshot_served_height == height`, the workflow removes the drop-in and
+runs `systemctl daemon-reload` again. The running process keeps serving the
+loaded snapshot, but future restarts return to normal config-driven behavior.
+If the host fails before readiness/verification, the drop-in is left in place so
+the failed state is inspectable and a retry uses the same forced settings.
 
 For `targets=both` the workflow restarts **backup first**, waits for
 it to come back healthy *and* converge on the expected snapshot
@@ -65,6 +87,7 @@ On failure the SSH step dumps `systemctl status` and the most recent
 2. Click **Run workflow**.
 3. Pick `targets` (default `both`) and leave `verify_height_converged`
    on unless you have a specific reason to disable it.
+   To force a published DO snapshot, fill in `height`.
 4. Watch the two jobs in the run page. Each takes 2–3 minutes.
 
 ### From the CLI
@@ -73,6 +96,15 @@ On failure the SSH step dumps `systemctl status` and the most recent
 gh workflow run restart.yml \
     --repo valargroup/vote-nullifier-pir \
     -f targets=both
+```
+
+Force a specific published snapshot:
+
+```bash
+gh workflow run restart.yml \
+    --repo valargroup/vote-nullifier-pir \
+    -f targets=both \
+    -f height=3341750
 ```
 
 To watch the run from the terminal:
@@ -102,6 +134,8 @@ Both should report identical heights and roots.
 |---------|--------------|----------|
 | `restart_backup` job times out at the readiness-check loop | Snapshot bootstrap couldn't fetch from `vote.fra1.digitaloceanspaces.com` (network / 5xx), sha256 mismatch on a tier file, or `load_serving_state` is still mmapping after 10 min. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
 | `restart_primary` job is skipped after `restart_backup` failed | By design — the workflow refuses to restart primary while backup is unhealthy. | Fix backup first (see row above). Once backup is healthy, run the workflow again with `targets=primary`. |
+| `validate_height` fails | The requested `height` is malformed, not a multiple of 10, the manifest is missing, the manifest height differs, or a required tier object is unavailable. | Publish or re-publish the snapshot with `Publish nullifier snapshot`, then rerun `Restart PIR fleet` with the same height. |
+| Job fails with `served (X) != forced height (Y)` | Forced bootstrap ran but the host did not load the requested snapshot. | Inspect `nf_snapshot_bootstrap_outcomes_total` in the workflow log and `journalctl -u nullifier-query-server`. The temporary force-snapshot drop-in is intentionally left on the host for debugging/retry. |
 | Job logs `expected=0` and `served>0` | No active round exposed a `snapshot_height`, so the server kept serving its local snapshot. This is acceptable while `/ready` is green. | No action unless you expected an active round. Confirm the active-round API and static/dynamic config if this is surprising. |
 | Job fails with `expected=0` and `served=0` | The server is ready but has no usable local snapshot, or metrics are missing. | Check `nf_snapshot_bootstrap_outcomes_total` in the workflow log, then inspect `journalctl -u nullifier-query-server`. If this is a fresh host with no active round, set `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` or wait for an active round. |
 | Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI https://vote.fra1.digitaloceanspaces.com/snapshots/<expected>/manifest.json`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
