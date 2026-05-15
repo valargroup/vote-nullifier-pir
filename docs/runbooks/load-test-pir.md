@@ -23,8 +23,9 @@ traffic is indistinguishable from a real wallet client.
   snapshot. Available locally in the repo root after `make bootstrap`,
   or from the published bucket at
   `https://vote.fra1.digitaloceanspaces.com/snapshots/<snapshot_height>/nullifiers.bin`
-  where `<snapshot_height>` matches
-  [`voting-config.json`](https://valargroup.github.io/token-holder-voting-config/voting-config.json).
+  where `<snapshot_height>` matches the active round discovered through
+  [`static-voting-config.json`](https://voting.valargroup.org/static-voting-config.json)
+  and its dynamic config.
   That object exists only after **Publish nullifier snapshot** was run
   for that height with **`include_nullifier_artifacts`** enabled; verify
   size and SHA-256 against `snapshots/<height>/manifest.json` before
@@ -96,21 +97,19 @@ workflow is a `workflow_dispatch` job with these inputs:
 | `rps` | *(empty)* | If non-empty, enables open-loop mode. |
 | `duration` | `60s` | Passed to `--duration`. |
 
-The workflow builds `pir-test` in release mode, reads
-`snapshot_height` from the published
-[`voting-config.json`](https://valargroup.github.io/token-holder-voting-config/voting-config.json),
-downloads `snapshots/<height>/manifest.json` plus `nullifiers.bin`, checks
-size and SHA-256 against the manifest, then runs the load test and uploads
-`summary.json` as a build artifact. The snapshot must have been published
-with **`include_nullifier_artifacts`** so `nullifiers.bin` appears in the
-manifest; if not, the job fails fast with an instructive error — re-publish
+The workflow builds `pir-test` in release mode, uses the `snapshot_height`
+input to download `snapshots/<height>/manifest.json` plus `nullifiers.bin`,
+checks size and SHA-256 against the manifest, then runs the load test and
+uploads `summary.json` as a build artifact. The snapshot must have been
+published with **`include_nullifier_artifacts`** so `nullifiers.bin` appears in
+the manifest; if not, the job fails fast with an instructive error — re-publish
 that height with the flag enabled.
 
-The workflow resolves the PIR base URL from the same config
-(`pir_endpoints[0]` for primary, `pir_endpoints[1]` for backup), so no
-extra secrets are required. The target host must be reachable from
-GitHub-hosted runners over HTTPS — the Caddy reverse proxy in front of
-`nf-server` handles this.
+The workflow resolves the PIR base URL through the static config's
+`dynamic_config_url` and then `pir_endpoints[]` (`pir_endpoints[0]` for
+primary, `pir_endpoints[1]` for backup), so no extra secrets are required. The
+target host must be reachable from GitHub-hosted runners over HTTPS — the Caddy
+reverse proxy in front of `nf-server` handles this.
 
 ## Reading the output
 

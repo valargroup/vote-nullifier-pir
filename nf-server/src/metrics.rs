@@ -43,7 +43,8 @@ fn metrics() -> &'static Metrics {
         .expect("valid metric name");
 
         // `result` is one of: "disabled", "already_at_height",
-        // "bootstrapped", "fell_through", "failed_voting_config".
+        // "using_local_snapshot", "bootstrapped", "fell_through",
+        // "failed_voting_config".
         // Sum across labels equals `nf_snapshot_bootstrap_attempts_total`
         // for every completed attempt (including failed_voting_config).
         let bootstrap_outcomes = IntCounterVec::new(

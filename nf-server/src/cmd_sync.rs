@@ -116,9 +116,10 @@ pub struct Args {
     #[arg(long)]
     max_height: Option<u64>,
 
-    /// voting-config.json URL. When non-empty, `vote_servers` are used to query
-    /// the chain's active round snapshot height, which caps the sync target.
-    /// Empty disables this check (offline / dev).
+    /// Voting service-discovery URL. When non-empty, resolves `vote_servers`
+    /// through the static/dynamic config flow and queries the chain's active
+    /// round snapshot height, which caps the sync target. Empty disables this
+    /// check (offline / dev).
     #[arg(long, env = "SVOTE_PIR_VOTING_CONFIG_URL", default_value = "")]
     voting_config_url: String,
 

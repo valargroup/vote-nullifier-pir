@@ -72,12 +72,13 @@ installs the same release artifacts it documents.
 
 ### Bumping to a new snapshot
 
-Edit `voting-config.json`'s `snapshot_height`, run
+After the active on-chain round has the desired `snapshot_height`, run
 [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/publish-snapshot.yml)
 for the new height, then trigger
 [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/restart.yml)
 to roll the fleet (backup-then-primary, with per-host
-`served_height == expected_height` verification). See the
+`served_height >= expected_height` verification when an active round exists).
+See the
 [in-repo restart runbook](restart-pir-fleet.md) for the
 restart step in detail, or the [end-to-end operator runbook][runbook]
 for the full bump procedure. The old per-host timer-based resync flow
@@ -203,9 +204,9 @@ flowchart LR
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Hosts are rolled **serially** (`max-parallel: 1`) so the readiness gate on one host completes before the next is touched. |
 | [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, optional `include_nullifier_artifacts`) | Runs `nf-server sync` on `PIR_BACKUP_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Set **`include_nullifier_artifacts`** to also upload `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.tree` into the same prefix (large); default is **false** so routine snapshot bumps stay tier-only. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
-| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and `nf_snapshot_served_height == nf_snapshot_expected_height`, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
+| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
 | [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml) | Manual `workflow_dispatch` | Runs `nf-server sync` + `systemctl restart` on the host in `DEPLOY_HOST`. For fleet-wide snapshot bumps, prefer `publish-snapshot.yml` then `restart.yml`. |
-| [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (per `voting-config.json`, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint from the same config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for the current height. |
+| [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (input height, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint through the static/dynamic voting config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for that height. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
 
 ### Removing legacy bucket-root `nullifiers.*` keys

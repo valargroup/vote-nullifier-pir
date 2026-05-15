@@ -50,8 +50,8 @@ pub struct Args {
     #[arg(long, env = "SVOTE_PIR_VOTE_CHAIN_URL")]
     chain_url: Option<String>,
 
-    /// URL of the published `voting-config.json` whose `vote_servers`
-    /// identify the chain API used to discover the active round snapshot height.
+    /// URL of the published static voting config whose dynamic config
+    /// identifies the vote servers used to discover active round snapshot height.
     /// Defaults to the production GitHub Pages URL; leave unset so operators
     /// pick up the baked-in default, or set `SVOTE_PIR_VOTING_CONFIG_URL=` (empty)
     /// to disable startup self-bootstrap and serve only pre-staged files under
