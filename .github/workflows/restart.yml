@@ -21,6 +21,14 @@ name: Restart PIR fleet
 on:
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "GitHub Environment to read fleet secrets and vars from"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
       targets:
         description: "Which hosts to restart (rolling, backup-then-primary when both)"
         required: true
@@ -42,6 +50,10 @@ on:
         default: ""
   workflow_call:
     inputs:
+      target_environment:
+        required: false
+        type: string
+        default: staging
       targets:
         required: false
         type: string
@@ -62,10 +74,11 @@ jobs:
   validate_height:
     name: Validate forced snapshot height
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     outputs:
       forced_height: ${{ steps.validate.outputs.forced_height }}
     env:
-      SNAPSHOTS_BASE_URL: https://vote.fra1.digitaloceanspaces.com/snapshots
+      SNAPSHOTS_BASE_URL: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
       - name: Validate optional height
         id: validate
@@ -80,6 +93,10 @@ jobs:
             echo "forced_height=" >> "$GITHUB_OUTPUT"
             echo "No forced snapshot height requested."
             exit 0
+          fi
+          if [ -z "$SNAPSHOTS_BASE_URL" ]; then
+            echo "SNAPSHOTS_BASE_URL environment variable is required for forced-height validation." >&2
+            exit 1
           fi
 
           case "$HEIGHT" in
@@ -119,6 +136,7 @@ jobs:
     needs: validate_height
     if: inputs.targets == 'both' || inputs.targets == 'backup'
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Restart and verify
         uses: appleboy/ssh-action@v1.0.3
@@ -140,6 +158,10 @@ jobs:
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
 
             if [ -n "$FORCED_HEIGHT" ]; then
+              if [ -z "$PRECOMPUTED_BASE_URL" ]; then
+                echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
+                exit 1
+              fi
               echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
               sudo install -d -m 0755 "$DROPIN_DIR"
               tmp=$(mktemp)
@@ -235,7 +257,7 @@ jobs:
         env:
           VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
-          PRECOMPUTED_BASE_URL: https://vote.fra1.digitaloceanspaces.com
+          PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
   restart_primary:
     name: Restart primary
@@ -252,6 +274,7 @@ jobs:
       needs.validate_height.result == 'success' &&
       (needs.restart_backup.result == 'success' || needs.restart_backup.result == 'skipped')
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Restart and verify
         uses: appleboy/ssh-action@v1.0.3
@@ -268,6 +291,10 @@ jobs:
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
 
             if [ -n "$FORCED_HEIGHT" ]; then
+              if [ -z "$PRECOMPUTED_BASE_URL" ]; then
+                echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
+                exit 1
+              fi
               echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
               sudo install -d -m 0755 "$DROPIN_DIR"
               tmp=$(mktemp)
@@ -359,13 +386,14 @@ jobs:
         env:
           VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
-          PRECOMPUTED_BASE_URL: https://vote.fra1.digitaloceanspaces.com
+          PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
     needs: [validate_height, restart_backup, restart_primary]
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Notify Slack on failure
         uses: slackapi/slack-github-action@v2.1.0

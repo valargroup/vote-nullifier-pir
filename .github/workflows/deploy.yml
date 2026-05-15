@@ -16,6 +16,14 @@ on:
         description: "Release tag to deploy (e.g. v0.3.0)"
         required: true
         type: string
+      target_environment:
+        description: "GitHub Environment to read deploy secrets from"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
       targets:
         description: "Which hosts to deploy to"
         required: true
@@ -30,6 +38,10 @@ on:
       release_tag:
         required: true
         type: string
+      target_environment:
+        required: false
+        type: string
+        default: staging
       targets:
         required: false
         type: string
@@ -46,6 +58,7 @@ jobs:
     name: Deploy ${{ inputs.release_tag }} to backup
     if: inputs.targets == 'both' || inputs.targets == 'backup'
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Checkout (for service file)
         uses: actions/checkout@v4
@@ -123,6 +136,7 @@ jobs:
       (inputs.targets == 'both' || inputs.targets == 'primary') &&
       (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped')
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Checkout (for service file)
         uses: actions/checkout@v4
@@ -191,6 +205,7 @@ jobs:
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
     needs: [deploy_backup, deploy_primary]
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Notify Slack on failure
         uses: slackapi/slack-github-action@v2.1.0

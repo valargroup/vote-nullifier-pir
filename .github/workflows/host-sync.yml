@@ -7,6 +7,14 @@ name: Host PIR data sync
 on:
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "GitHub Environment to read host secrets from"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
       max_height:
         description: "Stop syncing at this block height. Non-multiples of 10 are rounded down. If not provided, defaults to the latest chain tip rounded down to the nearest multiple of 10."
         required: false
@@ -22,6 +30,7 @@ jobs:
   host_sync:
     name: Sync and restart
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Round max_height down to nearest multiple of 10
         id: round_height

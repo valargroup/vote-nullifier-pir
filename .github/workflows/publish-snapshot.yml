@@ -16,6 +16,14 @@ name: Publish nullifier snapshot
 on:
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "GitHub Environment to read publisher secrets and vars from"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
       height:
         description: "Target block height (rounded down to nearest multiple of 10). If empty, uses the latest chain tip."
         required: false
@@ -32,13 +40,15 @@ permissions:
 env:
   DEPLOY_PATH: /opt/nf-ingest
   DO_BUCKET: vote
-  DO_PREFIX: snapshots
-  DO_PUBLIC_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
 
 jobs:
   publish:
     name: Build and upload snapshot
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    env:
+      DO_PREFIX: ${{ vars.SNAPSHOTS_PREFIX }}
+      DO_PUBLIC_BASE: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
       - name: Round explicit height (if provided)
         id: round_height
@@ -73,6 +83,10 @@ jobs:
             BUCKET="${{ env.DO_BUCKET }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
+            if [ -z "$PREFIX" ] || [ -z "$PUBLIC_BASE" ]; then
+              echo "SNAPSHOTS_PREFIX and SNAPSHOTS_BASE_URL environment variables are required." >&2
+              exit 1
+            fi
 
             echo "==> Ensuring s3cmd and jq are installed"
             if ! command -v s3cmd >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -250,6 +264,7 @@ jobs:
     if: ${{ always() && needs.publish.result == 'failure' }}
     needs: [publish]
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Notify Slack on failure
         uses: slackapi/slack-github-action@v2.1.0
