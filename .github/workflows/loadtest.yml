@@ -6,6 +6,14 @@ name: Load test PIR
 on:
   workflow_dispatch:
     inputs:
+      target_environment:
+        description: "GitHub Environment to read load-test vars from"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
       target:
         description: "Which server to target"
         type: choice
@@ -33,14 +41,14 @@ on:
 permissions:
   contents: read
 
-env:
-  VOTING_CONFIG_URL: https://voting.valargroup.org/static-voting-config.json
-  SNAPSHOTS_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
-
 jobs:
   loadtest:
     name: Load test (${{ inputs.target }}, c=${{ inputs.concurrency }}, ${{ inputs.duration }})
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    env:
+      VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
+      SNAPSHOTS_BASE: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +63,10 @@ jobs:
 
       - name: Resolve PIR endpoint from voting-config
         run: |
+          if [ -z "$VOTING_CONFIG_URL" ]; then
+            echo "VOTING_CONFIG_URL environment variable is required." >&2
+            exit 1
+          fi
           curl -fsSL --retry 3 "$VOTING_CONFIG_URL" -o voting-config.json
           DYNAMIC_CONFIG_URL="$(jq -r '.dynamic_config_url // empty' voting-config.json)"
           if [ -n "$DYNAMIC_CONFIG_URL" ]; then
@@ -71,6 +83,10 @@ jobs:
       - name: Fetch nullifiers snapshot
         run: |
           set -euo pipefail
+          if [ -z "$SNAPSHOTS_BASE" ]; then
+            echo "SNAPSHOTS_BASE_URL environment variable is required." >&2
+            exit 1
+          fi
           HEIGHT="${{ inputs.snapshot_height }}"
           case "$HEIGHT" in
             '' | *[!0-9]*)
@@ -104,11 +120,11 @@ jobs:
 
       - name: Run load test
         run: |
-          ARGS="--url $PIR_URL --nullifiers nullifiers.bin --concurrency ${{ inputs.concurrency }} --duration ${{ inputs.duration }} --json-out summary.json"
+          ARGS=(--url "$PIR_URL" --nullifiers nullifiers.bin --concurrency "${{ inputs.concurrency }}" --duration "${{ inputs.duration }}" --json-out summary.json)
           if [ -n "${{ inputs.rps }}" ]; then
-            ARGS="$ARGS --rps ${{ inputs.rps }}"
+            ARGS+=(--rps "${{ inputs.rps }}")
           fi
-          ./target/release/pir-test load $ARGS
+          ./target/release/pir-test load "${ARGS[@]}"
 
       - name: Upload results
         if: always()
