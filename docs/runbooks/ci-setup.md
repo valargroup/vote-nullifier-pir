@@ -53,18 +53,18 @@ The CI workflows use these repository secrets (**Settings > Secrets and variable
 |--------|---------|-------------|
 | `PIR_PRIMARY_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR primary server. |
 | `PIR_BACKUP_HOST` | `deploy.yml`, `restart.yml`, `publish-snapshot.yml` | Hostname or IP of the PIR backup server. |
-| `DEPLOY_HOST` | `host-sync.yml` | Hostname or IP of the single-host sync target (often the primary). |
 | `DEPLOY_USER` | all | SSH username on the remote hosts. |
 | `SSH_KEY` | all | SSH private key for authentication. |
 | `NF_SENTRY_DSN` | `deploy.yml` | Sentry DSN written to `/opt/nf-ingest/.env` on deploy. |
-| `DO_ACCESS_KEY` | `release.yml` | DigitalOcean Spaces access key (optional; for artifact mirroring). |
-| `DO_SECRET_KEY` | `release.yml` | DigitalOcean Spaces secret key (optional). |
+| `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing; optional for release artifact mirroring. |
+| `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing; optional for release artifact mirroring. |
 
 ### One-time setup on the remote host
 
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nf-ingest`.
 - Ensure the SSH user can write to that directory.
 - Run an initial `nf-server sync` on the publisher host if you are building snapshots from chain (see `publish-snapshot.yml`).
+- Configure `SNAPSHOTS_BASE_URL` per GitHub Environment. The S3 publish prefix is intentionally fixed at `snapshots` so staging and production share the same canonical PIR snapshot artifacts by height.
 
 For the host-side install itself (binary, systemd unit, env files), use
 [`server-setup.md`](server-setup.md) — the CI pipeline
@@ -190,22 +190,19 @@ the Sentry → Slack side, not in `nf-server`.
 ```mermaid
 flowchart LR
     tag["git tag v*"] --> release["release.yml\nbuild + GitHub Release\n+ DO Spaces"]
-    release --> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
+    manual["workflow_dispatch"] -.-> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
     deploy --> health["health check\nlocalhost:3000/health"]
-    manual["workflow_dispatch"] -.-> deploy
     publish["publish-snapshot.yml\nnf-server sync + upload\nto DO Spaces"] -.-> bucket["snapshots/<height>/"]
     restart["restart.yml\nbackup → primary\nrolling restart"] -.-> pirHosts["PIR hosts\n(self-bootstrap from bucket)"]
     bucket -.-> pirHosts
-    hostSync["host-sync.yml\nsync + restart\none host"] -.-> pirHost["single PIR host"]
 ```
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
-| [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, mirrors to DO Spaces, then automatically calls `deploy.yml`. |
-| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Called by `release.yml`, or manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Hosts are rolled **serially** (`max-parallel: 1`) so the readiness gate on one host completes before the next is touched. |
+| [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, and mirrors release artifacts to DO Spaces. It does **not** deploy to any fleet; operators run `deploy.yml` explicitly. |
+| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Optional `height` validates a published PIR snapshot, forces bootstrap to that height during deploy, verifies `nf_snapshot_served_height == height`, then clears the temporary override. Hosts are rolled backup-then-primary so the readiness gate on one host completes before the next is touched. |
 | [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, optional `include_nullifier_artifacts`) | Runs `nf-server sync` on `PIR_BACKUP_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. Set **`include_nullifier_artifacts`** to also upload `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.tree` into the same prefix (large); default is **false** so routine snapshot bumps stay tier-only. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
-| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
-| [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml) | Manual `workflow_dispatch` | Runs `nf-server sync` + `systemctl restart` on the host in `DEPLOY_HOST`. For fleet-wide snapshot bumps, prefer `publish-snapshot.yml` then `restart.yml`. |
+| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`, optional `height`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies either the forced `height` or `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (input height, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint through the static/dynamic voting config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for that height. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
 

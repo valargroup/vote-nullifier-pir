@@ -40,6 +40,7 @@ permissions:
 env:
   DEPLOY_PATH: /opt/nf-ingest
   DO_BUCKET: vote
+  DO_PREFIX: snapshots
 
 jobs:
   publish:
@@ -47,7 +48,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     env:
-      DO_PREFIX: ${{ vars.SNAPSHOTS_PREFIX }}
       DO_PUBLIC_BASE: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
       - name: Round explicit height (if provided)
@@ -83,8 +83,8 @@ jobs:
             BUCKET="${{ env.DO_BUCKET }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
-            if [ -z "$PREFIX" ] || [ -z "$PUBLIC_BASE" ]; then
-              echo "SNAPSHOTS_PREFIX and SNAPSHOTS_BASE_URL environment variables are required." >&2
+            if [ -z "$PUBLIC_BASE" ]; then
+              echo "SNAPSHOTS_BASE_URL environment variable is required." >&2
               exit 1
             fi
 
