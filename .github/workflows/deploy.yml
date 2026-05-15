@@ -24,6 +24,11 @@ on:
           - staging
           - production
         default: staging
+      height:
+        description: "Optional published snapshot height to force after deploy"
+        required: false
+        type: string
+        default: ""
       targets:
         description: "Which hosts to deploy to"
         required: true
@@ -42,6 +47,10 @@ on:
         required: false
         type: string
         default: staging
+      height:
+        required: false
+        type: string
+        default: ""
       targets:
         required: false
         type: string
@@ -54,8 +63,69 @@ env:
   DEPLOY_PATH: /opt/nf-ingest
 
 jobs:
+  validate_height:
+    name: Validate forced snapshot height
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    outputs:
+      forced_height: ${{ steps.validate.outputs.forced_height }}
+    env:
+      SNAPSHOTS_BASE_URL: ${{ vars.SNAPSHOTS_BASE_URL }}
+    steps:
+      - name: Validate optional height
+        id: validate
+        env:
+          REQUESTED_HEIGHT: ${{ inputs.height }}
+        run: |
+          set -euo pipefail
+          HEIGHT="$REQUESTED_HEIGHT"
+          HEIGHT="$(printf '%s' "$HEIGHT" | tr -d '[:space:]')"
+
+          if [ -z "$HEIGHT" ]; then
+            echo "forced_height=" >> "$GITHUB_OUTPUT"
+            echo "No forced snapshot height requested."
+            exit 0
+          fi
+          if [ -z "$SNAPSHOTS_BASE_URL" ]; then
+            echo "SNAPSHOTS_BASE_URL environment variable is required for forced-height validation." >&2
+            exit 1
+          fi
+
+          case "$HEIGHT" in
+            *[!0-9]*)
+              echo "height must be numeric, got: $HEIGHT" >&2
+              exit 1
+              ;;
+          esac
+          if [ $((HEIGHT % 10)) -ne 0 ]; then
+            echo "height must be a multiple of 10, got: $HEIGHT" >&2
+            exit 1
+          fi
+
+          MANIFEST_URL="$SNAPSHOTS_BASE_URL/$HEIGHT/manifest.json"
+          echo "==> Fetching $MANIFEST_URL"
+          curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
+
+          MANIFEST_HEIGHT="$(jq -r '.height // empty' manifest.json)"
+          if [ "$MANIFEST_HEIGHT" != "$HEIGHT" ]; then
+            echo "manifest height ($MANIFEST_HEIGHT) does not match requested height ($HEIGHT)" >&2
+            exit 1
+          fi
+
+          for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+            if ! jq -e --arg f "$f" '.files[$f].sha256 and .files[$f].size' manifest.json >/dev/null; then
+              echo "manifest is missing required file entry: $f" >&2
+              exit 1
+            fi
+            curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$HEIGHT/$f" >/dev/null
+          done
+
+          echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
+          echo "Snapshot $HEIGHT is published and has all required tier files."
+
   deploy_backup:
     name: Deploy ${{ inputs.release_tag }} to backup
+    needs: validate_height
     if: inputs.targets == 'both' || inputs.targets == 'backup'
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
@@ -86,18 +156,43 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN
+          envs: SENTRY_DSN,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           script: |
+            set -eu
+            DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
+            DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+
             echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
             sudo chmod 600 /opt/nf-ingest/.env
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            if [ -n "$FORCED_HEIGHT" ]; then
+              if [ -z "$PRECOMPUTED_BASE_URL" ]; then
+                echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
+                exit 1
+              fi
+              echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
+              sudo install -d -m 0755 "$DROPIN_DIR"
+              tmp=$(mktemp)
+              cat > "$tmp" <<EOF
+            [Service]
+            Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+            Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
+            EOF
+              sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"
+              rm -f "$tmp"
+            elif sudo test -f "$DROPIN_FILE"; then
+              echo "==> Removing stale forced snapshot drop-in"
+              sudo rm -f "$DROPIN_FILE"
+            fi
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
             sudo systemctl restart nullifier-query-server
             echo "Deployed ${{ inputs.release_tag }} to backup"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
+          FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
+          PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -105,6 +200,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
+          envs: FORCED_HEIGHT
           # Cold-start budget: snapshot self-bootstrap (Phase 3, up to
           # ~30s for a same-region 6 GB CDN download from a DO Spaces
           # bucket) + load_serving_state which mmaps + parses ~6 GB of
@@ -113,27 +209,56 @@ jobs:
           # failing deploys that never become query-ready.
           command_timeout: 11m
           script: |
+            set -eu
             for i in $(seq 1 120); do
               if curl -sf http://localhost:3000/ready > /dev/null; then
                 echo "Readiness check passed on backup (attempt $i)"
-                exit 0
+                break
               fi
               echo "Waiting for readiness... attempt $i/120"
               sleep 5
             done
-            echo "Readiness check FAILED on backup after 10m"
-            sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
-            sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
-              sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
-              echo "No logs available"
-            exit 1
+            if ! curl -sf http://localhost:3000/ready > /dev/null; then
+              echo "Readiness check FAILED on backup after 10m"
+              sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+              sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
+                sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
+                echo "No logs available"
+              exit 1
+            fi
+
+            if [ -n "$FORCED_HEIGHT" ]; then
+              METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
+              metric_value() {
+                printf '%s\n' "$METRICS" | awk -v name="$1" '$1==name {print int($2); found=1; exit} END {if (!found) exit 1}'
+              }
+              if ! SERVED=$(metric_value nf_snapshot_served_height); then
+                echo "FAIL: nf_snapshot_served_height metric is missing."
+                exit 1
+              fi
+              echo "==> Snapshot height: served=$SERVED forced=$FORCED_HEIGHT"
+              echo "==> Bootstrap outcomes:"
+              printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
+              if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
+                echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
+                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                exit 1
+              fi
+              echo "OK: backup is serving forced snapshot height $SERVED"
+              echo "==> Removing forced snapshot drop-in after successful deploy"
+              sudo rm -f /etc/systemd/system/nullifier-query-server.service.d/force-snapshot.conf
+              sudo systemctl daemon-reload
+            fi
+        env:
+          FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
 
   deploy_primary:
     name: Deploy ${{ inputs.release_tag }} to primary
-    needs: deploy_backup
+    needs: [validate_height, deploy_backup]
     if: |
       always() &&
       (inputs.targets == 'both' || inputs.targets == 'primary') &&
+      needs.validate_height.result == 'success' &&
       (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped')
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
@@ -164,18 +289,43 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN
+          envs: SENTRY_DSN,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           script: |
+            set -eu
+            DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
+            DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+
             echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
             sudo chmod 600 /opt/nf-ingest/.env
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            if [ -n "$FORCED_HEIGHT" ]; then
+              if [ -z "$PRECOMPUTED_BASE_URL" ]; then
+                echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
+                exit 1
+              fi
+              echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
+              sudo install -d -m 0755 "$DROPIN_DIR"
+              tmp=$(mktemp)
+              cat > "$tmp" <<EOF
+            [Service]
+            Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+            Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
+            EOF
+              sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"
+              rm -f "$tmp"
+            elif sudo test -f "$DROPIN_FILE"; then
+              echo "==> Removing stale forced snapshot drop-in"
+              sudo rm -f "$DROPIN_FILE"
+            fi
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
             sudo systemctl restart nullifier-query-server
             echo "Deployed ${{ inputs.release_tag }} to primary"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
+          FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
+          PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -183,27 +333,56 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
+          envs: FORCED_HEIGHT
           command_timeout: 11m
           script: |
+            set -eu
             for i in $(seq 1 120); do
               if curl -sf http://localhost:3000/ready > /dev/null; then
                 echo "Readiness check passed on primary (attempt $i)"
-                exit 0
+                break
               fi
               echo "Waiting for readiness... attempt $i/120"
               sleep 5
             done
-            echo "Readiness check FAILED on primary after 10m"
-            sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
-            sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
-              sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
-              echo "No logs available"
-            exit 1
+            if ! curl -sf http://localhost:3000/ready > /dev/null; then
+              echo "Readiness check FAILED on primary after 10m"
+              sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+              sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
+                sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
+                echo "No logs available"
+              exit 1
+            fi
+
+            if [ -n "$FORCED_HEIGHT" ]; then
+              METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
+              metric_value() {
+                printf '%s\n' "$METRICS" | awk -v name="$1" '$1==name {print int($2); found=1; exit} END {if (!found) exit 1}'
+              }
+              if ! SERVED=$(metric_value nf_snapshot_served_height); then
+                echo "FAIL: nf_snapshot_served_height metric is missing."
+                exit 1
+              fi
+              echo "==> Snapshot height: served=$SERVED forced=$FORCED_HEIGHT"
+              echo "==> Bootstrap outcomes:"
+              printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
+              if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
+                echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
+                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                exit 1
+              fi
+              echo "OK: primary is serving forced snapshot height $SERVED"
+              echo "==> Removing forced snapshot drop-in after successful deploy"
+              sudo rm -f /etc/systemd/system/nullifier-query-server.service.d/force-snapshot.conf
+              sudo systemctl daemon-reload
+            fi
+        env:
+          FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
 
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [deploy_backup, deploy_primary]
+    needs: [validate_height, deploy_backup, deploy_primary]
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
