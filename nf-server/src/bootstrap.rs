@@ -2,7 +2,7 @@
 //!
 //! Runs once at `serve` startup, before [`pir_server::load_serving_state`].
 //! Resolves the canonical snapshot height from the active on-chain round
-//! discovered through the published voting-config and, if local state is
+//! discovered through the published static/dynamic voting config and, if local state is
 //! missing or at the wrong height, downloads the
 //! pre-computed tier files from the bucket configured by
 //! `--precomputed-base-url` and verifies them against the manifest's
@@ -110,8 +110,8 @@ struct PublishedManifest {
 /// composes paths without doubled slashes.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Where to fetch `voting-config.json` from. The CLI default is
-    /// [`DEFAULT_VOTING_CONFIG_URL`]; set to an empty string to disable
+    /// Where to fetch the voting service-discovery config from. The CLI default
+    /// is [`DEFAULT_VOTING_CONFIG_URL`]; set to an empty string to disable
     /// bootstrap (operator manages `pir-data/` entirely on disk).
     pub voting_config_url: String,
     /// Bucket origin for pre-computed snapshots. Empty disables download
@@ -130,11 +130,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// Production-default endpoints. Matches the admin UI's defaults
-    /// (`SVOTE_PIR_VOTING_CONFIG_URL` is implicit there) and svoted's
-    /// `SVOTE_PIR_PRECOMPUTED_BASE_URL` default.
+    /// Production-default endpoints. The voting config URL points at
+    /// the active static config; `nf-server` follows its
+    /// `dynamic_config_url` to discover vote servers.
     pub const DEFAULT_VOTING_CONFIG_URL: &'static str =
-        "https://valargroup.github.io/token-holder-voting-config/voting-config.json";
+        "https://voting.valargroup.org/static-voting-config.json";
     pub const DEFAULT_PRECOMPUTED_BASE_URL: &'static str =
         "https://vote.fra1.digitaloceanspaces.com";
 }

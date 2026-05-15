@@ -178,7 +178,7 @@ jobs:
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
             -e "s|__BINARY_BASE_URL__|https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir|g" \
-            -e "s|__VOTING_CONFIG_URL__|https://valargroup.github.io/token-holder-voting-config/voting-config.json|g" \
+            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/static-voting-config.json|g" \
             -e "s|__PRECOMPUTED_BASE_URL__|https://vote.fra1.digitaloceanspaces.com|g" \
             scripts/start_pir.sh.template > start_pir.sh
           chmod +x start_pir.sh
@@ -212,9 +212,13 @@ jobs:
           fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
             s3://vote/start_pir.sh
-          VOTING_CONFIG_URL="https://valargroup.github.io/token-holder-voting-config/voting-config.json"
+          VOTING_CONFIG_URL="https://voting.valargroup.org/static-voting-config.json"
           HEIGHT=""
           if CONFIG="$(curl -fsSL "$VOTING_CONFIG_URL")"; then
+            DYNAMIC_CONFIG_URL="$(jq -r '.dynamic_config_url // empty' <<<"$CONFIG")"
+            if [ -n "$DYNAMIC_CONFIG_URL" ]; then
+              CONFIG="$(curl -fsSL "$DYNAMIC_CONFIG_URL")"
+            fi
             VOTE_SERVER="$(jq -r '.vote_servers[0].url // empty' <<<"$CONFIG")"
             if [ -n "$VOTE_SERVER" ]; then
               ACTIVE_ROUND="$(curl -fsSL "${VOTE_SERVER%/}/shielded-vote/v1/rounds/active" || true)"

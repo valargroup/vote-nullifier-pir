@@ -69,7 +69,7 @@ The server needs the following network access:
 |-----------|-------------|---------|
 | Outbound 443 | `vote.fra1.digitaloceanspaces.com` | Binary, `SHA256SUMS`, `start_pir.sh`, snapshot tier downloads |
 | Outbound 443 | `github.com`, `objects.githubusercontent.com` | Binary / unit-file fallback |
-| Outbound 443 | `valargroup.github.io` | `voting-config.json` (default) |
+| Outbound 443 | `voting.valargroup.org`, `raw.githubusercontent.com` | Static/dynamic voting config (default) |
 | Outbound 443 | `sentry.io` (DSN-specific host) | Optional — only when `SENTRY_DSN` is set |
 | Outbound 443 | lightwalletd (e.g. `zec.rocks:443`) | **Synced mode only** |
 | Inbound 3000 | client / reverse proxy | PIR query traffic |
@@ -146,7 +146,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
 
    ```bash
    sudo tee /etc/default/nf-server >/dev/null <<'EOF'
-SVOTE_PIR_VOTING_CONFIG_URL=https://valargroup.github.io/token-holder-voting-config/voting-config.json
+SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/static-voting-config.json
 SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
 EOF
 
@@ -219,11 +219,12 @@ systemctl restart nullifier-query-server
 
 Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
 
-**On startup**, `serve` fetches `voting-config.json`, queries the configured
-vote server for the active round's `snapshot_height`, compares that height to
-local `pir_root.json`, and downloads the matching snapshot tiers from
-`SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. Defaults are correct for
-production — operators normally configure nothing.
+**On startup**, `serve` fetches the static voting config, follows its
+`dynamic_config_url`, queries the configured vote servers for the active round's
+`snapshot_height`, compares that height to local `pir_root.json`, and downloads
+the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't
+match. Defaults are correct for production — operators normally configure
+nothing.
 
 If there is no active round, `serve` keeps serving the existing local snapshot.
 On a fresh host with no local `pir_root.json`, set
@@ -246,7 +247,11 @@ systemctl stop nullifier-query-server
 # Optional: load the same env as systemd so sync picks up the active-round height cap
 # sudo set -a && . /etc/default/nf-server && set +a
 
-CONFIG=$(curl -fsSL https://valargroup.github.io/token-holder-voting-config/voting-config.json)
+CONFIG=$(curl -fsSL https://voting.valargroup.org/static-voting-config.json)
+DYNAMIC_CONFIG_URL=$(jq -r '.dynamic_config_url // empty' <<<"$CONFIG")
+if [ -n "$DYNAMIC_CONFIG_URL" ]; then
+    CONFIG=$(curl -fsSL "$DYNAMIC_CONFIG_URL")
+fi
 VOTE_SERVER=$(jq -r '.vote_servers[0].url' <<<"$CONFIG")
 SNAPSHOT=$(curl -fsSL "${VOTE_SERVER%/}/shielded-vote/v1/rounds/active" | jq -r '.round.snapshot_height')
 
@@ -432,7 +437,7 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
-| `status` stays `"starting"` for >2 min, log shows `voting-config.json` fetch errors | Outbound HTTPS to `valargroup.github.io` blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
+| `status` stays `"starting"` for >2 min, log shows voting-config fetch errors | Outbound HTTPS to the static/dynamic config hosts blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
 | `status` stays `"starting"`, log shows no active voting round and no local snapshot | Bootstrap is enabled on a fresh host while no round is active. | Set `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or wait until a round is active. |
 | `status` stays `"starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
 | `status` is `"error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |

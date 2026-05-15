@@ -1,5 +1,5 @@
 # Manual load test against a running PIR server.
-# PIR endpoint URLs are resolved from the published voting-config.json.
+# PIR endpoint URLs are resolved from the published static/dynamic voting config.
 
 name: Load test PIR
 
@@ -34,7 +34,7 @@ permissions:
   contents: read
 
 env:
-  VOTING_CONFIG_URL: https://valargroup.github.io/token-holder-voting-config/voting-config.json
+  VOTING_CONFIG_URL: https://voting.valargroup.org/static-voting-config.json
   SNAPSHOTS_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
 
 jobs:
@@ -56,6 +56,10 @@ jobs:
       - name: Resolve PIR endpoint from voting-config
         run: |
           curl -fsSL --retry 3 "$VOTING_CONFIG_URL" -o voting-config.json
+          DYNAMIC_CONFIG_URL="$(jq -r '.dynamic_config_url // empty' voting-config.json)"
+          if [ -n "$DYNAMIC_CONFIG_URL" ]; then
+            curl -fsSL --retry 3 "$DYNAMIC_CONFIG_URL" -o voting-config.json
+          fi
           if [ "${{ inputs.target }}" = "primary" ]; then
             PIR_URL=$(jq -r '.pir_endpoints[0].url' voting-config.json)
           else

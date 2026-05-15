@@ -100,24 +100,38 @@ jobs:
             fi
 
             METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
-            SERVED=$(printf '%s\n' "$METRICS"   | awk '$1=="nf_snapshot_served_height"   {print int($2); exit}')
-            EXPECTED=$(printf '%s\n' "$METRICS" | awk '$1=="nf_snapshot_expected_height" {print int($2); exit}')
-            : "${SERVED:=0}"
-            : "${EXPECTED:=0}"
+            metric_value() {
+              printf '%s\n' "$METRICS" | awk -v name="$1" '$1==name {print int($2); found=1; exit} END {if (!found) exit 1}'
+            }
+            if ! SERVED=$(metric_value nf_snapshot_served_height); then
+              echo "FAIL: nf_snapshot_served_height metric is missing."
+              exit 1
+            fi
+            if ! EXPECTED=$(metric_value nf_snapshot_expected_height); then
+              echo "FAIL: nf_snapshot_expected_height metric is missing."
+              exit 1
+            fi
 
             echo "==> Snapshot heights: served=$SERVED expected=$EXPECTED"
+            echo "==> Bootstrap outcomes:"
+            printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
 
             if [ "$VERIFY_HEIGHT" = "true" ]; then
-              if [ "$EXPECTED" -le 0 ]; then
-                echo "FAIL: nf_snapshot_expected_height is 0; voting-config bootstrap likely failed."
-                exit 1
-              fi
-              if [ "$SERVED" -lt "$EXPECTED" ]; then
+              if [ "$EXPECTED" -gt 0 ] && [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
                 echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
                 exit 1
               fi
-              echo "OK: backup converged on height $SERVED"
+              if [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
+                echo "FAIL: expected height is zero and no served snapshot was reported."
+                echo "Hint: this can mean no active round plus no local snapshot, or a voting-config/bootstrap failure. Check bootstrap outcomes and journalctl."
+                exit 1
+              fi
+              if [ "$EXPECTED" -eq 0 ]; then
+                echo "OK: backup is ready and serving local snapshot height $SERVED (no active round expected height)."
+              else
+                echo "OK: backup converged on height $SERVED"
+              fi
             else
               echo "Skipping height verification (verify_height_converged=false)"
             fi
@@ -175,24 +189,38 @@ jobs:
             fi
 
             METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
-            SERVED=$(printf '%s\n' "$METRICS"   | awk '$1=="nf_snapshot_served_height"   {print int($2); exit}')
-            EXPECTED=$(printf '%s\n' "$METRICS" | awk '$1=="nf_snapshot_expected_height" {print int($2); exit}')
-            : "${SERVED:=0}"
-            : "${EXPECTED:=0}"
+            metric_value() {
+              printf '%s\n' "$METRICS" | awk -v name="$1" '$1==name {print int($2); found=1; exit} END {if (!found) exit 1}'
+            }
+            if ! SERVED=$(metric_value nf_snapshot_served_height); then
+              echo "FAIL: nf_snapshot_served_height metric is missing."
+              exit 1
+            fi
+            if ! EXPECTED=$(metric_value nf_snapshot_expected_height); then
+              echo "FAIL: nf_snapshot_expected_height metric is missing."
+              exit 1
+            fi
 
             echo "==> Snapshot heights: served=$SERVED expected=$EXPECTED"
+            echo "==> Bootstrap outcomes:"
+            printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
 
             if [ "$VERIFY_HEIGHT" = "true" ]; then
-              if [ "$EXPECTED" -le 0 ]; then
-                echo "FAIL: nf_snapshot_expected_height is 0; voting-config bootstrap likely failed."
-                exit 1
-              fi
-              if [ "$SERVED" -lt "$EXPECTED" ]; then
+              if [ "$EXPECTED" -gt 0 ] && [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
                 echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
                 exit 1
               fi
-              echo "OK: primary converged on height $SERVED"
+              if [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
+                echo "FAIL: expected height is zero and no served snapshot was reported."
+                echo "Hint: this can mean no active round plus no local snapshot, or a voting-config/bootstrap failure. Check bootstrap outcomes and journalctl."
+                exit 1
+              fi
+              if [ "$EXPECTED" -eq 0 ]; then
+                echo "OK: primary is ready and serving local snapshot height $SERVED (no active round expected height)."
+              else
+                echo "OK: primary converged on height $SERVED"
+              fi
             else
               echo "Skipping height verification (verify_height_converged=false)"
             fi

@@ -102,7 +102,8 @@ Both should report identical heights and roots.
 |---------|--------------|----------|
 | `restart_backup` job times out at the readiness-check loop | Snapshot bootstrap couldn't fetch from `vote.fra1.digitaloceanspaces.com` (network / 5xx), sha256 mismatch on a tier file, or `load_serving_state` is still mmapping after 10 min. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
 | `restart_primary` job is skipped after `restart_backup` failed | By design — the workflow refuses to restart primary while backup is unhealthy. | Fix backup first (see row above). Once backup is healthy, run the workflow again with `targets=primary`. |
-| Job fails with `nf_snapshot_expected_height is 0` | `voting-config.json` couldn't be fetched, or the live config has no `snapshot_height` field. | `curl -s https://valargroup.github.io/token-holder-voting-config/voting-config.json \| jq .snapshot_height` from a laptop. If empty, fix the published config. If non-empty, ssh in and check `SVOTE_PIR_VOTING_CONFIG_URL` in `/etc/default/nf-server`. |
+| Job logs `expected=0` and `served>0` | No active round exposed a `snapshot_height`, so the server kept serving its local snapshot. This is acceptable while `/ready` is green. | No action unless you expected an active round. Confirm the active-round API and static/dynamic config if this is surprising. |
+| Job fails with `expected=0` and `served=0` | The server is ready but has no usable local snapshot, or metrics are missing. | Check `nf_snapshot_bootstrap_outcomes_total` in the workflow log, then inspect `journalctl -u nullifier-query-server`. If this is a fresh host with no active round, set `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` or wait for an active round. |
 | Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI https://vote.fra1.digitaloceanspaces.com/snapshots/<expected>/manifest.json`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
 | Job fails with `tier1.bin size mismatch` (or similar) | Locally cached `pir-data/` is from a partial bootstrap or a different `nf-server` build. | SSH in: `sudo rm -rf /opt/nf-ingest/pir-data/* && sudo systemctl restart nullifier-query-server`. The next bootstrap repopulates from the bucket. |
 | Sentry fires `alert:snapshot_stale` for the host you just restarted | Same as the row above — bootstrap fell through and `served < expected` for >30 minutes. | Same recovery. The watchdog emits a follow-up info event ("snapshot height converged") once the gap closes. |
@@ -130,7 +131,8 @@ until curl -sf --max-time 4 https://pir-backup.valargroup.org/ready > /dev/null;
 done
 ssh root@pir-backup.valargroup.org \
     'curl -sf http://localhost:3000/metrics | awk "/^nf_snapshot_(served|expected)_height/ {print}"'
-# served and expected must be equal and >0 before continuing.
+# If expected > 0, served must be >= expected. If expected == 0,
+# /ready plus served > 0 means "no active round; serving local snapshot".
 
 # Primary
 ssh root@pir-primary.valargroup.org sudo systemctl restart nullifier-query-server
