@@ -31,111 +31,113 @@ struct Metrics {
     stale_seconds: IntGauge,
 }
 
+fn build_metrics() -> Metrics {
+    let registry = Registry::new();
+
+    let bootstrap_attempts = IntCounter::new(
+        "nf_snapshot_bootstrap_attempts_total",
+        "Total number of snapshot-bootstrap attempts at startup.",
+    )
+    .expect("valid metric name");
+
+    // `result` is one of: "disabled", "already_at_height",
+    // "using_local_snapshot", "bootstrapped", "fell_through",
+    // "failed_voting_config".
+    // Sum across labels equals `nf_snapshot_bootstrap_attempts_total`
+    // for every completed attempt (including failed_voting_config).
+    let bootstrap_outcomes = IntCounterVec::new(
+        Opts::new(
+            "nf_snapshot_bootstrap_outcomes_total",
+            "Snapshot-bootstrap outcomes at startup, partitioned by result.",
+        ),
+        &["result"],
+    )
+    .expect("valid metric");
+
+    let bootstrap_bytes = IntCounter::new(
+        "nf_snapshot_bootstrap_bytes_total",
+        "Cumulative bytes downloaded by the snapshot bootstrap (manifest + tier files).",
+    )
+    .expect("valid metric");
+
+    // Wide buckets: a tier0 download from a slow region can sit in
+    // the multi-minute range; we want a single histogram that's
+    // useful both for a fast bootstrap and a slow one.
+    let bootstrap_duration = HistogramVec::new(
+        HistogramOpts::new(
+            "nf_snapshot_bootstrap_duration_seconds",
+            "End-to-end snapshot-bootstrap duration, including manifest + tier downloads.",
+        )
+        .buckets(vec![
+            1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1800.0,
+        ]),
+        &[],
+    )
+    .expect("valid metric");
+
+    let served_height = IntGauge::new(
+        "nf_snapshot_served_height",
+        "Block height of the snapshot currently loaded on disk \
+         (0 if no usable local snapshot at startup).",
+    )
+    .expect("valid metric");
+
+    let expected_height = IntGauge::new(
+        "nf_snapshot_expected_height",
+        "Block height the published voting-config says we should be serving \
+         (0 if voting-config didn't declare one or hasn't been fetched yet).",
+    )
+    .expect("valid metric");
+
+    // Seconds the host has been observed serving a stale snapshot
+    // (`served_height < expected_height` with `expected_height > 0`).
+    // 0 while converged. Reset to 0 the moment served catches up.
+    // Updated by the watchdog loop in `serve::watchdog`; the alert
+    // rule fires when this exceeds the configured threshold.
+    let stale_seconds = IntGauge::new(
+        "nf_snapshot_stale_seconds",
+        "Seconds this host has been continuously observed serving a snapshot \
+         older than the canonical active-round height (0 if currently converged).",
+    )
+    .expect("valid metric");
+
+    registry
+        .register(Box::new(bootstrap_attempts.clone()))
+        .expect("register attempts");
+    registry
+        .register(Box::new(bootstrap_outcomes.clone()))
+        .expect("register outcomes");
+    registry
+        .register(Box::new(bootstrap_bytes.clone()))
+        .expect("register bytes");
+    registry
+        .register(Box::new(bootstrap_duration.clone()))
+        .expect("register duration");
+    registry
+        .register(Box::new(served_height.clone()))
+        .expect("register served");
+    registry
+        .register(Box::new(expected_height.clone()))
+        .expect("register expected");
+    registry
+        .register(Box::new(stale_seconds.clone()))
+        .expect("register stale_seconds");
+
+    Metrics {
+        registry,
+        bootstrap_attempts,
+        bootstrap_outcomes,
+        bootstrap_bytes,
+        bootstrap_duration,
+        served_height,
+        expected_height,
+        stale_seconds,
+    }
+}
+
 fn metrics() -> &'static Metrics {
     static INSTANCE: OnceLock<Metrics> = OnceLock::new();
-    INSTANCE.get_or_init(|| {
-        let registry = Registry::new();
-
-        let bootstrap_attempts = IntCounter::new(
-            "nf_snapshot_bootstrap_attempts_total",
-            "Total number of snapshot-bootstrap attempts at startup.",
-        )
-        .expect("valid metric name");
-
-        // `result` is one of: "disabled", "already_at_height",
-        // "using_local_snapshot", "bootstrapped", "fell_through",
-        // "failed_voting_config".
-        // Sum across labels equals `nf_snapshot_bootstrap_attempts_total`
-        // for every completed attempt (including failed_voting_config).
-        let bootstrap_outcomes = IntCounterVec::new(
-            Opts::new(
-                "nf_snapshot_bootstrap_outcomes_total",
-                "Snapshot-bootstrap outcomes at startup, partitioned by result.",
-            ),
-            &["result"],
-        )
-        .expect("valid metric");
-
-        let bootstrap_bytes = IntCounter::new(
-            "nf_snapshot_bootstrap_bytes_total",
-            "Cumulative bytes downloaded by the snapshot bootstrap (manifest + tier files).",
-        )
-        .expect("valid metric");
-
-        // Wide buckets: a tier0 download from a slow region can sit in
-        // the multi-minute range; we want a single histogram that's
-        // useful both for a fast bootstrap and a slow one.
-        let bootstrap_duration = HistogramVec::new(
-            HistogramOpts::new(
-                "nf_snapshot_bootstrap_duration_seconds",
-                "End-to-end snapshot-bootstrap duration, including manifest + tier downloads.",
-            )
-            .buckets(vec![
-                1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1800.0,
-            ]),
-            &[],
-        )
-        .expect("valid metric");
-
-        let served_height = IntGauge::new(
-            "nf_snapshot_served_height",
-            "Block height of the snapshot currently loaded on disk \
-             (0 if no usable local snapshot at startup).",
-        )
-        .expect("valid metric");
-
-        let expected_height = IntGauge::new(
-            "nf_snapshot_expected_height",
-            "Block height the published voting-config says we should be serving \
-             (0 if voting-config didn't declare one or hasn't been fetched yet).",
-        )
-        .expect("valid metric");
-
-        // Seconds the host has been observed serving a stale snapshot
-        // (`served_height < expected_height` with `expected_height > 0`).
-        // 0 while converged. Reset to 0 the moment served catches up.
-        // Updated by the watchdog loop in `serve::watchdog`; the alert
-        // rule fires when this exceeds the configured threshold.
-        let stale_seconds = IntGauge::new(
-            "nf_snapshot_stale_seconds",
-            "Seconds this host has been continuously observed serving a snapshot \
-             older than the canonical active-round height (0 if currently converged).",
-        )
-        .expect("valid metric");
-
-        registry
-            .register(Box::new(bootstrap_attempts.clone()))
-            .expect("register attempts");
-        registry
-            .register(Box::new(bootstrap_outcomes.clone()))
-            .expect("register outcomes");
-        registry
-            .register(Box::new(bootstrap_bytes.clone()))
-            .expect("register bytes");
-        registry
-            .register(Box::new(bootstrap_duration.clone()))
-            .expect("register duration");
-        registry
-            .register(Box::new(served_height.clone()))
-            .expect("register served");
-        registry
-            .register(Box::new(expected_height.clone()))
-            .expect("register expected");
-        registry
-            .register(Box::new(stale_seconds.clone()))
-            .expect("register stale_seconds");
-
-        Metrics {
-            registry,
-            bootstrap_attempts,
-            bootstrap_outcomes,
-            bootstrap_bytes,
-            bootstrap_duration,
-            served_height,
-            expected_height,
-            stale_seconds,
-        }
-    })
+    INSTANCE.get_or_init(build_metrics)
 }
 
 pub fn bootstrap_attempts_inc() {
@@ -214,15 +216,20 @@ mod tests {
 
     #[test]
     fn registry_initialises_and_observes() {
-        bootstrap_attempts_inc();
-        bootstrap_outcome_inc("bootstrapped");
-        bootstrap_bytes_inc(123);
-        bootstrap_duration_observe(std::time::Duration::from_secs(2));
-        served_height_set(100);
-        expected_height_set(101);
-        stale_seconds_set(42);
+        let m = build_metrics();
+        m.bootstrap_attempts.inc();
+        m.bootstrap_outcomes
+            .with_label_values(&["bootstrapped"])
+            .inc();
+        m.bootstrap_bytes.inc_by(123);
+        m.bootstrap_duration
+            .with_label_values(&[])
+            .observe(std::time::Duration::from_secs(2).as_secs_f64());
+        m.served_height.set(100);
+        m.expected_height.set(101);
+        m.stale_seconds.set(42);
 
-        let mf = metrics().registry.gather();
+        let mf = m.registry.gather();
         let names: Vec<&str> = mf.iter().map(|f| f.get_name()).collect();
         assert!(names.contains(&"nf_snapshot_bootstrap_attempts_total"));
         assert!(names.contains(&"nf_snapshot_bootstrap_outcomes_total"));
@@ -232,8 +239,8 @@ mod tests {
         assert!(names.contains(&"nf_snapshot_expected_height"));
         assert!(names.contains(&"nf_snapshot_stale_seconds"));
 
-        // Getters reflect the most recent set call.
-        assert_eq!(served_height_get(), 100);
-        assert_eq!(expected_height_get(), 101);
+        // Gauges reflect the most recent set call on this isolated registry.
+        assert_eq!(m.served_height.get().max(0) as u64, 100);
+        assert_eq!(m.expected_height.get().max(0) as u64, 101);
     }
 }
