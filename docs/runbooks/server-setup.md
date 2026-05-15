@@ -228,9 +228,9 @@ nothing.
 
 If there is no active round, `serve` keeps serving the existing local snapshot.
 On a fresh host with no local `pir_root.json`, set
-`SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT=<height>` to bootstrap a specific published
-snapshot. The override is ignored while an active round exists; chain state wins
-for live rounds.
+`SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=<height>` to bootstrap a specific published
+snapshot. The force setting bypasses active-round discovery, so remove it after
+the host has loaded the intended snapshot unless the override is still desired.
 
 **Policy:** if local tier state is unusable and bootstrap can't fix it (e.g. CDN fetch failed and no valid files under `SVOTE_PIR_DATA_DIR`), startup fails. Fix the network / configuration, fall back to [Synced mode](#synced-mode), or pre-stage files.
 
@@ -370,7 +370,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
-| `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` | Optional fallback height for fresh hosts when the chain has no active voting round and no local snapshot exists. Ignored when an active round exists. |
+| `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses voting-config / active-round discovery while set. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
 
@@ -438,7 +438,7 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
 | `status` stays `"starting"` for >2 min, log shows voting-config fetch errors | Outbound HTTPS to the static/dynamic config hosts blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
-| `status` stays `"starting"`, log shows no active voting round and no local snapshot | Bootstrap is enabled on a fresh host while no round is active. | Set `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or wait until a round is active. |
+| `status` stays `"starting"`, log shows no active voting round and no local snapshot | Bootstrap is enabled on a fresh host while no round is active. | Set `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or wait until a round is active. |
 | `status` stays `"starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
 | `status` is `"error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |

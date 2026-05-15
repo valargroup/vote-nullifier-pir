@@ -45,9 +45,9 @@
 //! rule:** whenever that URL is non-empty (the default, or any override you
 //! set), the published JSON must be fetchable over HTTP(S). If no active round
 //! exposes `snapshot_height`, [`run`] falls back to an existing local snapshot.
-//! A fresh host with no local snapshot must provide
-//! `--bootstrap-snapshot-height` / `SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT`;
-//! otherwise startup stops with a clear error.
+//! A fresh host with no local snapshot and no active round must provide
+//! `--force-snapshot-height` / `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT`; otherwise
+//! startup stops with a clear error.
 //! **Opt out:** set `--voting-config-url` / `SVOTE_PIR_VOTING_CONFIG_URL` to an
 //! **empty string** to disable bootstrap and serve only pre-staged `pir-data/`
 //! (offline dev, air-gapped hosts).
@@ -123,9 +123,6 @@ pub struct Config {
     /// even if the active round height differs from local state — we
     /// surface a warning so the operator notices.
     pub precomputed_base_url: String,
-    /// Explicit snapshot height to bootstrap when the chain has no active
-    /// round and no local snapshot exists. Ignored when an active round exists.
-    pub bootstrap_snapshot_height_override: Option<u64>,
     /// Explicit snapshot height to serve, regardless of voting config or active
     /// round state. Intended for operator-controlled forced restarts.
     pub force_snapshot_height: Option<u64>,
@@ -147,12 +144,12 @@ impl Config {
         "https://vote.fra1.digitaloceanspaces.com";
 }
 
-fn validate_bootstrap_snapshot_height(height: u64) -> Result<()> {
+fn validate_force_snapshot_height(height: u64) -> Result<()> {
     if height == 0 {
-        bail!("bootstrap snapshot height override must be greater than zero");
+        bail!("force snapshot height must be greater than zero");
     }
     if height % 10 != 0 {
-        bail!("bootstrap snapshot height override must be a multiple of 10, got {height}");
+        bail!("force snapshot height must be a multiple of 10, got {height}");
     }
     Ok(())
 }
@@ -192,7 +189,7 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
     }
 
     if let Some(h) = cfg.force_snapshot_height {
-        validate_bootstrap_snapshot_height(h)?;
+        validate_force_snapshot_height(h)?;
         metrics::expected_height_set(h);
         info!(
             local = ?local_height,
@@ -229,22 +226,12 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
                 metrics::bootstrap_outcome_inc("using_local_snapshot");
                 return Ok(Outcome::UsingLocalSnapshot(h));
             }
-            if let Some(h) = cfg.bootstrap_snapshot_height_override {
-                validate_bootstrap_snapshot_height(h)?;
-                info!(
-                    height = h,
-                    "no active round snapshot_height discovered; using explicit bootstrap override"
-                );
-                metrics::expected_height_set(h);
-                h
-            } else {
-                metrics::bootstrap_outcome_inc("failed_voting_config");
-                bail!(
-                    "no active voting round with snapshot_height discovered via {} and no local snapshot exists; \
-                     set SVOTE_PIR_BOOTSTRAP_SNAPSHOT_HEIGHT / --bootstrap-snapshot-height to bootstrap a fresh host",
-                    cfg.voting_config_url
-                );
-            }
+            metrics::bootstrap_outcome_inc("failed_voting_config");
+            bail!(
+                "no active voting round with snapshot_height discovered via {} and no local snapshot exists; \
+                 set SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT / --force-snapshot-height to bootstrap a specific published snapshot",
+                cfg.voting_config_url
+            );
         }
         Err(e) => {
             metrics::bootstrap_outcome_inc("failed_voting_config");
@@ -615,7 +602,6 @@ mod tests {
         let cfg = Config {
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
-            bootstrap_snapshot_height_override: None,
             force_snapshot_height: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
@@ -631,7 +617,6 @@ mod tests {
         let cfg = Config {
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
-            bootstrap_snapshot_height_override: None,
             force_snapshot_height: Some(100),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
@@ -647,7 +632,6 @@ mod tests {
         let cfg = Config {
             voting_config_url: String::new(),
             precomputed_base_url: String::new(),
-            bootstrap_snapshot_height_override: None,
             force_snapshot_height: Some(100),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
@@ -668,7 +652,6 @@ mod tests {
         let cfg = Config {
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
-            bootstrap_snapshot_height_override: None,
             force_snapshot_height: Some(101),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
@@ -701,7 +684,6 @@ mod tests {
         let cfg = Config {
             voting_config_url: format!("http://127.0.0.1:{}/cfg.json", addr.port()),
             precomputed_base_url: String::new(),
-            bootstrap_snapshot_height_override: None,
             force_snapshot_height: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(5),
@@ -717,7 +699,6 @@ mod tests {
         let cfg = Config {
             voting_config_url: "http://127.0.0.1:1/voting-config.json".into(),
             precomputed_base_url: String::new(),
-            bootstrap_snapshot_height_override: None,
             force_snapshot_height: None,
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_millis(500),

@@ -240,7 +240,6 @@ async fn full_bootstrap_installs_all_files() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base.clone(),
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -273,7 +272,6 @@ async fn force_height_bootstraps_requested_snapshot_over_active_round() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: Some(forced_h),
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -306,7 +304,6 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -345,7 +342,6 @@ async fn missing_remote_snapshot_falls_through() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -394,7 +390,6 @@ async fn manifest_height_mismatch_falls_through() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -428,7 +423,6 @@ async fn already_at_height_is_a_no_op() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -452,7 +446,6 @@ async fn no_active_round_uses_local_snapshot_when_present() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -463,7 +456,7 @@ async fn no_active_round_uses_local_snapshot_when_present() {
 }
 
 #[tokio::test]
-async fn no_active_round_uses_explicit_bootstrap_height_when_no_local_snapshot() {
+async fn force_height_bootstraps_when_no_active_round_or_local_snapshot() {
     let bucket = MockBucket::default();
     let h = 420u64;
     let blobs = stage_snapshot(&bucket, h);
@@ -474,8 +467,7 @@ async fn no_active_round_uses_explicit_bootstrap_height_when_no_local_snapshot()
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: Some(h),
-        force_snapshot_height: None,
+        force_snapshot_height: Some(h),
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
     };
@@ -501,7 +493,6 @@ async fn no_active_round_ignores_rounds_list_without_explicit_override() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -529,7 +520,6 @@ async fn no_active_round_without_local_or_override_errors() {
     let cfg = Config {
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(5),
@@ -550,7 +540,6 @@ async fn unreachable_voting_config_errors() {
         // Localhost on a port we don't bind: connection refused.
         voting_config_url: "http://127.0.0.1:1/voting-config.json".to_string(),
         precomputed_base_url: "http://127.0.0.1:1".to_string(),
-        bootstrap_snapshot_height_override: None,
         force_snapshot_height: None,
         pir_data_dir: tmp.path().to_path_buf(),
         http_timeout: Duration::from_secs(1),
