@@ -55,10 +55,15 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
     };
     let environment =
         std::env::var("SENTRY_ENVIRONMENT").unwrap_or_else(|_| "production".to_string());
+    let release = std::env::var("SENTRY_RELEASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(Cow::Owned)
+        .or_else(|| sentry::release_name!());
     sentry::init((
         dsn,
         sentry::ClientOptions {
-            release: sentry::release_name!(),
+            release,
             environment: Some(Cow::Owned(environment)),
             sample_rate: 1.0,
             // Only trace known API routes. SentryHttpLayer names transactions as

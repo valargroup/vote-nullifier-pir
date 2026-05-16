@@ -156,7 +156,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           script: |
             set -eu
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
@@ -166,6 +166,7 @@ jobs:
             {
               echo "SENTRY_DSN=$SENTRY_DSN"
               echo "SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT"
+              echo "SENTRY_RELEASE=$SENTRY_RELEASE"
             } > "$tmp"
             sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
             rm -f "$tmp"
@@ -197,6 +198,7 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
           SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
+          SENTRY_RELEASE: ${{ inputs.release_tag }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
@@ -295,7 +297,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           script: |
             set -eu
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
@@ -305,6 +307,7 @@ jobs:
             {
               echo "SENTRY_DSN=$SENTRY_DSN"
               echo "SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT"
+              echo "SENTRY_RELEASE=$SENTRY_RELEASE"
             } > "$tmp"
             sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
             rm -f "$tmp"
@@ -336,6 +339,7 @@ jobs:
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
           SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
+          SENTRY_RELEASE: ${{ inputs.release_tag }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 

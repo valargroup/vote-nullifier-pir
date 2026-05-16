@@ -97,10 +97,11 @@ sentry-cli projects list --org valar-group
 
 The PIR fleet uses project `nf-server`. Keep `NF_SENTRY_DSN` scoped to the
 GitHub Environment. `deploy.yml` derives the host-side `SENTRY_ENVIRONMENT`
-from `target_environment` and writes it to `/opt/nf-ingest/.env`. If you rotate
-a DSN, update only the selected GitHub Environment secret, then run **Deploy
-nf-server** for that environment; `restart.yml` is a pure restart and does not
-rewrite `/opt/nf-ingest/.env`.
+from `target_environment` and writes `SENTRY_RELEASE` from `release_tag`; both
+go into `/opt/nf-ingest/.env` next to `SENTRY_DSN`. If you rotate a DSN or need
+to correct release tagging, update the selected GitHub Environment secret or
+release tag, then run **Deploy nf-server** for that environment; `restart.yml`
+is a pure restart and does not rewrite `/opt/nf-ingest/.env`.
 
 After a deploy, record or verify the Sentry deploy marker with the same tag and
 environment:
