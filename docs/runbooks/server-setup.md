@@ -295,7 +295,7 @@ The release ships `nullifier-query-server.service` and `start_pir.sh` installs i
 - `ExecStart=/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`;
 - pulls environment from two files (both optional, `EnvironmentFile=-…`):
   - `/etc/default/nf-server` — operator / cloud-init owned. Holds `SVOTE_PIR_VOTING_CONFIG_URL` and `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Edit this file to point at a mirror or to disable bootstrap (`SVOTE_PIR_VOTING_CONFIG_URL=`).
-  - `/opt/nf-ingest/.env` — deploy-workflow owned. Holds `SENTRY_DSN`. Mode `0600`.
+  - `/opt/nf-ingest/.env` — deploy-workflow owned. Holds `SENTRY_DSN` and `SENTRY_ENVIRONMENT`. Mode `0600`.
 
 To change settings, edit the appropriate env file and:
 
@@ -330,7 +330,7 @@ Caddy obtains a certificate automatically. For nginx, use any standard `proxy_pa
 
 Browse `/metrics` once after install for the full series list; names are stable across patch releases.
 
-**Sentry**: optional. Create a project at [sentry.io](https://sentry.io), set `SENTRY_DSN` in `/opt/nf-ingest/.env`. The in-process snapshot watchdog emits stale-snapshot events when `SVOTE_PIR_STALE_THRESHOLD_SECS` is non-zero; `SVOTE_PIR_WATCHDOG_TICK_SECS` controls how often it checks.
+**Sentry**: optional. Create a project at [sentry.io](https://sentry.io), set `SENTRY_DSN` in `/opt/nf-ingest/.env`, and set `SENTRY_ENVIRONMENT` to `staging` or `production`. The in-process snapshot watchdog emits stale-snapshot events when `SVOTE_PIR_STALE_THRESHOLD_SECS` is non-zero; `SVOTE_PIR_WATCHDOG_TICK_SECS` controls how often it checks.
 
 **Logs**: the server logs to stdout; `journalctl -u nullifier-query-server -f` follows them. Verbosity is controlled by `RUST_LOG` (e.g. `RUST_LOG=info,nf_server=debug`); set it in `/etc/default/nf-server` and restart.
 
@@ -373,6 +373,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses voting-config / active-round discovery while set. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
+| `SENTRY_ENVIRONMENT` | Tags Sentry events as `staging` or `production`. Lives in `/opt/nf-ingest/.env` and defaults to `production` if omitted. |
 
 **Advanced** (rarely touched; see `--help` for more):
 

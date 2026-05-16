@@ -1,6 +1,6 @@
 # Deploy a tagged nf-server release to PIR hosts via SSH.
 # Triggered automatically after a release build, or manually via workflow_dispatch.
-# Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY, NF_SENTRY_DSN.
+# Requires environment secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY, NF_SENTRY_DSN.
 # See docs/runbooks/ci-setup.md for one-time remote setup.
 #
 # Ordering: when targets=both, backup is deployed and readiness-checked first,
@@ -156,14 +156,19 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           script: |
             set -eu
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
 
-            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
-            sudo chmod 600 /opt/nf-ingest/.env
+            tmp=$(mktemp)
+            {
+              echo "SENTRY_DSN=$SENTRY_DSN"
+              echo "SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT"
+            } > "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
+            rm -f "$tmp"
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             if [ -n "$FORCED_HEIGHT" ]; then
@@ -191,6 +196,7 @@ jobs:
             echo "Deployed ${{ inputs.release_tag }} to backup"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
@@ -289,14 +295,19 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
           script: |
             set -eu
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
 
-            echo "SENTRY_DSN=$SENTRY_DSN" | sudo tee /opt/nf-ingest/.env > /dev/null
-            sudo chmod 600 /opt/nf-ingest/.env
+            tmp=$(mktemp)
+            {
+              echo "SENTRY_DSN=$SENTRY_DSN"
+              echo "SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT"
+            } > "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
+            rm -f "$tmp"
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             if [ -n "$FORCED_HEIGHT" ]; then
@@ -324,6 +335,7 @@ jobs:
             echo "Deployed ${{ inputs.release_tag }} to primary"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
 
@@ -413,3 +425,32 @@ jobs:
                 }
               ]
             }
+
+  record-sentry-deploy:
+    name: Record Sentry deploy
+    if: |
+      always() &&
+      needs.validate_height.result == 'success' &&
+      (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped') &&
+      (needs.deploy_primary.result == 'success' || needs.deploy_primary.result == 'skipped')
+    needs: [validate_height, deploy_backup, deploy_primary]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    env:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
+    steps:
+      - name: Record deploy marker
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "SENTRY_AUTH_TOKEN is not configured; skipping Sentry deploy marker."
+            exit 0
+          fi
+          curl -sL https://sentry.io/get-cli/ | bash
+          sentry-cli releases new --org valar-group --project nf-server "${{ inputs.release_tag }}" || true
+          sentry-cli deploys new \
+            --org valar-group \
+            --project nf-server \
+            --release "${{ inputs.release_tag }}" \
+            -e "${SENTRY_ENVIRONMENT}"

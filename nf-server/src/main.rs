@@ -18,6 +18,9 @@ mod serve;
 mod sync_pipeline;
 mod voting_config;
 
+#[cfg(feature = "serve")]
+use std::borrow::Cow;
+
 use clap::{Parser, Subcommand};
 
 /// Top-level CLI parser.
@@ -50,10 +53,13 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
         Command::Serve(args) => args.sentry_dsn.as_str(),
         _ => "",
     };
+    let environment =
+        std::env::var("SENTRY_ENVIRONMENT").unwrap_or_else(|_| "production".to_string());
     sentry::init((
         dsn,
         sentry::ClientOptions {
             release: sentry::release_name!(),
+            environment: Some(Cow::Owned(environment)),
             sample_rate: 1.0,
             // Only trace known API routes. SentryHttpLayer names transactions as
             // "METHOD /path" (raw URI) at sampling time, so unmatched paths such
