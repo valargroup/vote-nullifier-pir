@@ -25,6 +25,13 @@ On Linux, we recommend using this one-CLI command to get started:
 curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
 ```
 
+During the production Spaces migration, use the same path on the migrated
+bucket once the release workflow has published it:
+
+```bash
+curl -fsSL https://shielded-vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash
+```
+
 What it does:
 - Downloads the latest binaries and verifies `nf-server` against `SHA256SUMS` for the pinned release.
 - Configures the service per the recommended parameters
@@ -67,7 +74,7 @@ The server needs the following network access:
 
 | Direction | Destination | Purpose |
 |-----------|-------------|---------|
-| Outbound 443 | `vote.fra1.digitaloceanspaces.com` | Binary, `SHA256SUMS`, `start_pir.sh`, snapshot tier downloads |
+| Outbound 443 | `vote.fra1.digitaloceanspaces.com` or `shielded-vote.fra1.digitaloceanspaces.com` after migration | Binary, `SHA256SUMS`, `start_pir.sh`, snapshot tier downloads |
 | Outbound 443 | `github.com`, `objects.githubusercontent.com` | Binary / unit-file fallback |
 | Outbound 443 | `voting.valargroup.org`, `raw.githubusercontent.com` | Static/dynamic voting config (default) |
 | Outbound 443 | `sentry.io` (DSN-specific host) | Optional — only when `SENTRY_DSN` is set |
@@ -87,12 +94,12 @@ The server needs the following network access:
 
 ### Release artifacts
 
-Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and `nullifier-query-server.service` to **DigitalOcean Spaces** (primary) with **GitHub Releases** as a fallback. `start_pir.sh` tries Spaces first, then GitHub. Exact URL patterns are in the curl commands in [Manual install](#manual-install-no-start_pirsh).
+Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and `nullifier-query-server.service` to **DigitalOcean Spaces** (primary) with **GitHub Releases** as a fallback. `start_pir.sh` tries Spaces first, then GitHub. The release workflow derives the public Spaces origin from `DO_BUCKET` + `DO_REGION` unless `DO_PUBLIC_BASE_URL` is set. The default remains the legacy `https://vote.fra1.digitaloceanspaces.com`; set `DO_BUCKET=shielded-vote` for the production bucket migration. Exact URL patterns are in the curl commands in [Manual install](#manual-install-no-start_pirsh).
 
-`start_pir.sh` itself is served at two URLs:
+`start_pir.sh` itself is served at two paths under the configured Spaces origin:
 
-- `https://vote.fra1.digitaloceanspaces.com/start_pir.sh` — always the **latest** release.
-- `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matches a given voting `snapshot_height`. Use this for reproducible installs.
+- `<spaces-origin>/start_pir.sh` — always the **latest** release.
+- `<spaces-origin>/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matches a given voting `snapshot_height`. Use this for reproducible installs.
 
 ### Manual install (no `start_pir.sh`)
 
@@ -111,14 +118,15 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
    ```bash
    PLATFORM=linux-amd64        # or linux-arm64, darwin-arm64, darwin-amd64
    TAG=v0.x.y                  # pin the release tag
+   PIR_SPACES_BASE="${PIR_SPACES_BASE:-https://vote.fra1.digitaloceanspaces.com}"
 
    curl -fL -o "/tmp/nf-server-${PLATFORM}" \
-     "https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/nf-server-${TAG}-${PLATFORM}" \
+     "${PIR_SPACES_BASE}/binaries/vote-pir/nf-server-${TAG}-${PLATFORM}" \
      || curl -fL -o "/tmp/nf-server-${PLATFORM}" \
        "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/nf-server-${PLATFORM}"
 
    curl -fL -o /tmp/SHA256SUMS \
-     "https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir/SHA256SUMS-${TAG}" \
+     "${PIR_SPACES_BASE}/binaries/vote-pir/SHA256SUMS-${TAG}" \
      || curl -fL -o /tmp/SHA256SUMS \
        "https://github.com/valargroup/vote-nullifier-pir/releases/download/${TAG}/SHA256SUMS"
 
@@ -145,9 +153,10 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
 4. **Write the env files** the unit reads (see [Configuring the service](#configuring-the-service) for the full layout). **Do not indent the lines inside the heredoc** — leading spaces would end up in the file and break `EnvironmentFile` parsing.
 
    ```bash
-   sudo tee /etc/default/nf-server >/dev/null <<'EOF'
+   PIR_PRECOMPUTED_BASE_URL=https://shielded-vote.fra1.digitaloceanspaces.com
+   sudo tee /etc/default/nf-server >/dev/null <<EOF
 SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/static-voting-config.json
-SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
+SVOTE_PIR_PRECOMPUTED_BASE_URL=${PIR_PRECOMPUTED_BASE_URL}
 EOF
 
    # Optional: Sentry DSN for observability (see configuration below)
@@ -223,8 +232,15 @@ Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, boot
 `dynamic_config_url`, queries the configured vote servers for the active round's
 `snapshot_height`, compares that height to local `pir_root.json`, and downloads
 the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't
-match. Defaults are correct for production — operators normally configure
-nothing.
+match. With default workflow settings, existing installs keep working against
+the legacy production object storage origin.
+
+The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` intentionally stays
+on the legacy `https://vote.fra1.digitaloceanspaces.com` origin for existing
+installs. Production migration is explicit. Set
+`SVOTE_PIR_PRECOMPUTED_BASE_URL=https://shielded-vote.fra1.digitaloceanspaces.com`
+in `/etc/default/nf-server`, or publish `start_pir.sh` with `DO_BUCKET=shielded-vote`
+so fresh installs write that value automatically.
 
 If there is no active round, `serve` keeps serving the existing local snapshot.
 On a fresh host with no local `pir_root.json`, set
@@ -354,7 +370,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 - A new `v*` release with security or correctness fixes (watch GitHub Releases; subscribe via the repo's release feed).
 - Otherwise, no need to chase patch releases mid-round.
 
-For pinned-snapshot installs, use the per-snapshot `start_pir.sh` URL: `https://vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh`.
+For pinned-snapshot installs, use the per-snapshot `start_pir.sh` URL under the configured Spaces origin, for example `https://shielded-vote.fra1.digitaloceanspaces.com/scripts/start_pir/<snapshot_height>/start_pir.sh` after the production migration.
 
 ## Configuration reference
 
@@ -369,7 +385,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files. Unit overrides via `--pir-data-dir /opt/nf-ingest/pir-data`. |
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
-| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to production object storage. |
+| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. The compiled fallback is the legacy `vote` Spaces origin for compatibility. Production migration should set this explicitly to `https://shielded-vote.fra1.digitaloceanspaces.com`. |
 | `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses voting-config / active-round discovery while set. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |

@@ -144,6 +144,10 @@ jobs:
     env:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
       DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
+      DO_BUCKET: ${{ vars.DO_BUCKET || 'vote' }}
+      DO_REGION: ${{ vars.DO_REGION || 'fra1' }}
+      DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
+      DO_PRECOMPUTED_BASE_URL: ${{ vars.DO_PRECOMPUTED_BASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,13 +178,21 @@ jobs:
       - name: Render start_pir.sh installer
         run: |
           set -euo pipefail
+          if [ -z "$DO_BUCKET" ] || [ -z "$DO_REGION" ]; then
+            echo "DO_BUCKET and DO_REGION must be non-empty." >&2
+            exit 1
+          fi
+          PUBLIC_BASE_URL="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
+          PRECOMPUTED_BASE_URL="${DO_PRECOMPUTED_BASE_URL:-$PUBLIC_BASE_URL}"
+          PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL%/}"
           # Keep sed substitutions aligned with start-pir-installer-smoke.yml.
           sed \
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
-            -e "s|__BINARY_BASE_URL__|https://vote.fra1.digitaloceanspaces.com/binaries/vote-pir|g" \
+            -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
             -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/static-voting-config.json|g" \
-            -e "s|__PRECOMPUTED_BASE_URL__|https://vote.fra1.digitaloceanspaces.com|g" \
+            -e "s|__PRECOMPUTED_BASE_URL__|${PRECOMPUTED_BASE_URL}|g" \
             scripts/start_pir.sh.template > start_pir.sh
           chmod +x start_pir.sh
 
@@ -189,30 +201,34 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          if [ -z "$DO_BUCKET" ] || [ -z "$DO_REGION" ]; then
+            echo "DO_BUCKET and DO_REGION must be non-empty." >&2
+            exit 1
+          fi
           VERSION="${GITHUB_REF_NAME}"
           pip install --quiet s3cmd
           cat > /tmp/do-spaces.s3cfg <<EOF
           [default]
           access_key = ${DO_ACCESS_KEY}
           secret_key = ${DO_SECRET_KEY}
-          host_base = fra1.digitaloceanspaces.com
-          host_bucket = %(bucket)s.fra1.digitaloceanspaces.com
-          bucket_location = fra1
+          host_base = ${DO_REGION}.digitaloceanspaces.com
+          host_bucket = %(bucket)s.${DO_REGION}.digitaloceanspaces.com
+          bucket_location = ${DO_REGION}
           use_https = True
           EOF
           for PLATFORM in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
             BINARY="nf-server-${PLATFORM}"
             if [ -f "$BINARY" ]; then
               s3cmd -c /tmp/do-spaces.s3cfg put "$BINARY" \
-                "s3://vote/binaries/vote-pir/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
+                "s3://${DO_BUCKET}/binaries/vote-pir/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
             fi
           done
           if [ -f SHA256SUMS ]; then
             s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force SHA256SUMS \
-              "s3://vote/binaries/vote-pir/SHA256SUMS-${VERSION}"
+              "s3://${DO_BUCKET}/binaries/vote-pir/SHA256SUMS-${VERSION}"
           fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-            s3://vote/start_pir.sh
+            "s3://${DO_BUCKET}/start_pir.sh"
           VOTING_CONFIG_URL="https://voting.valargroup.org/static-voting-config.json"
           HEIGHT=""
           if CONFIG="$(curl -fsSL "$VOTING_CONFIG_URL")"; then
@@ -237,7 +253,7 @@ jobs:
                 ;;
               *)
                 s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-                  "s3://vote/scripts/start_pir/${HEIGHT}/start_pir.sh"
+                  "s3://${DO_BUCKET}/scripts/start_pir/${HEIGHT}/start_pir.sh"
                 ;;
             esac
           else

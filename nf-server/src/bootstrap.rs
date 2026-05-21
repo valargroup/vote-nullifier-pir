@@ -12,6 +12,9 @@
 //! `--force-snapshot-height` / `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT`. That mode is
 //! intended for runbook-controlled fleet restarts against a known-published
 //! snapshot and always takes precedence over the active-round height.
+//! Operators can also move the public snapshot bucket without rebuilding the
+//! binary by setting `SVOTE_PIR_PRECOMPUTED_BASE_URL` to the new bucket origin,
+//! for example `https://shielded-vote.fra1.digitaloceanspaces.com`.
 //!
 //! ## URL layout (matches `.github/workflows/publish-snapshot.yml`)
 //!
@@ -140,6 +143,9 @@ impl Config {
     /// `dynamic_config_url` to discover vote servers.
     pub const DEFAULT_VOTING_CONFIG_URL: &'static str =
         "https://voting.valargroup.org/static-voting-config.json";
+    /// Legacy bucket origin retained as the compiled default for existing
+    /// installs. Production migrations should override this with
+    /// `SVOTE_PIR_PRECOMPUTED_BASE_URL` rather than requiring a new binary.
     pub const DEFAULT_PRECOMPUTED_BASE_URL: &'static str =
         "https://vote.fra1.digitaloceanspaces.com";
 }
@@ -550,6 +556,18 @@ mod tests {
             serde_json::to_string(&m).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn default_precomputed_base_url_stays_on_legacy_origin() {
+        assert_eq!(
+            Config::DEFAULT_PRECOMPUTED_BASE_URL,
+            "https://vote.fra1.digitaloceanspaces.com"
+        );
+        assert!(
+            !Config::DEFAULT_PRECOMPUTED_BASE_URL.contains("/snapshots"),
+            "precomputed base is the bucket origin; bootstrap appends /snapshots/<height>"
+        );
     }
 
     #[test]

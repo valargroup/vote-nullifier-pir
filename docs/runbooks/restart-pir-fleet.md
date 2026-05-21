@@ -31,7 +31,7 @@ snapshot. There is no harm in running it again.
 |-------|---------|-------|
 | `targets` | `both` | `both`, `primary`, or `backup`. |
 | `verify_height_converged` | `true` | After restart, fail the job if `nf_snapshot_served_height < nf_snapshot_expected_height`. Set `false` if you intentionally want to restart without checking convergence (e.g. you're rolling back to an older config and `expected` is going to be lower than `served`). |
-| `height` | *(empty)* | Optional forced DO snapshot height. Must be numeric, a multiple of 10, and already published under `https://vote.fra1.digitaloceanspaces.com/snapshots/<height>/`. |
+| `height` | *(empty)* | Optional forced DO snapshot height. Must be numeric, a multiple of 10, and already published under the environment's `SNAPSHOTS_BASE_URL`. |
 
 When `height` is set, the workflow first validates the DO snapshot manifest and
 the required tier objects (`tier0.bin`, `tier1.bin`, `tier2.bin`,
@@ -41,7 +41,7 @@ systemd drop-in:
 ```ini
 [Service]
 Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=<height>
-Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=https://vote.fra1.digitaloceanspaces.com
+Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=<PRECOMPUTED_BASE_URL>
 ```
 
 That explicit force setting takes precedence over voting-config / active-round
@@ -132,13 +132,13 @@ Both should report identical heights and roots.
 
 | Symptom | Likely cause | Recovery |
 |---------|--------------|----------|
-| `restart_backup` job times out at the readiness-check loop | Snapshot bootstrap couldn't fetch from `vote.fra1.digitaloceanspaces.com` (network / 5xx), sha256 mismatch on a tier file, or `load_serving_state` is still mmapping after 10 min. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
+| `restart_backup` job times out at the readiness-check loop | Snapshot bootstrap couldn't fetch from the configured `PRECOMPUTED_BASE_URL` (network / 5xx), sha256 mismatch on a tier file, or `load_serving_state` is still mmapping after 10 min. | Look at the dumped journal in the failed step. Re-run the workflow once for transient errors; if it keeps failing, run `Publish nullifier snapshot` against the same height and re-try. |
 | `restart_primary` job is skipped after `restart_backup` failed | By design — the workflow refuses to restart primary while backup is unhealthy. | Fix backup first (see row above). Once backup is healthy, run the workflow again with `targets=primary`. |
 | `validate_height` fails | The requested `height` is malformed, not a multiple of 10, the manifest is missing, the manifest height differs, or a required tier object is unavailable. | Publish or re-publish the snapshot with `Publish nullifier snapshot`, then rerun `Restart PIR fleet` with the same height. |
 | Job fails with `served (X) != forced height (Y)` | Forced bootstrap ran but the host did not load the requested snapshot. | Inspect `nf_snapshot_bootstrap_outcomes_total` in the workflow log and `journalctl -u nullifier-query-server`. The temporary force-snapshot drop-in is intentionally left on the host for debugging/retry. |
 | Job logs `expected=0` and `served>0` | No active round exposed a `snapshot_height`, so the server kept serving its local snapshot. This is acceptable while `/ready` is green. | No action unless you expected an active round. Confirm the active-round API and static/dynamic config if this is surprising. |
 | Job fails with `expected=0` and `served=0` | The server is ready but has no usable local snapshot, or metrics are missing. | Check `nf_snapshot_bootstrap_outcomes_total` in the workflow log, then inspect `journalctl -u nullifier-query-server`. If this is a fresh host with no active round, use the workflow `height` input, pre-stage `pir-data`, or wait for an active round. |
-| Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI https://vote.fra1.digitaloceanspaces.com/snapshots/<expected>/manifest.json`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
+| Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI "${SNAPSHOTS_BASE_URL}/<expected>/manifest.json"`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
 | Job fails with `tier1.bin size mismatch` (or similar) | Locally cached `pir-data/` is from a partial bootstrap or a different `nf-server` build. | SSH in: `sudo rm -rf /opt/nf-ingest/pir-data/* && sudo systemctl restart nullifier-query-server`. The next bootstrap repopulates from the bucket. |
 | Sentry fires `alert:snapshot_stale` for the host you just restarted | Same as the row above — bootstrap fell through and `served < expected` for >30 minutes. | Same recovery. The watchdog emits a follow-up info event ("snapshot height converged") once the gap closes. |
 
