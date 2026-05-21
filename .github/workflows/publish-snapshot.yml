@@ -7,7 +7,7 @@
 # nullifiers from the live /opt/nf-ingest/pir-data/ tree (never mutates it),
 # never restarts the service.
 #
-# Requires repository secrets:
+# Requires repository or environment secrets:
 #   PIR_SNAPSHOT_PUBLISHER_HOST, DEPLOY_USER, SSH_KEY,
 #   DO_ACCESS_KEY, DO_SECRET_KEY.
 
@@ -25,6 +25,14 @@ on:
         required: false
         type: boolean
         default: false
+      target_environment:
+        description: "GitHub Environment to read publisher secrets and bucket variables from."
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
 
 permissions:
   contents: read
@@ -40,6 +48,7 @@ jobs:
   publish:
     name: Build and upload snapshot
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Round explicit height (if provided)
         id: round_height
@@ -279,6 +288,7 @@ jobs:
     if: ${{ always() && needs.publish.result == 'failure' }}
     needs: [publish]
     runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
     steps:
       - name: Notify Slack on failure
         uses: slackapi/slack-github-action@v2.1.0
