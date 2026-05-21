@@ -155,7 +155,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
    ```bash
    PIR_PRECOMPUTED_BASE_URL=https://shielded-vote.fra1.digitaloceanspaces.com
    sudo tee /etc/default/nf-server >/dev/null <<EOF
-SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/static-voting-config.json
+SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/prod/static-voting-config.json
 SVOTE_PIR_PRECOMPUTED_BASE_URL=${PIR_PRECOMPUTED_BASE_URL}
 EOF
 
@@ -263,7 +263,7 @@ systemctl stop nullifier-query-server
 # Optional: load the same env as systemd so sync picks up the active-round height cap
 # sudo set -a && . /etc/default/nf-server && set +a
 
-CONFIG=$(curl -fsSL https://voting.valargroup.org/static-voting-config.json)
+CONFIG=$(curl -fsSL https://voting.valargroup.org/prod/static-voting-config.json)
 DYNAMIC_CONFIG_URL=$(jq -r '.dynamic_config_url // empty' <<<"$CONFIG")
 if [ -n "$DYNAMIC_CONFIG_URL" ]; then
     CONFIG=$(curl -fsSL "$DYNAMIC_CONFIG_URL")
