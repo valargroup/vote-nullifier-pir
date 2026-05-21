@@ -63,23 +63,34 @@ restart workflows read secrets and variables from the selected environment
 | `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing; optional for release artifact mirroring. |
 | `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing; optional for release artifact mirroring. |
 
+Set these repository variables for global DigitalOcean Spaces publication. They
+are optional unless you are moving away from the legacy bucket:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DO_BUCKET` | `vote` | Spaces bucket for release artifacts and `snapshots/<height>/` uploads. Set to `shielded-vote` for the production bucket migration. |
+| `DO_REGION` | `fra1` | Spaces region. Used for both s3cmd and default public URL derivation. |
+| `DO_PUBLIC_BASE_URL` | `https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com` | Public bucket origin used by release installer URLs and publish verification. |
+| `DO_PRECOMPUTED_BASE_URL` | `DO_PUBLIC_BASE_URL` | Value rendered into `start_pir.sh` as `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Override only if snapshot downloads should use a different public origin. |
+
 Set these GitHub Environment variables in both environments:
 
 | Variable | Staging | Production | Description |
 |----------|---------|------------|-------------|
-| `PRECOMPUTED_BASE_URL` | `https://vote.fra1.digitaloceanspaces.com` | `https://vote.fra1.digitaloceanspaces.com` | Base URL used when forcing a deploy to a published snapshot height. |
-| `SNAPSHOTS_BASE_URL` | `https://vote.fra1.digitaloceanspaces.com/snapshots` | `https://vote.fra1.digitaloceanspaces.com/snapshots` | Base URL used to validate forced snapshot heights. |
+| `PRECOMPUTED_BASE_URL` | `https://vote.fra1.digitaloceanspaces.com` | `https://shielded-vote.fra1.digitaloceanspaces.com` during migration | Base URL used when forcing a deploy to a published snapshot height. |
+| `SNAPSHOTS_BASE_URL` | `https://vote.fra1.digitaloceanspaces.com/snapshots` | `https://shielded-vote.fra1.digitaloceanspaces.com/snapshots` during migration | Base URL used to validate forced snapshot heights. |
 
-`release.yml` and `publish-snapshot.yml` still use repository-level DigitalOcean
-secrets because release artifacts and PIR snapshots are global by tag/height,
-not fleet-environment specific.
+`release.yml` and `publish-snapshot.yml` use repository-level DigitalOcean
+secrets and repository variables because release artifacts and PIR snapshots are
+global by tag/height, not fleet-environment specific. If the repository
+variables are absent, both workflows keep using the legacy `vote` bucket.
 
 ### One-time setup on the remote host
 
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nf-ingest`.
 - Ensure the SSH user can write to that directory.
 - Run an initial `nf-server sync` on the publisher host if you are building snapshots from chain (see `publish-snapshot.yml`).
-- Configure `PIR_SNAPSHOT_PUBLISHER_HOST` as a repository secret. Snapshot publishing is global, not environment-targeted, and always writes to `s3://vote/snapshots/<height>/`.
+- Configure `PIR_SNAPSHOT_PUBLISHER_HOST` as a repository secret. Snapshot publishing is global, not environment-targeted, and writes to `s3://${DO_BUCKET:-vote}/snapshots/<height>/`.
 
 For the host-side install itself (binary, systemd unit, env files), use
 [`server-setup.md`](server-setup.md) — the CI pipeline
@@ -262,7 +273,7 @@ flowchart LR
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, and mirrors release artifacts to DO Spaces. It does **not** deploy to any fleet; operators run `deploy.yml` explicitly. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Optional `height` validates a published PIR snapshot, forces bootstrap to that height during deploy, verifies `nf_snapshot_served_height == height`, then clears the temporary override. Hosts are rolled backup-then-primary so the readiness gate on one host completes before the next is touched. |
-| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, optional `include_nullifier_artifacts`) | Runs `nf-server sync` on the canonical `PIR_SNAPSHOT_PUBLISHER_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://vote/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, round-trip-verifies. This workflow is global, not environment-targeted. Set **`include_nullifier_artifacts`** to also upload `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.tree` into the same prefix (large); default is **false** so routine snapshot bumps stay tier-only. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
+| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, optional `include_nullifier_artifacts`) | Runs `nf-server sync` on the canonical `PIR_SNAPSHOT_PUBLISHER_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://${DO_BUCKET:-vote}/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, then verifies the published manifest, `pir_root.json`, and `tier0.bin` through the configured public base. This workflow is global, not environment-targeted. Set **`include_nullifier_artifacts`** to also upload `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.tree` into the same prefix (large); default is **false** so routine snapshot bumps stay tier-only. Replicas pick up the new snapshot via the startup self-bootstrap on next restart. |
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`, optional `height`) | Rolling restart of the PIR fleet. Restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies either the forced `height` or `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (input height, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint through the static/dynamic voting config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for that height. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
@@ -278,7 +289,9 @@ stale root keys so operators are not misled by mismatched timestamps:
 
 ```bash
 # Example — adjust if you used different key names.
-s3cmd del s3://vote/nullifiers.bin s3://vote/nullifiers.checkpoint s3://vote/nullifiers.tree 2>/dev/null || true
+s3cmd del "s3://${DO_BUCKET:-vote}/nullifiers.bin" \
+  "s3://${DO_BUCKET:-vote}/nullifiers.checkpoint" \
+  "s3://${DO_BUCKET:-vote}/nullifiers.tree" 2>/dev/null || true
 ```
 
 ---

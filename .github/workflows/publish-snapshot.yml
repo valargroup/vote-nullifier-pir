@@ -1,5 +1,5 @@
 # Build a PIR snapshot at a given block height and publish it to DO Spaces
-# under s3://vote/snapshots/<height>/ for download by nf-server replicas
+# under s3://${DO_BUCKET}/snapshots/<height>/ for download by nf-server replicas
 # and the admin UI. Runs on the canonical snapshot publisher host so
 # fleet-specific staging/production targeting cannot change the output path.
 #
@@ -31,9 +31,10 @@ permissions:
 
 env:
   DEPLOY_PATH: /opt/nf-ingest
-  DO_BUCKET: vote
+  DO_BUCKET: ${{ vars.DO_BUCKET || 'vote' }}
+  DO_REGION: ${{ vars.DO_REGION || 'fra1' }}
   DO_PREFIX: snapshots
-  DO_PUBLIC_BASE: https://vote.fra1.digitaloceanspaces.com/snapshots
+  DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
 
 jobs:
   publish:
@@ -71,12 +72,18 @@ jobs:
             REQUESTED_H="${{ steps.round_height.outputs.value }}"
             STAGE="/tmp/snap-build-$$"
             BUCKET="${{ env.DO_BUCKET }}"
+            REGION="${{ env.DO_REGION }}"
             PREFIX="${{ env.DO_PREFIX }}"
-            PUBLIC_BASE="${{ env.DO_PUBLIC_BASE }}"
-            if [ -z "$PUBLIC_BASE" ]; then
-              echo "DO_PUBLIC_BASE is required." >&2
+            PUBLIC_BASE_URL="${{ env.DO_PUBLIC_BASE_URL }}"
+            if [ -z "$BUCKET" ] || [ -z "$REGION" ] || [ -z "$PREFIX" ]; then
+              echo "DO_BUCKET, DO_REGION, and DO_PREFIX must be non-empty." >&2
               exit 1
             fi
+            PREFIX="${PREFIX#/}"
+            PREFIX="${PREFIX%/}"
+            PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://${BUCKET}.${REGION}.digitaloceanspaces.com}"
+            PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
+            SNAPSHOT_PUBLIC_BASE="${PUBLIC_BASE_URL}/${PREFIX}"
 
             echo "==> Ensuring s3cmd and jq are installed"
             if ! command -v s3cmd >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
@@ -91,9 +98,9 @@ jobs:
             [default]
             access_key = $DO_ACCESS_KEY
             secret_key = $DO_SECRET_KEY
-            host_base = fra1.digitaloceanspaces.com
-            host_bucket = %(bucket)s.fra1.digitaloceanspaces.com
-            bucket_location = fra1
+            host_base = ${REGION}.digitaloceanspaces.com
+            host_bucket = %(bucket)s.${REGION}.digitaloceanspaces.com
+            bucket_location = ${REGION}
             use_https = True
             EOF
 
@@ -211,17 +218,35 @@ jobs:
               s3cmd -c "$S3CFG" setacl --acl-public "s3://$BUCKET/$PREFIX/$H/$f"
             done
 
-            echo "==> Verify round-trip: download manifest + tier0 over HTTPS, re-check sha256"
+            echo "==> Verify published snapshot over HTTPS from $SNAPSHOT_PUBLIC_BASE"
             VERIFY_DIR=$(mktemp -d)
             trap 'rm -f "$S3CFG"; rm -rf "$STAGE" "$VERIFY_DIR"' EXIT
-            curl -fsSL "$PUBLIC_BASE/$H/manifest.json" -o "$VERIFY_DIR/manifest.json"
+            curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/manifest.json" -o "$VERIFY_DIR/manifest.json"
             REMOTE_HEIGHT=$(jq -r '.height' "$VERIFY_DIR/manifest.json")
             REMOTE_TIER0_SHA=$(jq -r '.files["tier0.bin"].sha256' "$VERIFY_DIR/manifest.json")
+            REMOTE_ROOT_SHA=$(jq -r '.files["pir_root.json"].sha256 // empty' "$VERIFY_DIR/manifest.json")
             if [ "$REMOTE_HEIGHT" != "$H" ]; then
               echo "ERROR: remote manifest height ($REMOTE_HEIGHT) != $H"
               exit 1
             fi
-            curl -fsSL "$PUBLIC_BASE/$H/tier0.bin" -o "$VERIFY_DIR/tier0.bin"
+            if [ -z "$REMOTE_ROOT_SHA" ]; then
+              echo "ERROR: remote manifest is missing pir_root.json sha256"
+              exit 1
+            fi
+            curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/pir_root.json" -o "$VERIFY_DIR/pir_root.json"
+            REMOTE_ROOT_HEIGHT=$(jq -r '.height // empty' "$VERIFY_DIR/pir_root.json")
+            if [ "$REMOTE_ROOT_HEIGHT" != "$H" ]; then
+              echo "ERROR: remote pir_root.json height ($REMOTE_ROOT_HEIGHT) != $H"
+              exit 1
+            fi
+            ACTUAL_ROOT_SHA=$(sha256sum "$VERIFY_DIR/pir_root.json" | awk '{print $1}')
+            if [ "$ACTUAL_ROOT_SHA" != "$REMOTE_ROOT_SHA" ]; then
+              echo "ERROR: downloaded pir_root.json sha256 mismatch"
+              echo "  expected: $REMOTE_ROOT_SHA"
+              echo "  actual:   $ACTUAL_ROOT_SHA"
+              exit 1
+            fi
+            curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/tier0.bin" -o "$VERIFY_DIR/tier0.bin"
             ACTUAL_TIER0_SHA=$(sha256sum "$VERIFY_DIR/tier0.bin" | awk '{print $1}')
             if [ "$ACTUAL_TIER0_SHA" != "$REMOTE_TIER0_SHA" ]; then
               echo "ERROR: downloaded tier0.bin sha256 mismatch"
@@ -247,7 +272,7 @@ jobs:
                 fi
               done
             fi
-            echo "==> Snapshot $H published and verified at $PUBLIC_BASE/$H/"
+            echo "==> Snapshot $H published and verified at $SNAPSHOT_PUBLIC_BASE/$H/"
 
   notify-slack:
     name: Slack Notification
