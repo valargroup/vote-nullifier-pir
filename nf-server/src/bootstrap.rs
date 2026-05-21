@@ -142,7 +142,7 @@ impl Config {
     /// the active static config; `nf-server` follows its
     /// `dynamic_config_url` to discover vote servers.
     pub const DEFAULT_VOTING_CONFIG_URL: &'static str =
-        "https://voting.valargroup.org/static-voting-config.json";
+        "https://voting.valargroup.org/prod/static-voting-config.json";
     /// Legacy bucket origin retained as the compiled default for existing
     /// installs. Production migrations should override this with
     /// `SVOTE_PIR_PRECOMPUTED_BASE_URL` rather than requiring a new binary.
