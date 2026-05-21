@@ -26,7 +26,7 @@ traffic is indistinguishable from a real wallet client.
   `https://shielded-vote.fra1.digitaloceanspaces.com/snapshots/<snapshot_height>/nullifiers.bin`
   after the production bucket migration)
   where `<snapshot_height>` matches the active round discovered through
-  [`static-voting-config.json`](https://voting.valargroup.org/static-voting-config.json)
+  [`static-voting-config.json`](https://voting.valargroup.org/prod/static-voting-config.json)
   and its dynamic config.
   That object exists only after **Publish nullifier snapshot** was run
   for that height with **`include_nullifier_artifacts`** enabled; verify

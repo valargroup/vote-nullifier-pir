@@ -191,7 +191,7 @@ jobs:
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
             -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
-            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/static-voting-config.json|g" \
+            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/prod/static-voting-config.json|g" \
             -e "s|__PRECOMPUTED_BASE_URL__|${PRECOMPUTED_BASE_URL}|g" \
             scripts/start_pir.sh.template > start_pir.sh
           chmod +x start_pir.sh
@@ -229,7 +229,7 @@ jobs:
           fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
             "s3://${DO_BUCKET}/start_pir.sh"
-          VOTING_CONFIG_URL="https://voting.valargroup.org/static-voting-config.json"
+          VOTING_CONFIG_URL="https://voting.valargroup.org/prod/static-voting-config.json"
           HEIGHT=""
           if CONFIG="$(curl -fsSL "$VOTING_CONFIG_URL")"; then
             DYNAMIC_CONFIG_URL="$(jq -r '.dynamic_config_url // empty' <<<"$CONFIG")"
