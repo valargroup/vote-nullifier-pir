@@ -228,12 +228,11 @@ the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't
 match. Fresh installs from the current workflow use the `shielded-vote` bucket
 in `nyc3`.
 
-The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` intentionally stays
-on the legacy `https://vote.fra1.digitaloceanspaces.com` origin for existing
-installs. Production migration is explicit. Set
-`SVOTE_PIR_PRECOMPUTED_BASE_URL=https://shielded-vote.nyc3.digitaloceanspaces.com`
-in `/etc/default/nf-server`, or publish `start_pir.sh` with `DO_BUCKET=shielded-vote`
-so fresh installs write that value automatically.
+The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` uses
+`https://shielded-vote.nyc3.digitaloceanspaces.com`. Set the variable in
+`/etc/default/nf-server` only when serving from a different bucket, or publish
+`start_pir.sh` with matching `DO_BUCKET`, `DO_REGION`, and `DO_PUBLIC_BASE_URL`
+values so fresh installs write that value automatically.
 
 If there is no active round, `serve` keeps serving the existing local snapshot.
 On a fresh host with no local `pir_root.json`, set
@@ -378,7 +377,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files. Unit overrides via `--pir-data-dir /opt/nf-ingest/pir-data`. |
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
-| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. The compiled fallback is the legacy `vote` Spaces origin for compatibility. Production should set this explicitly to `https://shielded-vote.nyc3.digitaloceanspaces.com`. |
+| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. The compiled fallback is `https://shielded-vote.nyc3.digitaloceanspaces.com`. Override it only when serving snapshots from a different bucket. |
 | `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses voting-config / active-round discovery while set. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
