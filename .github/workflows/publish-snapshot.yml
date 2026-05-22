@@ -39,8 +39,8 @@ permissions:
 
 env:
   DEPLOY_PATH: /opt/nf-ingest
-  DO_BUCKET: ${{ vars.DO_BUCKET || 'vote' }}
-  DO_REGION: ${{ vars.DO_REGION || 'fra1' }}
+  DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
+  DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
   DO_PREFIX: snapshots
   DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
 

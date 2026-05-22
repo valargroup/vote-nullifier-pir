@@ -23,8 +23,7 @@ traffic is indistinguishable from a real wallet client.
   snapshot. Available locally in the repo root after `make bootstrap`,
   or from the published bucket at
   `<SNAPSHOTS_BASE_URL>/<snapshot_height>/nullifiers.bin` (for example
-  `https://shielded-vote.fra1.digitaloceanspaces.com/snapshots/<snapshot_height>/nullifiers.bin`
-  after the production bucket migration)
+  `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots/<snapshot_height>/nullifiers.bin`)
   where `<snapshot_height>` matches the active round discovered through
   [`static-voting-config.json`](https://voting.valargroup.org/prod/static-voting-config.json)
   and its dynamic config.

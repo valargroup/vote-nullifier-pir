@@ -23,7 +23,7 @@ fi
 
 if [ "${EUID:-0}" -ne 0 ]; then
   echo "This installer must run as root (it writes under /opt and /etc)." >&2
-  echo "Example: curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash" >&2
+  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/start_pir.sh | sudo bash" >&2
   exit 1
 fi
 

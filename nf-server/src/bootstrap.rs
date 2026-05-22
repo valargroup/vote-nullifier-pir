@@ -14,7 +14,7 @@
 //! snapshot and always takes precedence over the active-round height.
 //! Operators can also move the public snapshot bucket without rebuilding the
 //! binary by setting `SVOTE_PIR_PRECOMPUTED_BASE_URL` to the new bucket origin,
-//! for example `https://shielded-vote.fra1.digitaloceanspaces.com`.
+//! for example `https://shielded-vote.nyc3.digitaloceanspaces.com`.
 //!
 //! ## URL layout (matches `.github/workflows/publish-snapshot.yml`)
 //!

@@ -144,8 +144,8 @@ jobs:
     env:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
       DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
-      DO_BUCKET: ${{ vars.DO_BUCKET || 'vote' }}
-      DO_REGION: ${{ vars.DO_REGION || 'fra1' }}
+      DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
+      DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
       DO_PRECOMPUTED_BASE_URL: ${{ vars.DO_PRECOMPUTED_BASE_URL }}
     steps:
