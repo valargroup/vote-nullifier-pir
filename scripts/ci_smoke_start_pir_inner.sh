@@ -6,6 +6,7 @@ mkdir -p /mockbin
 cat >/mockbin/systemctl <<'MOCK'
 #!/bin/bash
 echo "[smoke] systemctl $*" >&2
+echo "$*" >> /tmp/systemctl.log
 exit 0
 MOCK
 chmod +x /mockbin/systemctl
@@ -37,6 +38,48 @@ grep -Fq SVOTE_PIR_CONFIG_URL /etc/default/nf-server
 grep -Fq SVOTE_PIR_VOTING_CONFIG_URL /etc/default/nf-server
 grep -Fq SVOTE_PIR_PRECOMPUTED_BASE_URL /etc/default/nf-server
 command -v curl >/dev/null
+
+if [ -f /update_pir.sh ]; then
+  echo 'RUST_LOG=info,nf_server=debug' >> /etc/default/nf-server
+  cp /etc/default/nf-server /tmp/nf-server.defaults.before-update
+
+  cat >/mockbin/curl <<'MOCK'
+#!/bin/bash
+case "$*" in
+  *'http://127.0.0.1:3000/ready'*)
+    exit 0
+    ;;
+esac
+exec /usr/bin/curl "$@"
+MOCK
+  chmod +x /mockbin/curl
+
+  updater_output="$(mktemp)"
+  if bash /update_pir.sh --force >"$updater_output" 2>&1; then
+    :
+  else
+    status=$?
+    cat "$updater_output" >&2
+    exit "$status"
+  fi
+  cat "$updater_output"
+  if grep -Fq '% Total' "$updater_output"; then
+    echo "start_pir smoke: updater leaked curl progress output" >&2
+    exit 1
+  fi
+  grep -Fq '==> Downloading release checksums' "$updater_output"
+  grep -Fq '==> Verifying nf-server checksum' "$updater_output"
+  grep -Fq '==> Restarting nullifier-query-server.service' "$updater_output"
+  grep -Fq 'PIR server update completed successfully' "$updater_output"
+
+  cmp -s /tmp/nf-server.defaults.before-update /etc/default/nf-server
+  test -x /opt/nf-ingest/nf-server
+  test -L /usr/local/bin/nf-server
+  test "$(readlink /usr/local/bin/nf-server)" = /opt/nf-ingest/nf-server
+  test -f /etc/systemd/system/nullifier-query-server.service
+  grep -Fxq 'daemon-reload' /tmp/systemctl.log
+  grep -Fxq 'restart nullifier-query-server.service' /tmp/systemctl.log
+fi
 
 if [ "$(uname -m)" = "x86_64" ]; then
   # linux-amd64 release binaries are built for the production AVX-512 fleet

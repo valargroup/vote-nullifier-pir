@@ -94,6 +94,11 @@ Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and
 - `<spaces-origin>/start_pir.sh` — always the **latest** release.
 - `<spaces-origin>/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matches a given voting `snapshot_height`. Use this for reproducible installs.
 
+`update_pir.sh` is served alongside it for existing `start_pir.sh` hosts:
+
+- `<spaces-origin>/update_pir.sh` — updates to the **latest** published release while preserving `/etc/default/nf-server`, `/opt/nf-ingest/.env`, and `pir-data`.
+- `<spaces-origin>/scripts/update_pir/<tag>/update_pir.sh` — pinned to a specific release tag for rollback or reproducible testing.
+
 ### Manual install (no `start_pir.sh`)
 
 For custom layouts, non-Linux platforms, or when debugging the installer:
@@ -355,7 +360,25 @@ For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index
 
 ## Upgrading
 
-Repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG` (re-download the binary, re-check `SHA256SUMS`, reinstall to `/opt/nf-ingest/nf-server`, run `doctor`), then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart. `start_pir.sh` performs the equivalent end-to-end and is idempotent — re-running it against a newer release is the supported upgrade path.
+For hosts already installed by `start_pir.sh`, use the latest-release updater when you only want to refresh the release-managed artifacts and preserve local configuration:
+
+```bash
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash
+```
+
+The updater downloads the release binary and `SHA256SUMS`, verifies the platform binary, atomically replaces `/opt/nf-ingest/nf-server`, refreshes `nullifier-query-server.service`, keeps `/etc/default/nf-server`, `/opt/nf-ingest/.env`, and `pir-data` unchanged, restarts `nullifier-query-server`, then waits for `/ready`.
+
+Useful options:
+
+```bash
+# Reinstall and restart even when the installed binary already matches.
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash -s -- --force
+
+# Install a specific release tag.
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash -s -- --tag v0.x.y
+```
+
+For a full reconfiguration back to the published defaults, re-run `start_pir.sh`; it is idempotent but rewrites `/etc/default/nf-server`. For custom layouts, repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG` (re-download the binary, re-check `SHA256SUMS`, reinstall to `/opt/nf-ingest/nf-server`, run `doctor`), then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart.
 
 ## Tagging and releases
 

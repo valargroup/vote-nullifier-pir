@@ -60,8 +60,8 @@ restart workflows read secrets and variables from the selected environment
 | `SSH_KEY` | all | SSH private key for authentication. |
 | `NF_SENTRY_DSN` | `deploy.yml` | Sentry DSN written to `/opt/nf-ingest/.env` as `SENTRY_DSN` on deploy. |
 | `SENTRY_AUTH_TOKEN` | `deploy.yml` | Optional Sentry token for `sentry-cli` deploy markers. If omitted, deploys skip marker creation. |
-| `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing; optional for release artifact mirroring. |
-| `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing; optional for release artifact mirroring. |
+| `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing and release artifact mirroring. |
+| `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing and release artifact mirroring. |
 
 Set these repository variables for global DigitalOcean Spaces publication. The
 workflow defaults point at the production `shielded-vote` bucket, but setting
@@ -87,7 +87,9 @@ Set these GitHub Environment variables in both environments:
 secrets and repository variables because release artifacts and PIR snapshots are
 global by tag/height, not fleet-environment specific. If the repository
 variables are absent, both workflows fall back to the production `shielded-vote`
-bucket in `nyc3`.
+bucket in `nyc3`. Release artifact mirroring still requires the DigitalOcean
+access key and secret so `start_pir.sh`, `update_pir.sh`, binaries, and
+checksums are published as part of the release.
 
 ### One-time setup on the remote host
 
