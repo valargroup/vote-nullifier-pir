@@ -4,8 +4,9 @@
 #   nf-server-linux-amd64, nf-server-linux-arm64,
 #   nf-server-darwin-amd64, nf-server-darwin-arm64,
 #   nullifier-query-server.service, SHA256SUMS
-# DO Spaces: start_pir.sh (latest + scripts/start_pir/<snapshot_height>/)
-#   + SHA256SUMS-<tag> (same contents as GitHub Releases SHA256SUMS)
+# DO Spaces: start_pir.sh (latest + scripts/start_pir/<snapshot_height>/),
+#   update_pir.sh (latest + scripts/update_pir/<tag>/), and SHA256SUMS-<tag>
+#   (same contents as GitHub Releases SHA256SUMS)
 #
 # The zally (Shielded-Vote) release workflow fetches these binaries via
 # `gh release download` when assembling its own release tarballs.
@@ -175,7 +176,7 @@ jobs:
             nullifier-query-server.service \
             > SHA256SUMS
 
-      - name: Render start_pir.sh installer
+      - name: Render PIR helper scripts
         run: |
           set -euo pipefail
           if [ -z "$DO_BUCKET" ] || [ -z "$DO_REGION" ]; then
@@ -196,12 +197,20 @@ jobs:
             -e "s|__PRECOMPUTED_BASE_URL__|${PRECOMPUTED_BASE_URL}|g" \
             scripts/start_pir.sh.template > start_pir.sh
           chmod +x start_pir.sh
+          sed \
+            -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
+            -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
+            -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
+            scripts/update_pir.sh.template > update_pir.sh
+          chmod +x update_pir.sh
 
       - name: Upload to DigitalOcean Spaces
-        if: ${{ env.DO_ACCESS_KEY != '' && env.DO_SECRET_KEY != '' }}
-        continue-on-error: true
         run: |
           set -euo pipefail
+          if [ -z "$DO_ACCESS_KEY" ] || [ -z "$DO_SECRET_KEY" ]; then
+            echo "DO_ACCESS_KEY and DO_SECRET_KEY are required to publish release artifacts to DigitalOcean Spaces." >&2
+            exit 1
+          fi
           if [ -z "$DO_BUCKET" ] || [ -z "$DO_REGION" ]; then
             echo "DO_BUCKET and DO_REGION must be non-empty." >&2
             exit 1
@@ -230,6 +239,10 @@ jobs:
           fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
             "s3://${DO_BUCKET}/start_pir.sh"
+          s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
+            "s3://${DO_BUCKET}/update_pir.sh"
+          s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
+            "s3://${DO_BUCKET}/scripts/update_pir/${VERSION}/update_pir.sh"
           PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
           HEIGHT=""
           if CONFIG="$(curl -fsSL "$PIR_CONFIG_URL")"; then

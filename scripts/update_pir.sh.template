@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+# Updates an existing start_pir.sh installation in place.
+# Placeholders __RELEASE_TAG__, __GITHUB_REPO__, and __BINARY_BASE_URL__ are
+# substituted at publish time -- do not edit the published script by hand.
+set -euo pipefail
+
+readonly UPDATE_DEFAULT_RELEASE_TAG='__RELEASE_TAG__'
+readonly UPDATE_DEFAULT_GITHUB_REPO='__GITHUB_REPO__'
+readonly UPDATE_DEFAULT_BINARY_BASE_URL='__BINARY_BASE_URL__'
+readonly INSTALL_DIR='/opt/nf-ingest'
+readonly BINARY_NAME='nf-server'
+readonly SERVICE_NAME='nullifier-query-server.service'
+readonly SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+readonly DEFAULTS_PATH='/etc/default/nf-server'
+readonly SYMLINK_PATH='/usr/local/bin/nf-server'
+readonly READY_URL='http://127.0.0.1:3000/ready'
+
+FORCE=false
+REFRESH_UNIT=true
+TIMEOUT_SECS=600
+GITHUB_REPO="$UPDATE_DEFAULT_GITHUB_REPO"
+RELEASE_TAG="$UPDATE_DEFAULT_RELEASE_TAG"
+BINARY_BASE_URL="$UPDATE_DEFAULT_BINARY_BASE_URL"
+
+log() {
+  printf '==> %s\n' "$*"
+}
+
+usage() {
+  cat <<EOF
+usage: update_pir.sh [options]
+
+Options:
+  --force             Reinstall and restart even if the binary already matches.
+  --no-unit           Do not refresh ${SERVICE_NAME}.
+  --timeout-secs N    Readiness timeout after restart (default: 600).
+  --repo OWNER/REPO   GitHub repository (default: ${UPDATE_DEFAULT_GITHUB_REPO}).
+  --tag TAG           Release tag to install (default: ${UPDATE_DEFAULT_RELEASE_TAG}; use "latest" to resolve GitHub latest).
+  --help              Show this help text.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --force)
+      FORCE=true
+      shift
+      ;;
+    --no-unit)
+      REFRESH_UNIT=false
+      shift
+      ;;
+    --timeout-secs)
+      if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+        echo "--timeout-secs requires a value." >&2
+        exit 1
+      fi
+      TIMEOUT_SECS="$2"
+      shift 2
+      ;;
+    --repo)
+      if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+        echo "--repo requires OWNER/REPO." >&2
+        exit 1
+      fi
+      GITHUB_REPO="$2"
+      shift 2
+      ;;
+    --tag)
+      if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+        echo "--tag requires a release tag." >&2
+        exit 1
+      fi
+      RELEASE_TAG="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "$TIMEOUT_SECS" in
+  ''|*[!0-9]*)
+    echo "--timeout-secs must be a non-negative integer, got: ${TIMEOUT_SECS}" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "This updater targets Linux hosts with systemd." >&2
+  exit 1
+fi
+
+if [ "${EUID:-0}" -ne 0 ]; then
+  echo "This updater must run as root (it writes under /opt, /etc, and /usr/local/bin)." >&2
+  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash" >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64) PLATFORM=linux-amd64 ;;
+  aarch64|arm64) PLATFORM=linux-arm64 ;;
+  *)
+    echo "Unsupported CPU architecture: $(uname -m) (need x86_64 or aarch64)." >&2
+    exit 1
+    ;;
+esac
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl was not found. Use a systemd-based image (Ubuntu Server, Debian, etc.)." >&2
+  exit 1
+fi
+
+if [ ! -f "$DEFAULTS_PATH" ]; then
+  echo "${DEFAULTS_PATH} was not found; run start_pir.sh before using this updater." >&2
+  exit 1
+fi
+
+ensure_curl_and_ca_certificates() {
+  local need=false
+
+  if ! command -v curl >/dev/null 2>&1; then
+    need=true
+  fi
+
+  if command -v dpkg-query >/dev/null 2>&1; then
+    if ! dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null | grep -Fq 'install ok installed'; then
+      need=true
+    fi
+  fi
+
+  if [ "$need" = false ]; then
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "Install curl and CA certificates for HTTPS, then re-run this updater." >&2
+    echo "On Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y curl ca-certificates" >&2
+    exit 1
+  fi
+  log "Installing curl and CA certificates"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y --no-install-recommends curl ca-certificates
+}
+
+resolve_latest_tag() {
+  local effective
+  effective="$(curl -fsSLI --retry 3 --retry-delay 2 -o /dev/null -w '%{url_effective}' \
+    "https://github.com/${GITHUB_REPO}/releases/latest")"
+  case "$effective" in
+    */releases/tag/*)
+      printf '%s\n' "${effective##*/}"
+      ;;
+    *)
+      echo "Could not resolve latest release tag from ${effective}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+download_with_fallback() {
+  local output="$1"
+  local spaces_url="$2"
+  local github_url="$3"
+  local label="$4"
+
+  if curl -fsSL --retry 3 --retry-delay 2 -o "$output" "$spaces_url"; then
+    return 0
+  fi
+  if curl -fsSL --retry 3 --retry-delay 2 -o "$output" "$github_url"; then
+    echo "Note: downloaded ${label} from GitHub releases (DigitalOcean Spaces fetch failed or object missing)." >&2
+    return 0
+  fi
+
+  echo "Failed to download ${label} from Spaces and from GitHub." >&2
+  exit 1
+}
+
+ensure_curl_and_ca_certificates
+
+if [ "$RELEASE_TAG" = "latest" ]; then
+  log "Resolving latest release tag"
+  RELEASE_TAG="$(resolve_latest_tag)"
+fi
+
+BINARY_BASE_URL="${BINARY_BASE_URL%/}"
+tmp="$(mktemp -d)"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+BINARY_ASSET="nf-server-${PLATFORM}"
+BINARY_PATH="${tmp}/nf-server"
+SUMS_PATH="${tmp}/SHA256SUMS"
+SERVICE_TMP="${tmp}/${SERVICE_NAME}"
+
+log "Downloading release checksums for ${RELEASE_TAG}"
+download_with_fallback \
+  "$SUMS_PATH" \
+  "${BINARY_BASE_URL}/SHA256SUMS-${RELEASE_TAG}" \
+  "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/SHA256SUMS" \
+  "SHA256SUMS for ${RELEASE_TAG}"
+
+EXPECTED="$(awk -v f="$BINARY_ASSET" '$2 == f { print $1; exit }' "$SUMS_PATH")"
+if [ -z "$EXPECTED" ]; then
+  echo "SHA256SUMS for ${RELEASE_TAG} does not contain ${BINARY_ASSET}." >&2
+  exit 1
+fi
+
+if [ -x "${INSTALL_DIR}/${BINARY_NAME}" ] && [ "$FORCE" = false ]; then
+  CURRENT="$(sha256sum "${INSTALL_DIR}/${BINARY_NAME}" | awk '{ print $1 }')"
+  if [ "$CURRENT" = "$EXPECTED" ]; then
+    log "nf-server ${RELEASE_TAG} for ${PLATFORM} is already installed; no restart needed"
+    exit 0
+  fi
+fi
+
+log "Downloading nf-server ${RELEASE_TAG} for ${PLATFORM}"
+download_with_fallback \
+  "$BINARY_PATH" \
+  "${BINARY_BASE_URL}/nf-server-${RELEASE_TAG}-${PLATFORM}" \
+  "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${BINARY_ASSET}" \
+  "${BINARY_ASSET} for ${RELEASE_TAG}"
+
+log "Verifying nf-server checksum"
+ACTUAL="$(sha256sum "$BINARY_PATH" | awk '{ print $1 }')"
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "SHA256 verification failed for ${BINARY_ASSET} (tag ${RELEASE_TAG})." >&2
+  echo "expected=${EXPECTED} actual=${ACTUAL}" >&2
+  exit 1
+fi
+
+if [ "$REFRESH_UNIT" = true ]; then
+  log "Downloading systemd service"
+  curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_TMP" \
+    "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${SERVICE_NAME}"
+fi
+
+log "Installing nf-server under ${INSTALL_DIR}"
+install -d -m 0755 "${INSTALL_DIR}/pir-data"
+install -m 0755 "$BINARY_PATH" "${INSTALL_DIR}/${BINARY_NAME}.new"
+mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
+ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "$SYMLINK_PATH"
+
+if [ "$REFRESH_UNIT" = true ]; then
+  install -m 0644 "$SERVICE_TMP" "$SERVICE_PATH"
+fi
+
+log "Restarting ${SERVICE_NAME}"
+systemctl daemon-reload
+systemctl restart "$SERVICE_NAME"
+
+if [ "$TIMEOUT_SECS" -eq 0 ]; then
+  log "Skipping readiness check (--timeout-secs 0)"
+else
+  log "Waiting for ${READY_URL} to return 200"
+  deadline=$((SECONDS + TIMEOUT_SECS))
+  while [ "$SECONDS" -le "$deadline" ]; do
+    if curl -fsS --max-time 4 "$READY_URL" >/dev/null; then
+      log "${SERVICE_NAME} is ready"
+      break
+    fi
+    sleep 5
+  done
+
+  if ! curl -fsS --max-time 4 "$READY_URL" >/dev/null; then
+    echo "Readiness check FAILED after ${TIMEOUT_SECS}s." >&2
+    systemctl status "$SERVICE_NAME" --no-pager -l 2>/dev/null || true
+    journalctl -u "$SERVICE_NAME" --no-pager -n 80 2>/dev/null || true
+    exit 1
+  fi
+fi
+
+echo
+echo "==========================================="
+echo "  PIR server update completed successfully"
+echo "==========================================="
+echo
+echo "Environment data:"
+echo "  Version:           ${RELEASE_TAG}"
+echo "  Platform:          ${PLATFORM}"
+echo "  Install directory: ${INSTALL_DIR}"
+echo "  Service:           nullifier-query-server (systemd)"
+echo
+echo "How to monitor:"
+echo "  Service status:  systemctl status nullifier-query-server"
+echo "  Logs:            journalctl -u nullifier-query-server -f"
+echo "  Ready check:     curl -fsS ${READY_URL}"

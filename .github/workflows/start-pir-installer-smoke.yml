@@ -1,14 +1,16 @@
-# Smoke-test the published-style start_pir.sh on a fresh Ubuntu container
+# Smoke-test the published-style start_pir.sh/update_pir.sh on a fresh Ubuntu container
 # (curl missing by default; systemd mocked). Does not replace hardware QA.
 
-name: start_pir installer smoke
+name: PIR installer smoke
 
 on:
   pull_request:
     paths:
       - "scripts/start_pir.sh.template"
+      - "scripts/update_pir.sh.template"
       - "scripts/ci_smoke_start_pir.sh"
       - "scripts/ci_smoke_start_pir_inner.sh"
+      - ".github/workflows/release.yml"
       - ".github/workflows/start-pir-installer-smoke.yml"
   workflow_dispatch:
 
@@ -37,8 +39,8 @@ jobs:
             | jq 'any(.assets[]?; .name == "SHA256SUMS")')"
           echo "has_sha256sums=${HAS}" >> "$GITHUB_OUTPUT"
 
-      # Keep the sed substitutions aligned with "Render start_pir.sh installer" in release.yml.
-      - name: Render installer (same substitution as release.yml)
+      # Keep the sed substitutions aligned with "Render PIR helper scripts" in release.yml.
+      - name: Render helper scripts (same substitution as release.yml)
         run: |
           set -euo pipefail
           TAG="${{ steps.rel.outputs.tag }}"
@@ -51,10 +53,18 @@ jobs:
             -e "s|__PRECOMPUTED_BASE_URL__|https://shielded-vote.nyc3.digitaloceanspaces.com|g" \
             scripts/start_pir.sh.template > /tmp/start_pir.sh
           chmod +x /tmp/start_pir.sh
+          sed \
+            -e "s|__RELEASE_TAG__|${TAG}|g" \
+            -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
+            -e "s|__BINARY_BASE_URL__|https://shielded-vote.nyc3.digitaloceanspaces.com/binaries/vote-pir|g" \
+            scripts/update_pir.sh.template > /tmp/update_pir.sh
+          chmod +x /tmp/update_pir.sh
+          grep -Fq 's3://${DO_BUCKET}/update_pir.sh' .github/workflows/release.yml
+          grep -Fq 's3://${DO_BUCKET}/scripts/update_pir/${VERSION}/update_pir.sh' .github/workflows/release.yml
 
       - name: Fresh Ubuntu container smoke
         if: steps.rel.outputs.has_sha256sums == 'true'
-        run: scripts/ci_smoke_start_pir.sh /tmp/start_pir.sh
+        run: scripts/ci_smoke_start_pir.sh /tmp/start_pir.sh /tmp/update_pir.sh
 
       - name: Note skipped installer smoke (latest release lacks SHA256SUMS)
         if: steps.rel.outputs.has_sha256sums != 'true'
