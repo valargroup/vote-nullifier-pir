@@ -1,8 +1,9 @@
 # Rolling restart of the PIR fleet.
 #
-# nf-server self-bootstraps from the published voting-config /
+# nf-server self-bootstraps from the environment pir.json and
 # precomputed-snapshot bucket on startup. So the entire flow for
-# "make replicas pick up a new snapshot_height" is just a restart.
+# "make replicas pick up a new snapshot_height" is publishing pir.json
+# and restarting the fleet.
 # This workflow exists so that step doesn't require ssh access from
 # every operator's laptop.
 #
@@ -28,7 +29,7 @@ on:
         options:
           - staging
           - production
-        default: staging
+        default: production
       targets:
         description: "Which hosts to restart (rolling, backup-then-primary when both)"
         required: true
@@ -53,7 +54,7 @@ on:
       target_environment:
         required: false
         type: string
-        default: staging
+        default: production
       targets:
         required: false
         type: string
@@ -144,7 +145,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
           # Cold-start budget: snapshot self-bootstrap (~30s for the
           # ~6 GB CDN download in-region) + load_serving_state (mmaps
           # and parses ~6 GB of tier files into memory, 60-90s on the
@@ -156,6 +157,31 @@ jobs:
 
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+            DEFAULTS_FILE=/etc/default/nf-server
+
+            case "$TARGET_ENVIRONMENT" in
+              production) PIR_ENV=prod ;;
+              staging) PIR_ENV=stage ;;
+              *)
+                echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
+                exit 1
+                ;;
+            esac
+            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
+            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
+            PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
+            echo "==> Writing PIR defaults ($PIR_ENV)"
+            tmp=$(mktemp)
+            if sudo test -f "$DEFAULTS_FILE"; then
+              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+            fi
+            {
+              echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
+              echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
+              echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
+            } >> "$tmp"
+            sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
+            rm -f "$tmp"
 
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
@@ -238,10 +264,10 @@ jobs:
                 exit 1
               elif [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
                 echo "FAIL: expected height is zero and no served snapshot was reported."
-                echo "Hint: this can mean no active round plus no local snapshot, or a voting-config/bootstrap failure. Check bootstrap outcomes and journalctl."
+                echo "Hint: this can mean no configured snapshot height plus no local snapshot, or a PIR/voting-config bootstrap failure. Check bootstrap outcomes and journalctl."
                 exit 1
               elif [ "$EXPECTED" -eq 0 ]; then
-                echo "OK: backup is ready and serving local snapshot height $SERVED (no active round expected height)."
+                echo "OK: backup is ready and serving local snapshot height $SERVED (no configured expected height)."
               else
                 echo "OK: backup converged on height $SERVED"
               fi
@@ -258,6 +284,9 @@ jobs:
           VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
+          VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
 
   restart_primary:
     name: Restart primary
@@ -282,13 +311,38 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
           command_timeout: 11m
           script: |
             set -eu
 
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+            DEFAULTS_FILE=/etc/default/nf-server
+
+            case "$TARGET_ENVIRONMENT" in
+              production) PIR_ENV=prod ;;
+              staging) PIR_ENV=stage ;;
+              *)
+                echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
+                exit 1
+                ;;
+            esac
+            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
+            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
+            PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
+            echo "==> Writing PIR defaults ($PIR_ENV)"
+            tmp=$(mktemp)
+            if sudo test -f "$DEFAULTS_FILE"; then
+              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+            fi
+            {
+              echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
+              echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
+              echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
+            } >> "$tmp"
+            sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
+            rm -f "$tmp"
 
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
@@ -367,10 +421,10 @@ jobs:
                 exit 1
               elif [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
                 echo "FAIL: expected height is zero and no served snapshot was reported."
-                echo "Hint: this can mean no active round plus no local snapshot, or a voting-config/bootstrap failure. Check bootstrap outcomes and journalctl."
+                echo "Hint: this can mean no configured snapshot height plus no local snapshot, or a PIR/voting-config bootstrap failure. Check bootstrap outcomes and journalctl."
                 exit 1
               elif [ "$EXPECTED" -eq 0 ]; then
-                echo "OK: primary is ready and serving local snapshot height $SERVED (no active round expected height)."
+                echo "OK: primary is ready and serving local snapshot height $SERVED (no configured expected height)."
               else
                 echo "OK: primary converged on height $SERVED"
               fi
@@ -387,6 +441,9 @@ jobs:
           VERIFY_HEIGHT: ${{ inputs.verify_height_converged }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
+          VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
 
   notify-slack:
     name: Slack Notification

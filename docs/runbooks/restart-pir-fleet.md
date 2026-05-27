@@ -12,10 +12,10 @@ when GitHub Actions is unavailable.
 
 | Scenario | Action |
 |----------|--------|
-| A new on-chain voting round with a new `snapshot_height` is active and replicas need to pick up the new snapshot. | Run `Restart PIR fleet` with `targets=both`. |
+| The environment `pir.json` has a new `snapshot_height` and replicas need to pick up the new snapshot. | Run `Restart PIR fleet` with `targets=both`. |
 | Sentry fired `alert:snapshot_stale` for one host and the underlying issue is resolved. | Run `Restart PIR fleet` with `targets=primary` or `targets=backup`. |
-| You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_PIR_VOTING_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
-| You need to force replicas onto a specific already-published DO snapshot, regardless of active-round config. | Run `Restart PIR fleet` with `height=<snapshot_height>`. |
+| You changed `/etc/default/nf-server` (e.g. flipped `SVOTE_PIR_CONFIG_URL` to a staging mirror). | Run `Restart PIR fleet` with `targets=both`. |
+| You need to force replicas onto a specific already-published DO snapshot, regardless of `pir.json`. | Run `Restart PIR fleet` with `height=<snapshot_height>`. |
 | You're deploying a new `nf-server` binary. | Use `Deploy nf-server` instead — it does the binary swap *and* the restart. |
 | You need a new snapshot from chain (nothing published at the new height yet). | Run `Publish nullifier snapshot` first, then this workflow. |
 
@@ -44,7 +44,7 @@ Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=<height>
 Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=<PRECOMPUTED_BASE_URL>
 ```
 
-That explicit force setting takes precedence over voting-config / active-round
+That explicit force setting takes precedence over PIR/voting-config
 discovery and makes `nf-server` download from `snapshots/<height>/`. After
 `/ready` succeeds and
 `nf_snapshot_served_height == height`, the workflow removes the drop-in and
@@ -136,9 +136,9 @@ Both should report identical heights and roots.
 | `restart_primary` job is skipped after `restart_backup` failed | By design — the workflow refuses to restart primary while backup is unhealthy. | Fix backup first (see row above). Once backup is healthy, run the workflow again with `targets=primary`. |
 | `validate_height` fails | The requested `height` is malformed, not a multiple of 10, the manifest is missing, the manifest height differs, or a required tier object is unavailable. | Publish or re-publish the snapshot with `Publish nullifier snapshot`, then rerun `Restart PIR fleet` with the same height. |
 | Job fails with `served (X) != forced height (Y)` | Forced bootstrap ran but the host did not load the requested snapshot. | Inspect `nf_snapshot_bootstrap_outcomes_total` in the workflow log and `journalctl -u nullifier-query-server`. The temporary force-snapshot drop-in is intentionally left on the host for debugging/retry. |
-| Job logs `expected=0` and `served>0` | No active round exposed a `snapshot_height`, so the server kept serving its local snapshot. This is acceptable while `/ready` is green. | No action unless you expected an active round. Confirm the active-round API and static/dynamic config if this is surprising. |
-| Job fails with `expected=0` and `served=0` | The server is ready but has no usable local snapshot, or metrics are missing. | Check `nf_snapshot_bootstrap_outcomes_total` in the workflow log, then inspect `journalctl -u nullifier-query-server`. If this is a fresh host with no active round, use the workflow `height` input, pre-stage `pir-data`, or wait for an active round. |
-| Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI "${SNAPSHOTS_BASE_URL}/<expected>/manifest.json"`. If 404, run `Publish nullifier snapshot` for that height. If 200, look for a sha256 mismatch in the journal. |
+| Job logs `expected=0` and `served>0` | No PIR config or legacy fallback exposed a `snapshot_height`, so the server kept serving its local snapshot. This is acceptable while `/ready` is green. | No action unless you expected a configured height. Confirm the environment `pir.json` and legacy static/dynamic config if this is surprising. |
+| Job fails with `expected=0` and `served=0` | The server is ready but has no usable local snapshot, or metrics are missing. | Check `nf_snapshot_bootstrap_outcomes_total` in the workflow log, then inspect `journalctl -u nullifier-query-server`. If this is a fresh host with no configured height, use the workflow `height` input, pre-stage `pir-data`, or publish/update `pir.json`. |
+| Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI "${SNAPSHOTS_BASE_URL}/<expected>/manifest.json"`. If 404, run `Publish nullifier snapshot` for that height before updating `pir.json`. If 200, look for a sha256 mismatch in the journal. |
 | Job fails with `tier1.bin size mismatch` (or similar) | Locally cached `pir-data/` is from a partial bootstrap or a different `nf-server` build. | SSH in: `sudo rm -rf /opt/nf-ingest/pir-data/* && sudo systemctl restart nullifier-query-server`. The next bootstrap repopulates from the bucket. |
 | Sentry fires `alert:snapshot_stale` for the host you just restarted | Same as the row above — bootstrap fell through and `served < expected` for >30 minutes. | Same recovery. The watchdog emits a follow-up info event ("snapshot height converged") once the gap closes. |
 
@@ -166,7 +166,7 @@ done
 ssh root@pir-backup.valargroup.org \
     'curl -sf http://localhost:3000/metrics | awk "/^nf_snapshot_(served|expected)_height/ {print}"'
 # If expected > 0, served must be >= expected. If expected == 0,
-# /ready plus served > 0 means "no active round; serving local snapshot".
+# /ready plus served > 0 means "no configured height; serving local snapshot".
 
 # Primary
 ssh root@pir-primary.valargroup.org sudo systemctl restart nullifier-query-server
@@ -185,9 +185,8 @@ externally](#confirming-convergence-externally).
 - [`docs/runbooks/ci-setup.md`](ci-setup.md) — CI/CD pipeline, GitHub
   secrets, and the Sentry-side wiring for the snapshot-stale alert.
 - [Snapshot-bump runbook](https://valargroup.github.io/shielded-vote-book/operations/snapshot-bumps.html)
-  in `shielded-vote-book` — end-to-end procedure for moving the fleet
-  from one snapshot height to the next, of which this workflow is
-  step 4.
+  in `shielded-vote-book` — end-to-end procedure for publishing a snapshot,
+  updating `<env>/pir.json`, and moving the fleet from one height to the next.
 - [`Publish nullifier snapshot`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/publish-snapshot.yml) — what to run before this workflow if no snapshot exists at the new height yet.
 - [`Deploy nf-server`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/deploy.yml) — what to run instead of this workflow when shipping a new binary (it does the binary swap *and* the restart). Note: `deploy.yml` runs both hosts in parallel; if you need rolling order during a binary deploy, run it twice with `targets=backup` then `targets=primary`.
 - Snapshot-stale watchdog: [`docs/runbooks/ci-setup.md#snapshot-stale-alerting`](ci-setup.md#snapshot-stale-alerting).

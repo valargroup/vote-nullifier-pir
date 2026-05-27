@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Installs nf-server to /opt/nf-ingest with systemd (nullifier-query-server).
 # Placeholders __RELEASE_TAG__, __GITHUB_REPO__, __BINARY_BASE_URL__,
-# __VOTING_CONFIG_URL__, and __PRECOMPUTED_BASE_URL__ are substituted at
+# __PIR_CONFIG_URL__, __VOTING_CONFIG_URL__, and __PRECOMPUTED_BASE_URL__ are substituted at
 # publish time — do not edit the published script by hand.
 set -euo pipefail
 
 readonly START_RELEASE_TAG='__RELEASE_TAG__'
 readonly START_GITHUB_REPO='__GITHUB_REPO__'
 readonly START_BINARY_BASE_URL='__BINARY_BASE_URL__'
+readonly START_PIR_CONFIG_URL='__PIR_CONFIG_URL__'
 readonly START_VOTING_CONFIG_URL='__VOTING_CONFIG_URL__'
 readonly START_PRECOMPUTED_BASE_URL='__PRECOMPUTED_BASE_URL__'
 
@@ -23,7 +24,7 @@ fi
 
 if [ "${EUID:-0}" -ne 0 ]; then
   echo "This installer must run as root (it writes under /opt and /etc)." >&2
-  echo "Example: curl -fsSL https://vote.fra1.digitaloceanspaces.com/start_pir.sh | sudo bash" >&2
+  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/start_pir.sh | sudo bash" >&2
   exit 1
 fi
 
@@ -130,6 +131,7 @@ ln -sf /opt/nf-ingest/nf-server /usr/local/bin/nf-server
 
 umask 022
 cat >/etc/default/nf-server <<EOF
+SVOTE_PIR_CONFIG_URL=${START_PIR_CONFIG_URL}
 SVOTE_PIR_VOTING_CONFIG_URL=${START_VOTING_CONFIG_URL}
 SVOTE_PIR_PRECOMPUTED_BASE_URL=${START_PRECOMPUTED_BASE_URL}
 EOF
@@ -157,6 +159,7 @@ echo "  Version:               ${START_RELEASE_TAG}"
 echo "  Platform:              ${PLATFORM}"
 echo "  Install directory:     /opt/nf-ingest"
 echo "  Service:               nullifier-query-server (systemd)"
+echo "  PIR config URL:        ${START_PIR_CONFIG_URL}"
 echo "  Voting config URL:     ${START_VOTING_CONFIG_URL}"
 echo "  Precomputed data URL:  ${START_PRECOMPUTED_BASE_URL}"
 echo

@@ -6,8 +6,8 @@
 //!   * full success (manifest + tier files installed),
 //!   * sha256 mismatch detection (file removed, fall-through outcome),
 //!   * wrong-height manifest detection,
-//!   * skip when local height already matches the active round,
-//!   * local/override behavior when no active round exposes `snapshot_height`,
+//!   * skip when local height already matches the configured height,
+//!   * local/override behavior when no configured height is available,
 //!   * fall-through when voting-config URL is unreachable.
 //!
 //! All tests run with `serve` enabled because that's the only build
@@ -44,6 +44,9 @@ mod bootstrap;
 #[path = "../src/metrics.rs"]
 #[allow(dead_code)]
 mod metrics;
+#[path = "../src/pir_config.rs"]
+#[allow(dead_code)]
+mod pir_config;
 #[path = "../src/voting_config.rs"]
 #[allow(dead_code)]
 mod voting_config;
@@ -195,6 +198,18 @@ fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_heig
     );
 }
 
+fn stage_pir_config(bucket: &MockBucket, snapshot_height: u64) {
+    let body = json!({
+        "schema_version": 1,
+        "snapshot_height": snapshot_height,
+    });
+    bucket.put(
+        "/pir.json",
+        "application/json",
+        serde_json::to_vec(&body).unwrap(),
+    );
+}
+
 fn stage_rounds_snapshot_height(bucket: &MockBucket, snapshot_height: u64) {
     let rounds = json!({
         "rounds": [
@@ -233,11 +248,13 @@ async fn full_bootstrap_installs_all_files() {
     let bucket = MockBucket::default();
     let h = 100u64;
     let blobs = stage_snapshot(&bucket, h);
+    stage_pir_config(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, Some(h));
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: Some(format!("{base}/pir.json")),
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base.clone(),
         force_snapshot_height: None,
@@ -270,6 +287,7 @@ async fn force_height_bootstraps_requested_snapshot_over_active_round() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: Some(forced_h),
@@ -302,6 +320,7 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -340,6 +359,7 @@ async fn missing_remote_snapshot_falls_through() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -388,6 +408,7 @@ async fn manifest_height_mismatch_falls_through() {
     );
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -421,6 +442,7 @@ async fn already_at_height_is_a_no_op() {
     write_local_pir_root(tmp.path(), h);
 
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -444,6 +466,7 @@ async fn no_active_round_uses_local_snapshot_when_present() {
     let tmp = TempDir::new().unwrap();
     write_local_pir_root(tmp.path(), local_height);
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -465,6 +488,7 @@ async fn force_height_bootstraps_when_no_active_round_or_local_snapshot() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: Some(h),
@@ -491,6 +515,7 @@ async fn no_active_round_ignores_rounds_list_without_explicit_override() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -501,7 +526,7 @@ async fn no_active_round_ignores_rounds_list_without_explicit_override() {
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
     let s = format!("{err:#}");
     assert!(
-        s.contains("no active voting round"),
+        s.contains("no configured snapshot_height"),
         "unexpected error: {s}"
     );
     assert!(
@@ -518,6 +543,7 @@ async fn no_active_round_without_local_or_override_errors() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
         force_snapshot_height: None,
@@ -528,7 +554,7 @@ async fn no_active_round_without_local_or_override_errors() {
     let err = bootstrap::run(&cfg).await.err().expect("expected error");
     let s = format!("{err:#}");
     assert!(
-        s.contains("no active voting round"),
+        s.contains("no configured snapshot_height"),
         "unexpected error: {s}"
     );
 }
@@ -538,6 +564,7 @@ async fn unreachable_voting_config_errors() {
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
         // Localhost on a port we don't bind: connection refused.
+        pir_config_url: None,
         voting_config_url: "http://127.0.0.1:1/voting-config.json".to_string(),
         precomputed_base_url: "http://127.0.0.1:1".to_string(),
         force_snapshot_height: None,

@@ -23,7 +23,7 @@ on:
         options:
           - staging
           - production
-        default: staging
+        default: production
       height:
         description: "Optional published snapshot height to force after deploy"
         required: false
@@ -46,7 +46,7 @@ on:
       target_environment:
         required: false
         type: string
-        default: staging
+        default: production
       height:
         required: false
         type: string
@@ -156,7 +156,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
           script: |
             set -eu
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
@@ -172,6 +172,30 @@ jobs:
             rm -f "$tmp"
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            DEFAULTS_FILE=/etc/default/nf-server
+            case "$TARGET_ENVIRONMENT" in
+              production) PIR_ENV=prod ;;
+              staging) PIR_ENV=stage ;;
+              *)
+                echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
+                exit 1
+                ;;
+            esac
+            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
+            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
+            PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
+            echo "==> Writing PIR defaults ($PIR_ENV)"
+            tmp=$(mktemp)
+            if sudo test -f "$DEFAULTS_FILE"; then
+              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+            fi
+            {
+              echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
+              echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
+              echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
+            } >> "$tmp"
+            sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
+            rm -f "$tmp"
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
                 echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
@@ -201,6 +225,9 @@ jobs:
           SENTRY_RELEASE: ${{ inputs.release_tag }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
+          VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -297,7 +324,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
           script: |
             set -eu
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
@@ -313,6 +340,30 @@ jobs:
             rm -f "$tmp"
             sudo chmod +x /opt/nf-ingest/nf-server
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            DEFAULTS_FILE=/etc/default/nf-server
+            case "$TARGET_ENVIRONMENT" in
+              production) PIR_ENV=prod ;;
+              staging) PIR_ENV=stage ;;
+              *)
+                echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
+                exit 1
+                ;;
+            esac
+            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
+            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
+            PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
+            echo "==> Writing PIR defaults ($PIR_ENV)"
+            tmp=$(mktemp)
+            if sudo test -f "$DEFAULTS_FILE"; then
+              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+            fi
+            {
+              echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
+              echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
+              echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
+            } >> "$tmp"
+            sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
+            rm -f "$tmp"
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
                 echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
@@ -342,6 +393,9 @@ jobs:
           SENTRY_RELEASE: ${{ inputs.release_tag }}
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
           PRECOMPUTED_BASE_URL: ${{ vars.PRECOMPUTED_BASE_URL }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
+          VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
