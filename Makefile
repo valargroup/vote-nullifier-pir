@@ -26,7 +26,7 @@ NF_RELEASE_BIN := $(ROOT)/target/release/nf-server
 # ── Configuration (override with env vars) ───────────────────────────
 # Single on-disk root for nullifiers, tree checkpoint, and tier files (`SVOTE_PIR_DATA_DIR`).
 PIR_DATA_DIR ?= pir-data
-LWD_URL       ?= https://zec.rocks:443
+LWD_URL       ?= https://us.zec.stardust.rest:443
 PORT          ?= 3000
 SYNC_HEIGHT   ?=
 
