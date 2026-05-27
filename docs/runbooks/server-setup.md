@@ -87,7 +87,7 @@ The server needs the following network access:
 
 ### Release artifacts
 
-Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and `nullifier-query-server.service` to **DigitalOcean Spaces** (primary) with **GitHub Releases** as a fallback. `start_pir.sh` tries Spaces first, then GitHub. The release workflow derives the public Spaces origin from `DO_BUCKET` + `DO_REGION` unless `DO_PUBLIC_BASE_URL` is set. The production origin is `https://shielded-vote.nyc3.digitaloceanspaces.com`. Exact URL patterns are in the curl commands in [Manual install](#manual-install-no-start_pirsh).
+Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and `nullifier-query-server.service` to **DigitalOcean Spaces** (primary) with **GitHub Releases** as a fallback. `start_pir.sh` tries Spaces first, then GitHub. The release workflow derives the public Spaces origin from `DO_BUCKET` + `DO_REGION` unless `DO_PUBLIC_BASE_URL` is set. The workflow default is `https://shielded-vote.nyc3.digitaloceanspaces.com`; override `DO_BUCKET`, `DO_REGION`, or `DO_PUBLIC_BASE_URL` only when publishing to a different bucket. Exact URL patterns are in the curl commands in [Manual install](#manual-install-no-start_pirsh).
 
 `start_pir.sh` itself is served at two paths under the configured Spaces origin:
 
@@ -230,12 +230,13 @@ they don't match. For zero-touch migration, hosts that only have the legacy
 `SVOTE_PIR_VOTING_CONFIG_URL` derive `prod/pir.json` or `stage/pir.json` when
 that URL clearly identifies an environment; ambiguous legacy URLs fall back to
 the old active-round discovery path. With default workflow settings, existing
-installs keep working against the legacy production object storage origin.
+installs use the `shielded-vote` bucket in `nyc3`.
 
 The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` points at
-`https://shielded-vote.nyc3.digitaloceanspaces.com`. Set the same value in
-`/etc/default/nf-server` when managing hosts explicitly; fresh installs write it
-automatically.
+`https://shielded-vote.nyc3.digitaloceanspaces.com`. Set the variable in
+`/etc/default/nf-server` only when serving from a different bucket, or publish
+`start_pir.sh` with matching `DO_BUCKET`, `DO_REGION`, and `DO_PUBLIC_BASE_URL`
+values so fresh installs write that value automatically.
 
 If no configured snapshot height is available, `serve` keeps serving the
 existing local snapshot. On a fresh host with no local `pir_root.json`, set

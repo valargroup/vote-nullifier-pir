@@ -63,8 +63,9 @@ restart workflows read secrets and variables from the selected environment
 | `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing; optional for release artifact mirroring. |
 | `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing; optional for release artifact mirroring. |
 
-Set these repository variables for global DigitalOcean Spaces publication. They
-are optional unless you are moving away from the legacy bucket:
+Set these repository variables for global DigitalOcean Spaces publication. The
+workflow defaults point at the production `shielded-vote` bucket, but setting
+them explicitly avoids accidental drift if the defaults change later:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -85,7 +86,8 @@ Set these GitHub Environment variables in both environments:
 `release.yml` and `publish-snapshot.yml` use repository-level DigitalOcean
 secrets and repository variables because release artifacts and PIR snapshots are
 global by tag/height, not fleet-environment specific. If the repository
-variables are absent, both workflows use the current `shielded-vote` bucket.
+variables are absent, both workflows fall back to the production `shielded-vote`
+bucket in `nyc3`.
 
 ### One-time setup on the remote host
 

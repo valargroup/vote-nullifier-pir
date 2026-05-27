@@ -143,7 +143,8 @@ impl Config {
     /// `dynamic_config_url` to discover vote servers.
     pub const DEFAULT_VOTING_CONFIG_URL: &'static str =
         "https://voting.valargroup.org/prod/static-voting-config.json";
-    /// Current production bucket origin used for precomputed snapshots.
+    /// Public bucket origin for snapshot tier downloads. Operators can
+    /// override this with `SVOTE_PIR_PRECOMPUTED_BASE_URL`.
     pub const DEFAULT_PRECOMPUTED_BASE_URL: &'static str =
         "https://shielded-vote.nyc3.digitaloceanspaces.com";
 }
@@ -598,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn default_precomputed_base_url_uses_current_origin() {
+    fn default_precomputed_base_url_uses_public_bucket_origin() {
         assert_eq!(
             Config::DEFAULT_PRECOMPUTED_BASE_URL,
             "https://shielded-vote.nyc3.digitaloceanspaces.com"
