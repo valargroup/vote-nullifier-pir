@@ -1,5 +1,5 @@
 //! Snapshot-stale watchdog: per-host alerting when this nf-server is
-//! serving a snapshot older than the canonical active-round height.
+//! serving a snapshot older than the canonical configured height.
 //!
 //! ## Why this lives in-process
 //!

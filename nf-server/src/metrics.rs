@@ -84,8 +84,8 @@ fn build_metrics() -> Metrics {
 
     let expected_height = IntGauge::new(
         "nf_snapshot_expected_height",
-        "Block height the published voting-config says we should be serving \
-         (0 if voting-config didn't declare one or hasn't been fetched yet).",
+        "Block height the configured snapshot source says we should be serving \
+         (0 if no source declared one or it hasn't been fetched yet).",
     )
     .expect("valid metric");
 
@@ -97,7 +97,7 @@ fn build_metrics() -> Metrics {
     let stale_seconds = IntGauge::new(
         "nf_snapshot_stale_seconds",
         "Seconds this host has been continuously observed serving a snapshot \
-         older than the canonical active-round height (0 if currently converged).",
+         older than the canonical configured height (0 if currently converged).",
     )
     .expect("valid metric");
 

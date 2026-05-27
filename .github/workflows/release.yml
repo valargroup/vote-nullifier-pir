@@ -191,6 +191,7 @@ jobs:
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
             -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
+            -e "s|__PIR_CONFIG_URL__|https://voting.valargroup.org/prod/pir.json|g" \
             -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/prod/static-voting-config.json|g" \
             -e "s|__PRECOMPUTED_BASE_URL__|${PRECOMPUTED_BASE_URL}|g" \
             scripts/start_pir.sh.template > start_pir.sh
@@ -229,26 +230,16 @@ jobs:
           fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
             "s3://${DO_BUCKET}/start_pir.sh"
-          VOTING_CONFIG_URL="https://voting.valargroup.org/prod/static-voting-config.json"
+          PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
           HEIGHT=""
-          if CONFIG="$(curl -fsSL "$VOTING_CONFIG_URL")"; then
-            DYNAMIC_CONFIG_URL="$(jq -r '.dynamic_config_url // empty' <<<"$CONFIG")"
-            if [ -n "$DYNAMIC_CONFIG_URL" ]; then
-              CONFIG="$(curl -fsSL "$DYNAMIC_CONFIG_URL")"
-            fi
-            VOTE_SERVER="$(jq -r '.vote_servers[0].url // empty' <<<"$CONFIG")"
-            if [ -n "$VOTE_SERVER" ]; then
-              ACTIVE_ROUND="$(curl -fsSL "${VOTE_SERVER%/}/shielded-vote/v1/rounds/active" || true)"
-              if [ -n "$ACTIVE_ROUND" ]; then
-                HEIGHT="$(jq -r '.round.snapshot_height // empty' <<<"$ACTIVE_ROUND" 2>/dev/null || true)"
-              fi
-            fi
+          if CONFIG="$(curl -fsSL "$PIR_CONFIG_URL")"; then
+            HEIGHT="$(jq -r '.snapshot_height // empty' <<<"$CONFIG" 2>/dev/null || true)"
           fi
 
           if [ -n "$HEIGHT" ]; then
             case "$HEIGHT" in
               *[!0-9]*)
-                echo "active round snapshot_height must be numeric when present, got: ${HEIGHT}" >&2
+                echo "PIR config snapshot_height must be numeric when present, got: ${HEIGHT}" >&2
                 exit 1
                 ;;
               *)
@@ -257,7 +248,7 @@ jobs:
                 ;;
             esac
           else
-            echo "No active round snapshot_height found; skipping per-height start_pir.sh upload."
+            echo "No PIR config snapshot_height found; skipping per-height start_pir.sh upload."
           fi
 
   notify-slack:

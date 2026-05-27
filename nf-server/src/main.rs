@@ -14,6 +14,8 @@ mod cmd_sync;
 #[cfg(feature = "serve")]
 mod metrics;
 #[cfg(feature = "serve")]
+mod pir_config;
+#[cfg(feature = "serve")]
 mod serve;
 mod sync_pipeline;
 mod voting_config;

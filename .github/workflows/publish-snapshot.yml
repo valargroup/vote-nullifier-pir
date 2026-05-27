@@ -282,6 +282,12 @@ jobs:
               done
             fi
             echo "==> Snapshot $H published and verified at $SNAPSHOT_PUBLIC_BASE/$H/"
+            case "${{ inputs.target_environment }}" in
+              production) CONFIG_ENV=prod ;;
+              staging) CONFIG_ENV=stage ;;
+              *) CONFIG_ENV="${{ inputs.target_environment }}" ;;
+            esac
+            echo "Next step: update ${CONFIG_ENV}/pir.json in token-holder-voting-config to snapshot_height=$H, then restart the PIR fleet."
 
   notify-slack:
     name: Slack Notification

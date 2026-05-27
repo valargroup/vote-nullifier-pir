@@ -69,7 +69,7 @@ The server needs the following network access:
 |-----------|-------------|---------|
 | Outbound 443 | `shielded-vote.nyc3.digitaloceanspaces.com` | Binary, `SHA256SUMS`, `start_pir.sh`, snapshot tier downloads |
 | Outbound 443 | `github.com`, `objects.githubusercontent.com` | Binary / unit-file fallback |
-| Outbound 443 | `voting.valargroup.org`, `raw.githubusercontent.com` | Static/dynamic voting config (default) |
+| Outbound 443 | `voting.valargroup.org`, `raw.githubusercontent.com` | PIR snapshot config and legacy static/dynamic voting config fallback |
 | Outbound 443 | `sentry.io` (DSN-specific host) | Optional — only when `SENTRY_DSN` is set |
 | Outbound 443 | lightwalletd (e.g. `zec.rocks:443`) | **Synced mode only** |
 | Inbound 3000 | client / reverse proxy | PIR query traffic |
@@ -148,6 +148,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
    ```bash
    PIR_PRECOMPUTED_BASE_URL=https://shielded-vote.nyc3.digitaloceanspaces.com
    sudo tee /etc/default/nf-server >/dev/null <<EOF
+SVOTE_PIR_CONFIG_URL=https://voting.valargroup.org/prod/pir.json
 SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/prod/static-voting-config.json
 SVOTE_PIR_PRECOMPUTED_BASE_URL=${PIR_PRECOMPUTED_BASE_URL}
 EOF
@@ -178,8 +179,8 @@ curl -fsS http://127.0.0.1:3000/root   | jq '{height, pir_depth, num_ranges}'
 
 `GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
-Compare the `height` from `/root` to the active round's `snapshot_height` from
-the configured vote server; they should match while bootstrap is enabled.
+Compare the `height` from `/root` to `snapshot_height` from the environment's
+published `pir.json`; they should match while bootstrap is enabled.
 
 ## Host health check (`nf-server doctor`)
 
@@ -221,28 +222,32 @@ systemctl restart nullifier-query-server
 
 Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
 
-**On startup**, `serve` fetches the static voting config, follows its
-`dynamic_config_url`, queries the configured vote servers for the active round's
-`snapshot_height`, compares that height to local `pir_root.json`, and downloads
-the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't
-match. Fresh installs from the current workflow use the `shielded-vote` bucket
-in `nyc3`.
+**On startup**, `serve` fetches the environment's PIR snapshot config
+(`SVOTE_PIR_CONFIG_URL`, for example `https://voting.valargroup.org/prod/pir.json`),
+reads its `snapshot_height`, compares that height to local `pir_root.json`, and
+downloads the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if
+they don't match. For zero-touch migration, hosts that only have the legacy
+`SVOTE_PIR_VOTING_CONFIG_URL` derive `prod/pir.json` or `stage/pir.json` when
+that URL clearly identifies an environment; ambiguous legacy URLs fall back to
+the old active-round discovery path. With default workflow settings, existing
+installs use the `shielded-vote` bucket in `nyc3`.
 
-The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` uses
+The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` points at
 `https://shielded-vote.nyc3.digitaloceanspaces.com`. Set the variable in
 `/etc/default/nf-server` only when serving from a different bucket, or publish
 `start_pir.sh` with matching `DO_BUCKET`, `DO_REGION`, and `DO_PUBLIC_BASE_URL`
 values so fresh installs write that value automatically.
 
-If there is no active round, `serve` keeps serving the existing local snapshot.
-On a fresh host with no local `pir_root.json`, set
+If no configured snapshot height is available, `serve` keeps serving the
+existing local snapshot. On a fresh host with no local `pir_root.json`, set
 `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=<height>` to bootstrap a specific published
-snapshot. The force setting bypasses active-round discovery, so remove it after
-the host has loaded the intended snapshot unless the override is still desired.
+snapshot. The force setting bypasses PIR/voting-config discovery, so remove it
+after the host has loaded the intended snapshot unless the override is still
+desired.
 
 **Policy:** if local tier state is unusable and bootstrap can't fix it (e.g. CDN fetch failed and no valid files under `SVOTE_PIR_DATA_DIR`), startup fails. Fix the network / configuration, fall back to [Synced mode](#synced-mode), or pre-stage files.
 
-To disable bootstrap entirely (offline / pre-staged tiers), set `SVOTE_PIR_VOTING_CONFIG_URL=`.
+To disable bootstrap entirely (offline / pre-staged tiers), set `SVOTE_PIR_CONFIG_URL=`.
 
 For startup phase semantics, error symptoms, and recovery, see [Troubleshooting](#troubleshooting).
 
@@ -282,7 +287,7 @@ Useful flags:
 
 **Sync time** is governed by lightwalletd nullifier streaming, not local CPU — roughly ~16 min from NU5 activation to mainnet tip as of early 2026 (grows with chain length; refresh on each release).
 
-After sync, tier files are local — but CDN bootstrap still runs on the next `serve` startup unless you disable it (`SVOTE_PIR_VOTING_CONFIG_URL=` in `/etc/default/nf-server`).
+After sync, tier files are local — but CDN bootstrap still runs on the next `serve` startup unless you disable it (`SVOTE_PIR_CONFIG_URL=` in `/etc/default/nf-server`).
 
 ### Height-mismatch wipe (`RESYNC`)
 
@@ -302,7 +307,7 @@ The release ships `nullifier-query-server.service` and `start_pir.sh` installs i
 - has `WorkingDirectory=/opt/nf-ingest`;
 - `ExecStart=/opt/nf-ingest/nf-server serve --pir-data-dir /opt/nf-ingest/pir-data --port 3000`;
 - pulls environment from two files (both optional, `EnvironmentFile=-…`):
-  - `/etc/default/nf-server` — operator / cloud-init owned. Holds `SVOTE_PIR_VOTING_CONFIG_URL` and `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Edit this file to point at a mirror or to disable bootstrap (`SVOTE_PIR_VOTING_CONFIG_URL=`).
+- `/etc/default/nf-server` — operator / cloud-init owned. Holds `SVOTE_PIR_CONFIG_URL`, legacy `SVOTE_PIR_VOTING_CONFIG_URL`, and `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Edit this file to point at a mirror or to disable bootstrap (`SVOTE_PIR_CONFIG_URL=`).
   - `/opt/nf-ingest/.env` — deploy-workflow owned. Holds `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, and `SENTRY_RELEASE`. Mode `0600`.
 
 To change settings, edit the appropriate env file and:
@@ -344,7 +349,7 @@ Browse `/metrics` once after install for the full series list; names are stable 
 
 ## Backup and disaster recovery
 
-`SVOTE_PIR_DATA_DIR` is **disposable** for bootstrapped hosts: tier files come from the CDN and the snapshot height is fixed by the active on-chain voting round. To recover, reinstall and restart — `start_pir.sh` and the systemd unit will re-bootstrap. No backups required for serve-only hosts.
+`SVOTE_PIR_DATA_DIR` is **disposable** for bootstrapped hosts: tier files come from the CDN and the snapshot height is fixed by the environment `pir.json` (or the legacy active-round fallback for older host configs). To recover, reinstall and restart — `start_pir.sh` and the systemd unit will re-bootstrap. No backups required for serve-only hosts.
 
 For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index` represent ~16 minutes of lightwalletd streaming work; back them up if you want to skip a re-stream after disk loss. Tier files are derivable.
 
@@ -358,7 +363,7 @@ Semantic versioning applies to `nf-server` releases (`v*` tags drive CI artifact
 
 **When to upgrade:**
 
-- A new voting round with a new `snapshot_height` becomes active on chain. A bootstrapped server picks it up on next restart, but you should also confirm the pinned binary is still supported.
+- The environment `pir.json` is raised to a new `snapshot_height`. A bootstrapped server picks it up on next restart, but you should also confirm the pinned binary is still supported.
 - A new `v*` release with security or correctness fixes (watch GitHub Releases; subscribe via the repo's release feed).
 - Otherwise, no need to chase patch releases mid-round.
 
@@ -376,9 +381,10 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 |----------|------|
 | `SVOTE_PIR_DATA_DIR` | Single on-disk root for nullifiers, tree checkpoint, and tier files. Unit overrides via `--pir-data-dir /opt/nf-ingest/pir-data`. |
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
-| `SVOTE_PIR_VOTING_CONFIG_URL` | Defaults to the production voting-config URL. Empty string disables bootstrap (offline / pre-staged tiers). |
-| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. The compiled fallback is `https://shielded-vote.nyc3.digitaloceanspaces.com`. Override it only when serving snapshots from a different bucket. |
-| `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses voting-config / active-round discovery while set. |
+| `SVOTE_PIR_CONFIG_URL` | Environment PIR snapshot config URL. Empty string disables bootstrap (offline / pre-staged tiers). New installs use `https://voting.valargroup.org/prod/pir.json` by default. |
+| `SVOTE_PIR_VOTING_CONFIG_URL` | Legacy static voting-config URL. Used to derive the PIR config URL on old hosts and as a fallback active-round discovery path for ambiguous configs. |
+| `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to `https://shielded-vote.nyc3.digitaloceanspaces.com`. |
+| `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses PIR/voting-config discovery while set. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
 | `SENTRY_DSN` | Enables Sentry error / trace reporting. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
 | `SENTRY_ENVIRONMENT` | Tags Sentry events as `staging` or `production`. Lives in `/opt/nf-ingest/.env` and defaults to `production` if omitted. |
@@ -447,8 +453,8 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
-| `status` stays `"starting"` for >2 min, log shows voting-config fetch errors | Outbound HTTPS to the static/dynamic config hosts blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set it to empty and pre-stage tiers. |
-| `status` stays `"starting"`, log shows no active voting round and no local snapshot | Bootstrap is enabled on a fresh host while no round is active. | Set `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or wait until a round is active. |
+| `status` stays `"starting"` for >2 min, log shows PIR/voting-config fetch errors | Outbound HTTPS to config hosts blocked, or URL overridden incorrectly | Check egress (see [Network requirements](#network-requirements)); confirm `SVOTE_PIR_CONFIG_URL` and legacy `SVOTE_PIR_VOTING_CONFIG_URL`; for offline hosts set `SVOTE_PIR_CONFIG_URL=` and pre-stage tiers. |
+| `status` stays `"starting"`, log shows no configured snapshot height and no local snapshot | Bootstrap is enabled on a fresh host but neither `pir.json` nor legacy active-round fallback produced a height. | Set `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or publish/update the environment `pir.json`. |
 | `status` stays `"starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
 | `status` is `"error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |
