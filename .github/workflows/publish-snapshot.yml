@@ -123,7 +123,7 @@ jobs:
               ./nf-server sync \
                 --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
-                --lwd-url https://zec.rocks:443 \
+                --lwd-url https://us.zec.stardust.rest:443 \
                 --non-interactive \
                 --invalidate-after-blocks \
                 --max-height "$REQUESTED_H"
@@ -132,7 +132,7 @@ jobs:
               ./nf-server sync \
                 --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
-                --lwd-url https://zec.rocks:443 \
+                --lwd-url https://us.zec.stardust.rest:443 \
                 --non-interactive \
                 --invalidate-after-blocks
             fi

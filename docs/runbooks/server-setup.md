@@ -71,7 +71,7 @@ The server needs the following network access:
 | Outbound 443 | `github.com`, `objects.githubusercontent.com` | Binary / unit-file fallback |
 | Outbound 443 | `voting.valargroup.org`, `raw.githubusercontent.com` | PIR snapshot config and legacy static/dynamic voting config fallback |
 | Outbound 443 | `sentry.io` (DSN-specific host) | Optional — only when `SENTRY_DSN` is set |
-| Outbound 443 | lightwalletd (e.g. `zec.rocks:443`) | **Synced mode only** |
+| Outbound 443 | lightwalletd (e.g. `us.zec.stardust.rest:443`) | **Synced mode only** |
 | Inbound 3000 | client / reverse proxy | PIR query traffic |
 
 ## Platform support
@@ -275,7 +275,7 @@ sudo /opt/nf-ingest/nf-server sync \
 systemctl start nullifier-query-server
 ```
 
-`--lwd-url` defaults to `https://zec.rocks:443`; omit it unless you need a different lightwalletd.
+`--lwd-url` defaults to `https://us.zec.stardust.rest:443`; omit it unless you need a different lightwalletd.
 
 Useful flags:
 

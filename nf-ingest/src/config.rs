@@ -2,7 +2,7 @@
 
 /// Default lightwalletd gRPC endpoints used when no override is provided.
 pub const DEFAULT_LWD_URLS: &[&str] = &[
-    "https://zec.rocks:443",
+    "https://us.zec.stardust.rest:443",
     "https://eu2.zec.stardust.rest:443",
     "https://eu.zec.stardust.rest:443",
 ];
@@ -10,7 +10,7 @@ pub const DEFAULT_LWD_URLS: &[&str] = &[
 /// The default single URL used in CLI `--lwd-url` defaults.
 /// When the resolved URL list contains only this entry (and no `LWD_URLS` env
 /// override was set), the full `DEFAULT_LWD_URLS` list is used instead.
-const DEFAULT_SINGLE_LWD_URL: &str = "https://zec.rocks:443";
+const DEFAULT_SINGLE_LWD_URL: &str = "https://us.zec.stardust.rest:443";
 
 /// Tree checkpoint files under the nullifier root to remove when forcing a rebuild
 /// after new blocks were synced from lightwalletd (`--invalidate-after-blocks`).

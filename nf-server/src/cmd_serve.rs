@@ -40,7 +40,7 @@ pub struct Args {
     /// Can also be set via LWD_URLS env (comma-separated).
     #[arg(
         long,
-        default_value = "https://zec.rocks:443",
+        default_value = "https://us.zec.stardust.rest:443",
         env = "SVOTE_PIR_MAINNET_RPC_URL"
     )]
     lwd_url: String,
