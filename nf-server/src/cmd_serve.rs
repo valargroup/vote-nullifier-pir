@@ -302,7 +302,7 @@ pub async fn run(args: Args) -> Result<()> {
                     );
                 }
                 tx.finish();
-                sentry::capture_message("nf-server ready", sentry::Level::Info);
+                tracing::info!("nf-server ready");
             }
             Ok(Err(e)) => {
                 let msg = format!("initial load failed: {e:#}");
