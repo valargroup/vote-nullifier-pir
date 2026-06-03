@@ -1,6 +1,6 @@
 [package]
 name = "imt-tree"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Indexed Merkle Tree for nullifier non-membership proofs"
 license = "MIT OR Apache-2.0"
@@ -11,7 +11,7 @@ anyhow = "1.0"
 ff = "0.13"
 hex = "0.4"
 pasta_curves = "0.5"
-halo2_gadgets = { version = "0.4", default-features = false }
+halo2_gadgets = { version = "=0.5.0", default-features = false }
 rayon = "1"
 
 [dev-dependencies]
