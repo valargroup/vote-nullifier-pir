@@ -91,6 +91,40 @@ fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -
     }
 }
 
+/// Resolve the byte offset to use for historical export.
+///
+/// Returns `Ok(None)` when current checkpoint is already at/behind target,
+/// which means the caller should load the full `nullifiers.bin`.
+/// Returns `Ok(Some(offset))` only when an exact index entry exists for
+/// `export_target`; floor matches are rejected to prevent mislabeled exports.
+fn resolve_export_byte_offset(
+    data_dir: &Path,
+    checkpoint_height: u64,
+    export_target: u64,
+) -> Result<Option<u64>> {
+    if checkpoint_height <= export_target {
+        return Ok(None);
+    }
+
+    let (idx_h, byte_off) = file_store::offset_for_height(data_dir, export_target)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "nullifiers.index has no entry for export height {export_target} \
+                 (checkpoint is {checkpoint_height}); run a full sync so the index covers this height"
+            )
+        })?;
+    if idx_h != export_target {
+        bail!(
+            "nullifiers.index floor lookup returned height {} for export target {}; \
+             exact height entry is required to bind exported contents to advertised snapshot height",
+            idx_h,
+            export_target
+        );
+    }
+
+    Ok(Some(byte_off))
+}
+
 #[derive(ClapArgs)]
 pub struct Args {
     /// Directory for nullifiers.bin, nullifiers.checkpoint, nullifiers.index, and
@@ -311,14 +345,9 @@ pub async fn run(args: Args) -> Result<()> {
                 return Ok(());
             }
 
-            let nfs = if ch_c > export_target_c {
-                let (_idx_h, byte_off) = file_store::offset_for_height(&data_dir_c, export_target_c)?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "nullifiers.index has no entry for export height {export_target_c} \
-                             (checkpoint is {ch_c}); run a full sync so the index covers this height"
-                        )
-                    })?;
+            let nfs = if let Some(byte_off) =
+                resolve_export_byte_offset(&data_dir_c, ch_c, export_target_c)?
+            {
                 file_store::load_nullifiers_up_to(&data_dir_c, byte_off)
                     .with_context(|| format!("load nullifiers up to byte offset {byte_off}"))?
             } else {
@@ -343,4 +372,52 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_export_byte_offset;
+    use nf_ingest::file_store;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "nf_server_cmd_sync_{label}_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn resolve_export_offset_rejects_floor_match() {
+        let dir = temp_dir("floor_reject");
+        file_store::append_index(&dir, 100, 64).expect("append index 100");
+        file_store::append_index(&dir, 120, 96).expect("append index 120");
+
+        let err = resolve_export_byte_offset(&dir, 130, 125).expect_err("must reject floor");
+        let msg = err.to_string();
+        assert!(msg.contains("floor lookup returned height 120"));
+        assert!(msg.contains("export target 125"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_export_offset_accepts_exact_match() {
+        let dir = temp_dir("exact_ok");
+        file_store::append_index(&dir, 100, 64).expect("append index 100");
+        file_store::append_index(&dir, 120, 96).expect("append index 120");
+
+        let offset = resolve_export_byte_offset(&dir, 130, 120).expect("lookup succeeds");
+        assert_eq!(offset, Some(96));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
