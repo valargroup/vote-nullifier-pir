@@ -307,8 +307,10 @@ impl PirClient {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
 
-        // Process tier 0 (plaintext, not server-controlled)
-        let s1 = process_tier0(&self.tier0, nullifier, &mut path)?;
+        // Process tier 0. Even on failure, continue with dummy indices so both
+        // PIR queries are still sent before returning an error.
+        let tier0_outcome = process_tier0(&self.tier0, nullifier, &mut path);
+        let s1 = tier0_outcome.as_ref().ok().copied().unwrap_or(0);
 
         // Process tier 1 (PIR) — capture the outcome without `?` so that a
         // tier 2 query is always sent regardless of tier 1 success.
@@ -370,6 +372,9 @@ impl PirClient {
             .await;
 
         // Propagate errors only after both queries have been sent.
+        if let Err(e) = tier0_outcome {
+            return Err(e);
+        }
         let (t2_row_idx, tier1_timing) = tier1_outcome?;
         if let Some(e) = t2_bounds_err {
             return Err(e);
@@ -740,6 +745,7 @@ mod tests {
     use super::*;
     use ff::Field;
     use pasta_curves::Fp;
+    use pir_types::fp_utils::write_fp;
     use pir_export::build_ranges_with_sentinels;
 
     /// Build a tree and export all three tier blobs.
@@ -1161,5 +1167,98 @@ mod tests {
         );
         assert_eq!(transport.count_hits("/tier1/query"), K);
         assert_eq!(transport.count_hits("/tier2/query"), K);
+    }
+
+    struct Tier0OracleTransport {
+        tier0: Vec<u8>,
+        hits: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Tier0OracleTransport {
+        fn new(threshold: Fp) -> Self {
+            use pir_types::TIER1_ROWS;
+
+            let mut tier0 = vec![0u8; pir_types::tier0::TIER0_BYTES];
+            let subtree_base = pir_types::tier0::TIER0_INTERNAL_NODES * 32;
+            for i in 0..TIER1_ROWS {
+                let record_base = subtree_base + i * 64;
+                write_fp(&mut tier0[record_base..record_base + 32], Fp::zero());
+                write_fp(&mut tier0[record_base + 32..record_base + 64], threshold);
+            }
+            Self {
+                tier0,
+                hits: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn count_hits(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.as_str() == path)
+                .count()
+        }
+    }
+
+    impl Transport for Tier0OracleTransport {
+        fn get<'a>(&'a self, url: &'a str) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                use ff::PrimeField as _;
+                use pir_types::{RootInfo, TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                let body = match path {
+                    "/tier0" => self.tier0.clone(),
+                    "/params/tier1" => serde_json::to_vec(&YpirScenario {
+                        num_items: TIER1_YPIR_ROWS,
+                        item_size_bits: TIER1_ITEM_BITS,
+                    })?,
+                    "/params/tier2" => serde_json::to_vec(&YpirScenario {
+                        num_items: TIER1_YPIR_ROWS,
+                        item_size_bits: TIER2_ITEM_BITS,
+                    })?,
+                    "/root" => serde_json::to_vec(&RootInfo {
+                        root29: hex::encode(Fp::zero().to_repr()),
+                        root25: hex::encode(Fp::zero().to_repr()),
+                        num_ranges: 1,
+                        pir_depth: PIR_DEPTH,
+                        height: None,
+                    })?,
+                    _ => anyhow::bail!("unexpected GET {path}"),
+                };
+                Ok(response(body))
+            })
+        }
+
+        fn post<'a>(&'a self, url: &'a str, _body: Vec<u8>) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                Ok(response(vec![0u8; 16]))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn tier0_miss_still_sends_tier1_and_tier2_queries() {
+        let threshold = Fp::from(100u64);
+        let transport = std::sync::Arc::new(Tier0OracleTransport::new(threshold));
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .expect("connect should succeed with forged but parseable tier0");
+
+        let err = client
+            .fetch_proof(Fp::from(42u64))
+            .await
+            .expect_err("tier0 lookup should fail for below-threshold value");
+        assert!(
+            err.to_string()
+                .contains("nullifier not found in any Tier 0 subtree"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(transport.count_hits("/tier1/query"), 1);
+        assert_eq!(transport.count_hits("/tier2/query"), 1);
     }
 }
