@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use tonic::transport::Channel;
 use tonic::Request;
 use tracing::info;
@@ -157,6 +157,109 @@ async fn fetch_block_range(
     Ok(nf_buffer)
 }
 
+/// Compare two providers' canonical range payloads and return the agreed payload.
+///
+/// This is intentionally fail-closed: any first divergence in height ordering,
+/// nullifier bytes, or payload length aborts the range before checkpoint commit.
+fn compare_range_payloads(
+    start: u64,
+    end: u64,
+    provider_a_url: &str,
+    provider_a_payload: Vec<(u64, Vec<u8>)>,
+    provider_b_url: &str,
+    provider_b_payload: Vec<(u64, Vec<u8>)>,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    if provider_a_payload == provider_b_payload {
+        return Ok(provider_a_payload);
+    }
+
+    let shared_len = std::cmp::min(provider_a_payload.len(), provider_b_payload.len());
+    for i in 0..shared_len {
+        let (a_height, a_nf) = &provider_a_payload[i];
+        let (b_height, b_nf) = &provider_b_payload[i];
+        if a_height != b_height {
+            bail!(
+                "provider mismatch for range [{}..={}]: first height mismatch at index {} ({}:{} vs {}:{})",
+                start,
+                end,
+                i,
+                provider_a_url,
+                a_height,
+                provider_b_url,
+                b_height
+            );
+        }
+        if a_nf != b_nf {
+            bail!(
+                "provider mismatch for range [{}..={}]: first nullifier mismatch at height {} index {} ({} vs {})",
+                start,
+                end,
+                a_height,
+                i,
+                provider_a_url,
+                provider_b_url
+            );
+        }
+    }
+
+    if provider_a_payload.len() != provider_b_payload.len() {
+        let extra = if provider_a_payload.len() > provider_b_payload.len() {
+            provider_a_payload[shared_len].0
+        } else {
+            provider_b_payload[shared_len].0
+        };
+        bail!(
+            "provider mismatch for range [{}..={}]: payload length differs ({}={} rows vs {}={} rows), first extra height {}",
+            start,
+            end,
+            provider_a_url,
+            provider_a_payload.len(),
+            provider_b_url,
+            provider_b_payload.len(),
+            extra
+        );
+    }
+
+    unreachable!("equal length and all entries matched should have returned early");
+}
+
+/// Fetch the same block range from two providers and require exact agreement.
+///
+/// Both requests execute concurrently to minimize added latency from redundancy.
+async fn fetch_and_compare_range(
+    primary_client: &mut CompactTxStreamerClient<Channel>,
+    primary_url: &str,
+    secondary_client: &mut CompactTxStreamerClient<Channel>,
+    secondary_url: &str,
+    start: u64,
+    end: u64,
+) -> Result<Vec<(u64, Vec<u8>)>> {
+    let (primary_res, secondary_res) = tokio::join!(
+        fetch_block_range(primary_client, start, end),
+        fetch_block_range(secondary_client, start, end),
+    );
+    let primary_payload = primary_res.with_context(|| {
+        format!(
+            "fetch range [{}..={}] from primary provider {}",
+            start, end, primary_url
+        )
+    })?;
+    let secondary_payload = secondary_res.with_context(|| {
+        format!(
+            "fetch range [{}..={}] from secondary provider {}",
+            start, end, secondary_url
+        )
+    })?;
+    compare_range_payloads(
+        start,
+        end,
+        primary_url,
+        primary_payload,
+        secondary_url,
+        secondary_payload,
+    )
+}
+
 /// Compute the effective sync target height, accounting for rewinds and chain tip.
 fn resolve_target(start: u64, max_height: Option<u64>, chain_tip: u64) -> u64 {
     match max_height {
@@ -205,6 +308,12 @@ pub async fn sync(
     progress: impl Fn(u64, u64, u64, u64),
 ) -> Result<SyncResult> {
     std::fs::create_dir_all(dir)?;
+    if lwd_urls.len() < 2 {
+        bail!(
+            "dual-provider range agreement requires at least 2 lightwalletd URLs, got {}",
+            lwd_urls.len()
+        );
+    }
 
     let mut clients = Vec::with_capacity(lwd_urls.len());
     for url in lwd_urls {
@@ -248,9 +357,24 @@ pub async fn sync(
 
         let mut handles = Vec::with_capacity(batch_ranges.len());
         for (i, &(range_start, range_end)) in batch_ranges.iter().enumerate() {
-            let mut client = clients[i].clone();
+            let primary_idx = i % n;
+            let secondary_idx = (primary_idx + 1) % n;
+            let mut primary_client = clients[primary_idx].clone();
+            let mut secondary_client = clients[secondary_idx].clone();
+            let primary_url = lwd_urls[primary_idx].clone();
+            let secondary_url = lwd_urls[secondary_idx].clone();
+            // Pair each range with two distinct providers; the cycle commits only
+            // after all range pairs agree.
             handles.push(tokio::spawn(async move {
-                fetch_block_range(&mut client, range_start, range_end).await
+                fetch_and_compare_range(
+                    &mut primary_client,
+                    &primary_url,
+                    &mut secondary_client,
+                    &secondary_url,
+                    range_start,
+                    range_end,
+                )
+                .await
             }));
         }
 
@@ -412,6 +536,96 @@ mod tests {
         assert_eq!(h, 1_700_000);
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 2);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compare_range_payloads_accepts_identical_payloads() {
+        let payload = vec![
+            (100u64, vec![1u8; 32]),
+            (100u64, vec![2u8; 32]),
+            (101u64, vec![3u8; 32]),
+        ];
+        let agreed = compare_range_payloads(
+            100,
+            101,
+            "https://a.example",
+            payload.clone(),
+            "https://b.example",
+            payload,
+        )
+        .unwrap();
+        assert_eq!(agreed.len(), 3);
+    }
+
+    #[test]
+    fn compare_range_payloads_rejects_mismatch() {
+        let provider_a = vec![(200u64, vec![9u8; 32])];
+        let provider_b = vec![(200u64, vec![8u8; 32])];
+        let err = compare_range_payloads(
+            200,
+            200,
+            "https://a.example",
+            provider_a,
+            "https://b.example",
+            provider_b,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("first nullifier mismatch"));
+        assert!(err.to_string().contains("https://a.example"));
+        assert!(err.to_string().contains("https://b.example"));
+    }
+
+    #[test]
+    fn compare_range_payloads_rejects_height_mismatch() {
+        let provider_a = vec![(300u64, vec![1u8; 32])];
+        let provider_b = vec![(301u64, vec![1u8; 32])];
+        let err = compare_range_payloads(
+            300,
+            301,
+            "https://a.example",
+            provider_a,
+            "https://b.example",
+            provider_b,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("first height mismatch"));
+        assert!(err.to_string().contains("https://a.example:300"));
+        assert!(err.to_string().contains("https://b.example:301"));
+    }
+
+    #[test]
+    fn compare_range_payloads_rejects_length_mismatch() {
+        let provider_a = vec![(400u64, vec![7u8; 32]), (401u64, vec![8u8; 32])];
+        let provider_b = vec![(400u64, vec![7u8; 32])];
+        let err = compare_range_payloads(
+            400,
+            401,
+            "https://a.example",
+            provider_a,
+            "https://b.example",
+            provider_b,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("payload length differs"));
+        assert!(err.to_string().contains("first extra height 401"));
+    }
+
+    #[test]
+    fn sync_rejects_single_provider() {
+        let dir = temp_dir("single-provider-rejected");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(sync(
+            &dir,
+            &[String::from("https://only.example")],
+            Some(NU5_ACTIVATION_HEIGHT + 10),
+            |_, _, _, _| {},
+        ));
+        assert!(result.is_err());
+        let err = result.err().expect("single-provider sync should fail");
+        assert!(err
+            .to_string()
+            .contains("requires at least 2 lightwalletd URLs"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

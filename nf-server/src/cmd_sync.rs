@@ -173,6 +173,12 @@ pub async fn run(args: Args) -> Result<()> {
     if lwd_urls.is_empty() {
         bail!("no lightwalletd URLs resolved");
     }
+    if lwd_urls.len() < 2 {
+        bail!(
+            "dual-provider range agreement requires at least 2 lightwalletd URLs (resolved {}); set LWD_URLS to two or more endpoints",
+            lwd_urls.len()
+        );
+    }
     let chain_tip = sync_nullifiers::fetch_chain_tip(&lwd_urls[0])
         .await
         .context("fetch chain tip")?;

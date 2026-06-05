@@ -243,6 +243,12 @@ async fn _post_snapshot_prepare_legacy(
 async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     let pir_data_dir = state.pir_data_dir.clone();
     let lwd_urls = state.lwd_urls.clone();
+    if lwd_urls.len() < 2 {
+        anyhow::bail!(
+            "dual-provider range agreement requires at least 2 lightwalletd URLs (resolved {})",
+            lwd_urls.len()
+        );
+    }
 
     {
         let mut phase = state.phase.write().await;
