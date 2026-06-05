@@ -174,6 +174,16 @@ pub fn offset_for_height(dir: &Path, target_height: u64) -> Result<Option<(u64, 
     Ok(Some((h, o)))
 }
 
+/// Find the exact index entry for `target_height`.
+///
+/// Returns `Some(offset)` only when `nullifiers.index` contains a checkpoint
+/// recorded at exactly `target_height`.
+pub fn exact_offset_for_height(dir: &Path, target_height: u64) -> Result<Option<u64>> {
+    Ok(offset_for_height(dir, target_height)?.and_then(|(height, offset)| {
+        (height == target_height).then_some(offset)
+    }))
+}
+
 /// One-time migration: create `nullifiers.index` from `nullifiers.checkpoint`
 /// if the index doesn't exist yet. Future ingests will append naturally
 /// via `save_checkpoint` → `append_index`.
@@ -420,6 +430,20 @@ mod tests {
 
         // Below all entries
         assert_eq!(offset_for_height(&dir, 1_699_999).unwrap(), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exact_offset_requires_exact_height() {
+        let dir = temp_dir("exact_idx_lookup");
+
+        append_index(&dir, 1_700_000, 1024).unwrap();
+        append_index(&dir, 1_720_000, 3072).unwrap();
+
+        assert_eq!(exact_offset_for_height(&dir, 1_700_000).unwrap(), Some(1024));
+        assert_eq!(exact_offset_for_height(&dir, 1_710_000).unwrap(), None);
+        assert_eq!(exact_offset_for_height(&dir, 1_699_999).unwrap(), None);
 
         let _ = fs::remove_dir_all(&dir);
     }
