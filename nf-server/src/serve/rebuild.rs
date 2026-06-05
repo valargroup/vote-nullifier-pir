@@ -1,17 +1,77 @@
 use std::sync::Arc;
 
+use anyhow::Result;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use tracing::{info, warn};
+
+use nf_ingest::file_store;
 use nf_ingest::sync_nullifiers;
 
-use super::state::AppState;
+use crate::sync_pipeline;
+
+use super::state::{AppState, ServerPhase};
 
 // ── Snapshot management endpoints ─────────────────────────────────────────────
 
-// NOTE: `POST /snapshot/prepare` is intentionally disabled. Snapshot updates
-// are performed by restarting `nf-server serve` so bootstrap loads published
-// snapshot artifacts for the active voting round.
+// NOTE: `POST /snapshot/prepare` is currently disabled. The handler below
+// returns 410 Gone and the in-process rebuild pipeline (`run_rebuild`,
+// `check_active_round`, `PrepareRequest`) is left in place for historical
+// reasons — to document the previous in-service rebuild flow and to make
+// it easy to re-enable later if we decide to support host-local rebuilds
+// again. The recommended way to move a server to a new snapshot height
+// today is the bootstrap path (`bootstrap::run` at startup, fed from the
+// published snapshot CDN); restart the process after the canonical
+// `snapshot_height` advances and bootstrap will resync to the right height.
+
+/// Request body for `POST /snapshot/prepare`.
+///
+/// Retained for historical reasons; see the module-level note above.
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct PrepareRequest {
+    /// Target block height to rebuild the snapshot at.
+    height: u64,
+}
+
+/// Query the chain SDK for an active voting round.
+///
+/// Returns `Some(round_id)` if a round is currently active, `None` otherwise.
+/// Used to prevent rebuilds during active rounds which would invalidate proofs.
+///
+/// Retained for historical reasons; see the module-level note above.
+#[allow(dead_code)]
+async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
+    let url = format!(
+        "{}/shielded-vote/v1/rounds/active",
+        chain_url.trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let resp = client.get(&url).send().await?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!("active round query returned HTTP {}", resp.status());
+    }
+
+    let body: serde_json::Value = resp.json().await?;
+    if let Some(round) = body.get("round") {
+        if round.is_object() && !round.is_null() {
+            let round_id = round
+                .get("vote_round_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            return Ok(Some(round_id));
+        }
+    }
+    Ok(None)
+}
 
 /// `POST /snapshot/prepare` is disabled.
 ///
@@ -33,6 +93,287 @@ pub(crate) async fn post_snapshot_prepare(
         })),
     )
         .into_response()
+}
+
+/// Original in-process rebuild pipeline used by `POST /snapshot/prepare`.
+///
+/// Retained for historical reasons; see the module-level note above.
+/// Currently unreachable because the HTTP handler short-circuits with 410.
+#[allow(dead_code)]
+async fn _post_snapshot_prepare_legacy(
+    state: Arc<AppState>,
+    req: PrepareRequest,
+) -> axum::response::Response {
+    let height = req.height;
+
+    if let Err(e) = nf_ingest::config::validate_export_height(height) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+
+    // Refuse to start a rebuild unless we're in a steady Serving state.
+    // During Starting, the startup task holds `rebuild_lock` and the
+    // on-disk snapshot / index may still be changing; kicking off a
+    // concurrent rebuild would race with `file_store::rebuild_index`,
+    // `bootstrap::run`, and `load_serving_state` on the same directory.
+    // During Error the server is degraded and rebuild
+    // cannot assume a consistent baseline. Both cases map to 503 with
+    // the current phase so callers can back off and retry.
+    {
+        let phase = state.phase.read().await;
+        if !matches!(
+            *phase,
+            ServerPhase::Serving | ServerPhase::Rebuilding { .. }
+        ) {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "error": "server not ready for rebuild",
+                    "current": *phase,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let rebuild_guard = match Arc::clone(&state.rebuild_lock).try_lock_owned() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let phase = state.phase.read().await;
+            return (
+                StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({
+                    "error": "rebuild already in progress",
+                    "current": *phase,
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    {
+        let lwd_url = state.lwd_urls.first().cloned().unwrap_or_default();
+        if !lwd_url.is_empty() {
+            match sync_nullifiers::fetch_chain_tip(&lwd_url).await {
+                Ok(tip) => {
+                    if height > tip {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            axum::Json(serde_json::json!({
+                                "error": format!("height {} exceeds chain tip ({})", height, tip)
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to fetch chain tip, skipping validation");
+                }
+            }
+        }
+    }
+
+    if let Some(chain_url) = &state.chain_url {
+        match check_active_round(chain_url).await {
+            Ok(Some(round_id)) => {
+                return (
+                    StatusCode::CONFLICT,
+                    axum::Json(serde_json::json!({
+                        "error": "cannot rebuild while round is active",
+                        "round_id": round_id,
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(error = %e, "failed to check active round, proceeding anyway");
+            }
+        }
+    }
+
+    {
+        let mut phase = state.phase.write().await;
+        *phase = ServerPhase::Rebuilding {
+            target_height: height,
+            progress: "starting".to_string(),
+            progress_pct: 0,
+        };
+    }
+
+    let state_clone = Arc::clone(&state);
+    tokio::task::spawn(async move {
+        let _rebuild_guard = rebuild_guard;
+        let result = run_rebuild(state_clone.clone(), height).await;
+        if let Err(ref e) = result {
+            let msg = format!("{:?}", e);
+            warn!(error = %msg, "rebuild failed");
+            sentry::with_scope(
+                |scope| {
+                    scope.set_tag("operation", "rebuild");
+                    scope.set_tag("target_height", height.to_string());
+                },
+                || {
+                    let err: &dyn std::error::Error = e.as_ref();
+                    sentry::capture_error(err);
+                },
+            );
+            let mut phase = state_clone.phase.write().await;
+            *phase = ServerPhase::Error { message: msg };
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(serde_json::json!({
+            "status": "rebuilding",
+            "target_height": height,
+        })),
+    )
+        .into_response()
+}
+
+/// Run the full rebuild pipeline: nullifier sync (if needed) → tree + tiers → load.
+///
+/// Retained for historical reasons; see the module-level note above.
+#[allow(dead_code)]
+async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
+    let pir_data_dir = state.pir_data_dir.clone();
+    let lwd_urls = state.lwd_urls.clone();
+    if lwd_urls.len() < 2 {
+        anyhow::bail!(
+            "dual-provider range agreement requires at least 2 lightwalletd URLs (resolved {})",
+            lwd_urls.len()
+        );
+    }
+
+    {
+        let mut phase = state.phase.write().await;
+        *phase = ServerPhase::Rebuilding {
+            target_height,
+            progress: "checking sync state".to_string(),
+            progress_pct: 0,
+        };
+    }
+
+    let current_height = file_store::load_checkpoint(&pir_data_dir)?
+        .map(|(h, _)| h)
+        .unwrap_or(0);
+
+    if target_height > current_height {
+        {
+            let mut phase = state.phase.write().await;
+            *phase = ServerPhase::Rebuilding {
+                target_height,
+                progress: format!("syncing blocks {current_height}..{target_height}"),
+                progress_pct: 2,
+            };
+        }
+
+        let dd = pir_data_dir.clone();
+        let lwd = lwd_urls.clone();
+        let state_ref = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(sync_nullifiers::sync(
+                &dd,
+                &lwd,
+                Some(target_height),
+                |h, t, _, _| {
+                    info!(height = h, target = t, "nullifier sync progress");
+                    let pct = if t > 0 {
+                        2 + ((h as f64 / t as f64) * 8.0) as u8
+                    } else {
+                        5
+                    };
+                    if let Ok(mut phase) = state_ref.phase.try_write() {
+                        *phase = ServerPhase::Rebuilding {
+                            target_height,
+                            progress: format!("syncing {h}/{t}"),
+                            progress_pct: pct,
+                        };
+                    }
+                },
+            ))?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+    }
+
+    {
+        let mut phase = state.phase.write().await;
+        *phase = ServerPhase::Rebuilding {
+            target_height,
+            progress: "loading nullifiers".to_string(),
+            progress_pct: 10,
+        };
+    }
+
+    let dd = pir_data_dir.clone();
+    let pd = pir_data_dir.clone();
+    let state_ref = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        let entry = file_store::offset_for_height(&dd, target_height)?;
+        let (idx_height, byte_offset) = entry
+            .ok_or_else(|| anyhow::anyhow!("no index entry for target height {}", target_height))?;
+        info!(
+            height = idx_height,
+            byte_offset, "Loading nullifiers for export"
+        );
+        let nfs = file_store::load_nullifiers_up_to(&dd, byte_offset)?;
+        info!(count = nfs.len(), "Nullifiers loaded");
+
+        if !pir_export::tiers_complete_for_height(&pd, idx_height)? {
+            sync_pipeline::export_tree_and_tiers_from_nullifiers(
+                nfs,
+                &dd,
+                &pd,
+                idx_height,
+                |msg, pct| {
+                    let overall_pct = 10 + (pct as u16 * 45 / 55).min(45) as u8;
+                    if let Ok(mut phase) = state_ref.phase.try_write() {
+                        *phase = ServerPhase::Rebuilding {
+                            target_height,
+                            progress: msg.to_string(),
+                            progress_pct: overall_pct,
+                        };
+                    }
+                },
+            )?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+
+    {
+        let mut phase = state.phase.write().await;
+        *phase = ServerPhase::Rebuilding {
+            target_height,
+            progress: "loading YPIR servers".to_string(),
+            progress_pct: 60,
+        };
+    }
+
+    let pd = pir_data_dir.clone();
+    let new_serving =
+        tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd)).await??;
+
+    {
+        let mut serving = state.serving.write().await;
+        *serving = Some(new_serving);
+    }
+    {
+        let mut phase = state.phase.write().await;
+        *phase = ServerPhase::Serving;
+    }
+
+    info!(target_height, "rebuild complete");
+    Ok(())
 }
 
 pub(crate) async fn get_snapshot_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
