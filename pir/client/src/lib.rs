@@ -392,9 +392,7 @@ impl PirClient {
         };
         let t1_query_idx = if t1_bounds_err.is_some() { 0 } else { s1 };
 
-        let tier1_result = self
-            .ypir_query(QueryTier::Tier1, t1_query_idx)
-            .await;
+        let tier1_result = self.ypir_query(QueryTier::Tier1, t1_query_idx).await;
         let tier1_outcome = tier1_result.and_then(|(row, timing)| {
             let mut_path = &mut path;
             let s2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -475,11 +473,7 @@ impl PirClient {
     /// 1. Generate keys
     /// 2. Query
     /// 3. Recover
-    async fn ypir_query(
-        &self,
-        tier: QueryTier,
-        row_idx: usize,
-    ) -> Result<(Vec<u8>, TierTiming)> {
+    async fn ypir_query(&self, tier: QueryTier, row_idx: usize) -> Result<(Vec<u8>, TierTiming)> {
         let tier_name = tier.name();
         let scenario = tier.scenario();
         let expected_row_bytes = tier.row_bytes();
@@ -814,8 +808,8 @@ mod tests {
     use super::*;
     use ff::Field;
     use pasta_curves::Fp;
-    use pir_types::fp_utils::write_fp;
     use pir_export::build_ranges_with_sentinels;
+    use pir_types::fp_utils::write_fp;
 
     /// Build a tree and export all three tier blobs.
     struct TestFixture {
