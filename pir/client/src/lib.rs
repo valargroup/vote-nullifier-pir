@@ -22,8 +22,9 @@ use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
 use pir_types::tier2::Tier2Row;
 use pir_types::{
-    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES,
+    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS,
+    TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES, TIER1_YPIR_ROWS, TIER2_ITEM_BITS, TIER2_LEAVES,
+    TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
 use ypir::client::YPIRClient;
@@ -87,11 +88,44 @@ pub struct PirClient {
     server_url: String,
     transport: Arc<dyn Transport>,
     tier0: Tier0Data,
-    tier1_scenario: YpirScenario,
-    tier2_scenario: YpirScenario,
     num_ranges: usize,
     empty_hashes: [Fp; TREE_DEPTH],
     root29: Fp,
+}
+
+#[derive(Copy, Clone)]
+enum QueryTier {
+    Tier1,
+    Tier2,
+}
+
+impl QueryTier {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tier1 => "tier1",
+            Self::Tier2 => "tier2",
+        }
+    }
+
+    fn scenario(self) -> YpirScenario {
+        match self {
+            Self::Tier1 => YpirScenario {
+                num_items: TIER1_YPIR_ROWS,
+                item_size_bits: TIER1_ITEM_BITS,
+            },
+            Self::Tier2 => YpirScenario {
+                num_items: TIER2_ROWS,
+                item_size_bits: TIER2_ITEM_BITS,
+            },
+        }
+    }
+
+    fn row_bytes(self) -> usize {
+        match self {
+            Self::Tier1 => TIER1_ROW_BYTES,
+            Self::Tier2 => TIER2_ROW_BYTES,
+        }
+    }
 }
 
 /// Return the number of populated leaves in a Tier 2 row, clamped to
@@ -109,6 +143,28 @@ fn valid_leaves_for_row(num_ranges: usize, row_idx: usize) -> usize {
 #[inline]
 fn fill_path(path: &mut [Fp; TREE_DEPTH], offset: usize, siblings: &[Fp]) {
     path[offset..offset + siblings.len()].copy_from_slice(siblings);
+}
+
+fn ensure_compatible_scenario(
+    tier_name: &str,
+    actual: &YpirScenario,
+    expected: YpirScenario,
+) -> Result<()> {
+    anyhow::ensure!(
+        actual.num_items == expected.num_items,
+        "server {} num_items {} != expected {}",
+        tier_name,
+        actual.num_items,
+        expected.num_items
+    );
+    anyhow::ensure!(
+        actual.item_size_bits == expected.item_size_bits,
+        "server {} item_size_bits {} != expected {}",
+        tier_name,
+        actual.item_size_bits,
+        expected.item_size_bits
+    );
+    Ok(())
 }
 
 /// Locate the nullifier's subtree in Tier 0, fill its siblings into `path`,
@@ -208,6 +264,10 @@ impl PirClient {
         let tier2_scenario: YpirScenario =
             serde_json::from_slice(&body_for_status(tier2_resp, "GET /params/tier2 failed")?)
                 .context("parse /params/tier2 response")?;
+        // `/params/*` are compatibility checks only; runtime queries always use
+        // protocol-fixed tier constants.
+        ensure_compatible_scenario("tier1", &tier1_scenario, QueryTier::Tier1.scenario())?;
+        ensure_compatible_scenario("tier2", &tier2_scenario, QueryTier::Tier2.scenario())?;
 
         let root_info: RootInfo =
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
@@ -235,8 +295,6 @@ impl PirClient {
             server_url: base.to_string(),
             transport,
             tier0,
-            tier1_scenario,
-            tier2_scenario,
             num_ranges: root_info.num_ranges,
             empty_hashes,
             root29,
@@ -320,42 +378,49 @@ impl PirClient {
         // prevent the tier 2 query from being sent. Without this, a panic
         // here would unwind past the tier 2 dispatch and give the server an
         // observable one-query-vs-two oracle.
-        let tier1_outcome = self
-            .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
-            .await
-            .and_then(|(row, timing)| {
-                let mut_path = &mut path;
-                let s2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    process_tier1(&row, nullifier, mut_path)
-                }))
-                .unwrap_or_else(|payload| {
-                    let msg = payload
-                        .downcast_ref::<String>()
-                        .map(|s| s.as_str())
-                        .or_else(|| payload.downcast_ref::<&str>().copied())
-                        .unwrap_or("unknown panic");
-                    Err(anyhow::anyhow!("process_tier1 panicked: {}", msg))
-                })?;
-                Ok((s1 * TIER1_LEAVES + s2, timing))
-            });
+        // Validate the tier 1 index before passing it to ypir_query.
+        // Clamp to dummy index 0 so the query always goes out; propagate the
+        // error only after tier 2 has also been sent.
+        let t1_bounds_err = if s1 >= TIER1_YPIR_ROWS {
+            Some(anyhow::anyhow!(
+                "tier1 row_idx {} >= num_items {}",
+                s1,
+                TIER1_YPIR_ROWS
+            ))
+        } else {
+            None
+        };
+        let t1_query_idx = if t1_bounds_err.is_some() { 0 } else { s1 };
+
+        let tier1_result = self.ypir_query(QueryTier::Tier1, t1_query_idx).await;
+        let tier1_outcome = tier1_result.and_then(|(row, timing)| {
+            let mut_path = &mut path;
+            let s2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                process_tier1(&row, nullifier, mut_path)
+            }))
+            .unwrap_or_else(|payload| {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                Err(anyhow::anyhow!("process_tier1 panicked: {}", msg))
+            })?;
+            Ok((s1 * TIER1_LEAVES + s2, timing))
+        });
 
         // Real index on success, dummy index 0 on failure. PIR hides the
         // queried index from the server, so the dummy is indistinguishable.
         let t2_row_idx = tier1_outcome.as_ref().map(|(idx, _)| *idx).unwrap_or(0);
 
         // Validate the tier 2 index before passing it to ypir_query.
-        // ypir_query has an ensure!(row_idx < num_items) that returns Err
-        // *before* sending the HTTP request — if that fires, no tier 2
-        // request reaches the server and we leak an oracle bit. A malicious
-        // server can trigger this by setting tier2 num_items too small or
-        // crafting tier 1 data that produces out-of-bounds indices. Clamp to
-        // dummy index 0 so the query always goes out; propagate the error
-        // only after both queries have been sent.
-        let t2_bounds_err = if t2_row_idx >= self.tier2_scenario.num_items {
+        // Clamp to dummy index 0 so the query always goes out; propagate the
+        // error only after both queries have been sent.
+        let t2_bounds_err = if t2_row_idx >= TIER2_ROWS {
             Some(anyhow::anyhow!(
                 "tier2 row_idx {} >= num_items {}",
                 t2_row_idx,
-                self.tier2_scenario.num_items
+                TIER2_ROWS
             ))
         } else {
             None
@@ -367,12 +432,13 @@ impl PirClient {
         };
 
         // Always send tier 2 to void error-based oracles.
-        let tier2_result = self
-            .ypir_query(&self.tier2_scenario, "tier2", t2_query_idx, TIER2_ROW_BYTES)
-            .await;
+        let tier2_result = self.ypir_query(QueryTier::Tier2, t2_query_idx).await;
 
         // Propagate errors only after both queries have been sent.
         if let Err(e) = tier0_outcome {
+            return Err(e);
+        }
+        if let Some(e) = t1_bounds_err {
             return Err(e);
         }
         let (t2_row_idx, tier1_timing) = tier1_outcome?;
@@ -407,13 +473,10 @@ impl PirClient {
     /// 1. Generate keys
     /// 2. Query
     /// 3. Recover
-    async fn ypir_query(
-        &self,
-        scenario: &YpirScenario,
-        tier_name: &str,
-        row_idx: usize,
-        expected_row_bytes: usize,
-    ) -> Result<(Vec<u8>, TierTiming)> {
+    async fn ypir_query(&self, tier: QueryTier, row_idx: usize) -> Result<(Vec<u8>, TierTiming)> {
+        let tier_name = tier.name();
+        let scenario = tier.scenario();
+        let expected_row_bytes = tier.row_bytes();
         anyhow::ensure!(
             row_idx < scenario.num_items,
             "{} row_idx {} >= num_items {}",
@@ -745,8 +808,8 @@ mod tests {
     use super::*;
     use ff::Field;
     use pasta_curves::Fp;
-    use pir_types::fp_utils::write_fp;
     use pir_export::build_ranges_with_sentinels;
+    use pir_types::fp_utils::write_fp;
 
     /// Build a tree and export all three tier blobs.
     struct TestFixture {
@@ -1003,7 +1066,7 @@ mod tests {
     impl MockTransport {
         fn new(tree: &pir_export::PirTree) -> Self {
             use ff::PrimeField as _;
-            use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+            use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS, TIER2_ROWS};
 
             let tier0_data = pir_export::tier0::export(
                 &tree.root25,
@@ -1023,7 +1086,7 @@ mod tests {
                 item_size_bits: TIER1_ITEM_BITS,
             };
             let tier2_scenario = YpirScenario {
-                num_items: TIER1_YPIR_ROWS,
+                num_items: TIER2_ROWS,
                 item_size_bits: TIER2_ITEM_BITS,
             };
 
@@ -1205,7 +1268,9 @@ mod tests {
         fn get<'a>(&'a self, url: &'a str) -> transport::TransportFuture<'a> {
             Box::pin(async move {
                 use ff::PrimeField as _;
-                use pir_types::{RootInfo, TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+                use pir_types::{
+                    RootInfo, TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS, TIER2_ROWS,
+                };
 
                 let path = request_path(url);
                 self.hits.lock().unwrap().push(path.to_string());
@@ -1216,7 +1281,7 @@ mod tests {
                         item_size_bits: TIER1_ITEM_BITS,
                     })?,
                     "/params/tier2" => serde_json::to_vec(&YpirScenario {
-                        num_items: TIER1_YPIR_ROWS,
+                        num_items: TIER2_ROWS,
                         item_size_bits: TIER2_ITEM_BITS,
                     })?,
                     "/root" => serde_json::to_vec(&RootInfo {
@@ -1260,5 +1325,65 @@ mod tests {
         );
         assert_eq!(transport.count_hits("/tier1/query"), 1);
         assert_eq!(transport.count_hits("/tier2/query"), 1);
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_malformed_tier1_scenario() {
+        use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS};
+
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let ranges = build_ranges_with_sentinels(&raw_nfs);
+        let tree = pir_export::build_pir_tree(ranges).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        transport.gets.insert(
+            "/params/tier1",
+            response(
+                serde_json::to_vec(&YpirScenario {
+                    num_items: TIER1_YPIR_ROWS - 1,
+                    item_size_bits: TIER1_ITEM_BITS,
+                })
+                .unwrap(),
+            ),
+        );
+        let transport = std::sync::Arc::new(transport);
+
+        let err = match PirClient::with_transport("https://pir.example", transport).await {
+            Ok(_) => panic!("connect should reject malformed tier1 scenario"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("server tier1 num_items"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_malformed_tier2_scenario() {
+        use pir_types::{TIER2_ITEM_BITS, TIER2_ROWS};
+
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let ranges = build_ranges_with_sentinels(&raw_nfs);
+        let tree = pir_export::build_pir_tree(ranges).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        transport.gets.insert(
+            "/params/tier2",
+            response(
+                serde_json::to_vec(&YpirScenario {
+                    num_items: TIER2_ROWS,
+                    item_size_bits: TIER2_ITEM_BITS + 8,
+                })
+                .unwrap(),
+            ),
+        );
+        let transport = std::sync::Arc::new(transport);
+
+        let err = match PirClient::with_transport("https://pir.example", transport).await {
+            Ok(_) => panic!("connect should reject malformed tier2 scenario"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("server tier2 item_size_bits"),
+            "unexpected error: {err:#}"
+        );
     }
 }
