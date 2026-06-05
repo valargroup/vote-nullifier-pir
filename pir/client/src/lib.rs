@@ -321,8 +321,9 @@ impl PirClient {
 
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
     ///
-    /// All queries run concurrently via `try_join_all`, sharing the same
-    /// `PirClient` (and thus the same HTTP client and Tier 0 data).
+    /// All queries run concurrently, but batch errors are surfaced only after
+    /// every per-note future completes so one failing note cannot cancel
+    /// siblings before they dispatch tier 2.
     pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
         log::debug!(
             "[PIR] Starting parallel fetch for {} notes...",
@@ -339,15 +340,19 @@ impl PirClient {
             })
             .collect();
 
-        let results_with_timing = futures::future::try_join_all(futures).await?;
+        let results_with_timing = futures::future::join_all(futures).await;
+        let mut successes = Vec::with_capacity(results_with_timing.len());
+        for result in results_with_timing {
+            match result {
+                Ok(result) => successes.push(result),
+                Err(err) => return Err(err),
+            }
+        }
         let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
 
-        print_timing_table(&results_with_timing, wall_ms);
+        print_timing_table(&successes, wall_ms);
 
-        let proofs = results_with_timing
-            .into_iter()
-            .map(|(_, proof, _)| proof)
-            .collect();
+        let proofs = successes.into_iter().map(|(_, proof, _)| proof).collect();
         Ok(proofs)
     }
 
@@ -1160,16 +1165,110 @@ mod tests {
             Box::pin(async move {
                 let path = request_path(url);
                 self.hits.lock().unwrap().push(path.to_string());
-                if path == "/tier2/query" {
-                    // Coarse-grained guard against `try_join_all` cancellation:
-                    // all fetch_proof_inner futures should dispatch tier 2 before
-                    // the first corrupted tier 1 response resolves to Err.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
                 self.posts
                     .get(path)
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("unexpected POST {path}"))
+            })
+        }
+    }
+
+    struct ExploitTransport {
+        gets: std::collections::HashMap<&'static str, TransportResponse>,
+        tier2_resp: TransportResponse,
+        hits: std::sync::Mutex<Vec<String>>,
+        tier1_post_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ExploitTransport {
+        fn new(tree: &pir_export::PirTree) -> Self {
+            use ff::PrimeField as _;
+            use pir_types::{RootInfo, TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS, TIER2_ROWS};
+
+            let tier0_data = pir_export::tier0::export(
+                &tree.root25,
+                &tree.levels,
+                &tree.ranges,
+                &tree.empty_hashes,
+            );
+            let root_info = RootInfo {
+                root29: hex::encode(tree.root29.to_repr()),
+                root25: hex::encode(tree.root25.to_repr()),
+                num_ranges: tree.ranges.len(),
+                pir_depth: PIR_DEPTH,
+                height: None,
+            };
+            let tier1_scenario = YpirScenario {
+                num_items: TIER1_YPIR_ROWS,
+                item_size_bits: TIER1_ITEM_BITS,
+            };
+            let tier2_scenario = YpirScenario {
+                num_items: TIER2_ROWS,
+                item_size_bits: TIER2_ITEM_BITS,
+            };
+
+            Self {
+                gets: [
+                    ("/tier0", response(tier0_data)),
+                    (
+                        "/params/tier1",
+                        response(serde_json::to_vec(&tier1_scenario).unwrap()),
+                    ),
+                    (
+                        "/params/tier2",
+                        response(serde_json::to_vec(&tier2_scenario).unwrap()),
+                    ),
+                    ("/root", response(serde_json::to_vec(&root_info).unwrap())),
+                ]
+                .into_iter()
+                .collect(),
+                tier2_resp: response(vec![0xAD; 65536]),
+                hits: std::sync::Mutex::new(Vec::new()),
+                tier1_post_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn count_hits(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.as_str() == path)
+                .count()
+        }
+    }
+
+    impl Transport for ExploitTransport {
+        fn get<'a>(&'a self, url: &'a str) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                self.gets
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("unexpected GET {path}"))
+            })
+        }
+
+        fn post<'a>(&'a self, url: &'a str, _body: Vec<u8>) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                match path {
+                    "/tier1/query" => {
+                        let n = self
+                            .tier1_post_count
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if n == 0 {
+                            Ok(response(vec![0xDE; 65536]))
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            Ok(response(vec![0xDE; 65536]))
+                        }
+                    }
+                    "/tier2/query" => Ok(self.tier2_resp.clone()),
+                    _ => Err(anyhow::anyhow!("unexpected POST {path}")),
+                }
             })
         }
     }
@@ -1230,6 +1329,35 @@ mod tests {
         );
         assert_eq!(transport.count_hits("/tier1/query"), K);
         assert_eq!(transport.count_hits("/tier2/query"), K);
+    }
+
+    #[tokio::test]
+    async fn batched_fetch_does_not_cancel_before_sibling_tier2_dispatch() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let ranges = build_ranges_with_sentinels(&raw_nfs);
+        let tree = pir_export::build_pir_tree(ranges).unwrap();
+        let transport = std::sync::Arc::new(ExploitTransport::new(&tree));
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .unwrap();
+
+        let nullifiers: Vec<Fp> = tree
+            .ranges
+            .iter()
+            .take(2)
+            .map(|r| r[0] + Fp::one())
+            .collect();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.fetch_proofs(&nullifiers),
+        )
+        .await
+        .expect("fetch_proofs should not deadlock on delayed sibling");
+
+        assert!(result.is_err(), "corrupted tier1 response should fail the batch");
+        assert_eq!(transport.count_hits("/tier1/query"), 2);
+        assert_eq!(transport.count_hits("/tier2/query"), 2);
     }
 
     struct Tier0OracleTransport {
