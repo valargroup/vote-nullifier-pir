@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tonic::transport::Channel;
 use tonic::Request;
 use tracing::info;
@@ -48,11 +48,76 @@ pub fn resume_height(dir: &Path) -> Result<u64> {
 
 /// Stream blocks `[start, end]` from a single server and return collected
 /// `(height, nullifier)` pairs.
+fn observe_range_height(
+    start: u64,
+    end: u64,
+    next_expected: &mut u64,
+    completed: &mut bool,
+    height: u64,
+) -> Result<()> {
+    if *completed {
+        bail!(
+            "received extra block {} after completing requested range [{}..={}]",
+            height,
+            start,
+            end
+        );
+    }
+    if height < start || height > end {
+        bail!(
+            "received out-of-range block {} for requested range [{}..={}]",
+            height,
+            start,
+            end
+        );
+    }
+    if height != *next_expected {
+        bail!(
+            "non-contiguous block stream for range [{}..={}]: expected {}, got {}",
+            start,
+            end,
+            *next_expected,
+            height
+        );
+    }
+
+    if *next_expected == end {
+        *completed = true;
+    } else {
+        *next_expected += 1;
+    }
+    Ok(())
+}
+
+fn ensure_range_complete(start: u64, end: u64, completed: bool, last_seen: Option<u64>) -> Result<()> {
+    if completed {
+        return Ok(());
+    }
+
+    match last_seen {
+        Some(height) => bail!(
+            "incomplete block stream for range [{}..={}]: stream ended at {}",
+            start,
+            end,
+            height
+        ),
+        None => bail!(
+            "incomplete block stream for range [{}..={}]: server returned no blocks",
+            start,
+            end
+        ),
+    }
+}
+
 async fn fetch_block_range(
     client: &mut CompactTxStreamerClient<Channel>,
     start: u64,
     end: u64,
 ) -> Result<Vec<(u64, Vec<u8>)>> {
+    if start > end {
+        bail!("invalid block range: start {} is greater than end {}", start, end);
+    }
+
     let mut stream = client
         .get_block_range(Request::new(BlockRange {
             start: Some(BlockId {
@@ -69,13 +134,26 @@ async fn fetch_block_range(
         .into_inner();
 
     let mut nf_buffer: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut next_expected = start;
+    let mut completed = false;
+    let mut last_seen_height: Option<u64> = None;
     while let Some(block) = stream.message().await? {
+        observe_range_height(
+            start,
+            end,
+            &mut next_expected,
+            &mut completed,
+            block.height,
+        )?;
+        last_seen_height = Some(block.height);
+
         for tx in block.vtx {
             for a in tx.actions {
                 nf_buffer.push((block.height, a.nullifier));
             }
         }
     }
+    ensure_range_complete(start, end, completed, last_seen_height)?;
     Ok(nf_buffer)
 }
 
@@ -225,6 +303,72 @@ mod tests {
         let dir = temp_dir("fresh");
         assert_eq!(resume_height(&dir).unwrap(), NU5_ACTIVATION_HEIGHT);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn range_coverage_accepts_exact_contiguous_sequence() {
+        let start = 100u64;
+        let end = 103u64;
+        let mut next_expected = start;
+        let mut completed = false;
+        let mut last_seen = None;
+
+        for h in [100u64, 101, 102, 103] {
+            observe_range_height(start, end, &mut next_expected, &mut completed, h).unwrap();
+            last_seen = Some(h);
+        }
+        ensure_range_complete(start, end, completed, last_seen).unwrap();
+    }
+
+    #[test]
+    fn range_coverage_rejects_empty_response() {
+        let err = ensure_range_complete(100, 103, false, None).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("server returned no blocks"));
+    }
+
+    #[test]
+    fn range_coverage_rejects_gap() {
+        let start = 100u64;
+        let end = 103u64;
+        let mut next_expected = start;
+        let mut completed = false;
+        observe_range_height(start, end, &mut next_expected, &mut completed, 100).unwrap();
+        let err = observe_range_height(start, end, &mut next_expected, &mut completed, 102).unwrap_err();
+        assert!(err.to_string().contains("expected 101, got 102"));
+    }
+
+    #[test]
+    fn range_coverage_rejects_duplicate() {
+        let start = 100u64;
+        let end = 103u64;
+        let mut next_expected = start;
+        let mut completed = false;
+        observe_range_height(start, end, &mut next_expected, &mut completed, 100).unwrap();
+        let err = observe_range_height(start, end, &mut next_expected, &mut completed, 100).unwrap_err();
+        assert!(err.to_string().contains("expected 101, got 100"));
+    }
+
+    #[test]
+    fn range_coverage_rejects_out_of_order() {
+        let start = 100u64;
+        let end = 103u64;
+        let mut next_expected = start;
+        let mut completed = false;
+        observe_range_height(start, end, &mut next_expected, &mut completed, 100).unwrap();
+        let err = observe_range_height(start, end, &mut next_expected, &mut completed, 103).unwrap_err();
+        assert!(err.to_string().contains("expected 101, got 103"));
+    }
+
+    #[test]
+    fn range_coverage_rejects_out_of_range() {
+        let start = 100u64;
+        let end = 103u64;
+        let mut next_expected = start;
+        let mut completed = false;
+        let err = observe_range_height(start, end, &mut next_expected, &mut completed, 99).unwrap_err();
+        assert!(err.to_string().contains("out-of-range block 99"));
     }
 
     #[test]
