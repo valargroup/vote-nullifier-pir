@@ -56,7 +56,7 @@ protocol. To cast a shielded vote, a client must prove that its note has
 nullifier set. This is a nullifier **non-membership** proof.
 
 The server maintains an Indexed Merkle Tree (see [`imt-tree/`](../imt-tree/))
-over ~51 million Zcash Orchard nullifiers. Each leaf commits to a
+over the Zcash Ironwood nullifier set. Each leaf commits to a
 **punctured range** — two adjacent gaps joined by excluding the nullifier
 between them: `leaf = Poseidon3(nf_lo, nf_mid, nf_hi)`. To prove
 non-membership, the client shows its nullifier falls inside one of these
@@ -76,8 +76,8 @@ Instead of one leaf per gap between adjacent nullifiers, each leaf covers
 **two adjacent gaps** by storing three sorted nullifier boundaries
 `[nf_lo, nf_mid, nf_hi]`. The leaf commitment is `Poseidon3(nf_lo, nf_mid, nf_hi)`.
 
-This halves the number of leaves (~25.5M instead of ~51M), reducing tree
-depth from 26 to 25. The circuit cost is essentially unchanged because the
+This halves the number of leaves, reducing tree depth from 26 to 25. The circuit
+cost is essentially unchanged because the
 extra Poseidon permutation in the leaf commitment (2 instead of 1) is offset
 by fewer levels, and a single inequality check (`value ≠ nf_mid`) is trivially
 cheap.

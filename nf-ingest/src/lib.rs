@@ -1,5 +1,5 @@
 //! nf-ingest — shared infrastructure for syncing, storing,
-//! and loading Zcash Orchard nullifiers.
+//! and loading Zcash Ironwood nullifiers.
 //!
 //! This crate is consumed by `nf-server` (ingest/export/serve commands)
 //! and optionally by `pir-export` (standalone CLI).

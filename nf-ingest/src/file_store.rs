@@ -1,14 +1,15 @@
-//! Flat-file storage for Orchard nullifiers with crash-safe checkpointing.
+//! Flat-file storage for Ironwood nullifiers with crash-safe checkpointing.
 //!
 //! # File Layout
 //!
-//! Two files inside a single data directory replace the old SQLite database:
+//! Files inside a single data directory replace the old SQLite database:
 //!
 //! | File                      | Format                                           |
 //! |---------------------------|--------------------------------------------------|
 //! | `nullifiers.bin`          | Append-only, raw concatenation of 32-byte blobs. |
 //! |                           | No header, no framing. Size = `count × 32`.      |
 //! | `nullifiers.checkpoint`   | Fixed 16 bytes: `height: u64 LE ‖ offset: u64 LE`|
+//! | `nullifiers.dataset.json` | Pool and dataset version for fail-closed reuse.  |
 //!
 //! `height` is the last fully-synced block height. `offset` is the byte
 //! length of `nullifiers.bin` at the moment that height was committed.
@@ -65,6 +66,84 @@ use rayon::prelude::*;
 const NULLIFIER_SIZE: usize = 32;
 const CHECKPOINT_SIZE: usize = 16;
 const INDEX_ENTRY_SIZE: usize = 16; // [u64 LE height][u64 LE offset]
+
+/// File that identifies the pool and version of the raw nullifier dataset.
+pub const DATASET_MARKER_FILENAME: &str = "nullifiers.dataset.json";
+
+const RAW_DATASET_ARTIFACTS: &[&str] = &[
+    "nullifiers.bin",
+    "nullifiers.checkpoint",
+    "nullifiers.checkpoint.tmp",
+    "nullifiers.index",
+    "nullifiers.tree",
+    "nullifiers.tree.tmp",
+];
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct DatasetMarker {
+    nullifier_pool: String,
+    dataset_version: u32,
+}
+
+/// Path to the raw dataset identity marker within `dir`.
+pub fn dataset_marker_path(dir: &Path) -> PathBuf {
+    dir.join(DATASET_MARKER_FILENAME)
+}
+
+/// Initialize or validate the raw Ironwood dataset identity.
+///
+/// A missing marker is created only when no raw or tree artifacts exist. This
+/// prevents legacy Orchard bytes from being reused as an Ironwood dataset.
+pub fn ensure_ironwood_dataset(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let marker_path = dataset_marker_path(dir);
+
+    if marker_path.exists() {
+        let marker: DatasetMarker = serde_json::from_slice(
+            &fs::read(&marker_path).with_context(|| format!("read {}", marker_path.display()))?,
+        )
+        .with_context(|| format!("decode {}", marker_path.display()))?;
+        anyhow::ensure!(
+            pir_types::is_current_dataset(&marker.nullifier_pool, marker.dataset_version),
+            "{} identifies pool {:?} dataset version {}; expected {:?} version {}. Set SVOTE_PIR_SYNC_RESET=1 to rebuild",
+            marker_path.display(),
+            marker.nullifier_pool,
+            marker.dataset_version,
+            pir_types::NULLIFIER_POOL,
+            pir_types::DATASET_VERSION,
+        );
+        return Ok(());
+    }
+
+    if let Some(name) = RAW_DATASET_ARTIFACTS
+        .iter()
+        .find(|name| dir.join(name).exists())
+    {
+        anyhow::bail!(
+            "{} exists without {}. Set SVOTE_PIR_SYNC_RESET=1 to rebuild the Ironwood dataset",
+            dir.join(name).display(),
+            DATASET_MARKER_FILENAME,
+        );
+    }
+
+    let marker = DatasetMarker {
+        nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
+        dataset_version: pir_types::DATASET_VERSION,
+    };
+    let tmp_path = dir.join("nullifiers.dataset.json.tmp");
+    let mut bytes = serde_json::to_vec_pretty(&marker)?;
+    bytes.push(b'\n');
+    let mut file =
+        File::create(&tmp_path).with_context(|| format!("create {}", tmp_path.display()))?;
+    file.write_all(&bytes)
+        .with_context(|| format!("write {}", tmp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("fsync {}", tmp_path.display()))?;
+    drop(file);
+    fs::rename(&tmp_path, &marker_path)
+        .with_context(|| format!("rename {}", marker_path.display()))?;
+    Ok(())
+}
 
 /// Path to the raw nullifier data file within `dir`.
 pub fn nullifiers_path(dir: &Path) -> PathBuf {
@@ -248,6 +327,16 @@ pub fn load_checkpoint(dir: &Path) -> Result<Option<(u64, u64)>> {
 /// Heights in the tuples are discarded — they exist only so the caller can
 /// pass the same `Vec<(u64, Vec<u8>)>` that comes out of the gRPC stream.
 pub fn append_nullifiers(dir: &Path, nfs: &[(u64, Vec<u8>)]) -> Result<u64> {
+    for (index, (_, nf)) in nfs.iter().enumerate() {
+        anyhow::ensure!(
+            nf.len() == NULLIFIER_SIZE,
+            "nullifier at index {} has {} bytes; expected {}",
+            index,
+            nf.len(),
+            NULLIFIER_SIZE
+        );
+    }
+
     let path = nullifiers_path(dir);
     let mut f = OpenOptions::new()
         .create(true)
@@ -256,7 +345,6 @@ pub fn append_nullifiers(dir: &Path, nfs: &[(u64, Vec<u8>)]) -> Result<u64> {
         .context("open nullifiers file for append")?;
 
     for (_, nf) in nfs {
-        debug_assert_eq!(nf.len(), NULLIFIER_SIZE);
         f.write_all(nf)?;
     }
     f.sync_all().context("fsync nullifiers file")?;
@@ -340,6 +428,48 @@ mod tests {
     }
 
     #[test]
+    fn initializes_and_reuses_ironwood_dataset_marker() {
+        let dir = temp_dir("dataset_current");
+
+        ensure_ironwood_dataset(&dir).unwrap();
+        ensure_ironwood_dataset(&dir).unwrap();
+
+        let marker: serde_json::Value =
+            serde_json::from_slice(&fs::read(dataset_marker_path(&dir)).unwrap()).unwrap();
+        assert_eq!(marker["nullifier_pool"], pir_types::NULLIFIER_POOL);
+        assert_eq!(marker["dataset_version"], pir_types::DATASET_VERSION);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_marker_rejects_legacy_artifacts() {
+        let dir = temp_dir("dataset_legacy");
+        fs::write(nullifiers_path(&dir), [0u8; 32]).unwrap();
+
+        let err = ensure_ironwood_dataset(&dir).unwrap_err().to_string();
+        assert!(err.contains("SVOTE_PIR_SYNC_RESET=1"), "{err}");
+        assert!(!dataset_marker_path(&dir).exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_wrong_dataset_marker() {
+        let dir = temp_dir("dataset_wrong");
+        fs::write(
+            dataset_marker_path(&dir),
+            br#"{"nullifier_pool":"orchard","dataset_version":1}"#,
+        )
+        .unwrap();
+
+        let err = ensure_ironwood_dataset(&dir).unwrap_err().to_string();
+        assert!(err.contains("orchard"), "{err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn checkpoint_round_trip() {
         let dir = temp_dir("cp_rt");
 
@@ -370,6 +500,18 @@ mod tests {
         let loaded = load_all_nullifiers(&dir).unwrap();
         assert_eq!(loaded.len(), 3);
         assert_eq!(nullifier_count(&dir).unwrap(), 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_rejects_malformed_nullifier() {
+        let dir = temp_dir("append_malformed");
+        let err = append_nullifiers(&dir, &[(100, vec![1u8; 31])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("31 bytes"), "{err}");
+        assert!(!nullifiers_path(&dir).exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

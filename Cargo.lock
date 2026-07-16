@@ -1659,6 +1659,7 @@ dependencies = [
  "hex",
  "imt-tree",
  "pasta_curves",
+ "pir-types",
  "prost",
  "rayon",
  "serde",
@@ -1682,6 +1683,7 @@ dependencies = [
  "pasta_curves",
  "pir-export",
  "pir-server",
+ "pir-types",
  "prometheus",
  "rayon",
  "reqwest",
@@ -2039,7 +2041,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pir-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ff",
@@ -2132,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "pir-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ff",

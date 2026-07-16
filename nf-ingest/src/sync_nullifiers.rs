@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tonic::transport::Channel;
 use tonic::Request;
 use tracing::info;
@@ -8,10 +8,12 @@ use tracing::info;
 use crate::download::connect_lwd;
 use crate::file_store;
 use crate::rpc::compact_tx_streamer_client::CompactTxStreamerClient;
-use crate::rpc::{BlockId, BlockRange, ChainSpec};
+use crate::rpc::{BlockId, BlockRange, ChainSpec, CompactBlock, TreeState};
 
-/// NU5 (Orchard) activation height on Zcash mainnet.
-pub const NU5_ACTIVATION_HEIGHT: u64 = 1_687_104;
+/// Proposed NU6.3 activation height on Zcash mainnet.
+pub const NU6_3_ACTIVATION_HEIGHT: u64 = 3_428_143;
+
+const INITIAL_SYNC_HEIGHT: u64 = NU6_3_ACTIVATION_HEIGHT - 1;
 
 /// How many blocks to request per gRPC streaming call.
 const BATCH_SIZE: u64 = 10_000;
@@ -35,15 +37,74 @@ pub async fn fetch_chain_tip(lwd_url: &str) -> Result<u64> {
 ///
 /// Reads the checkpoint file and truncates any uncommitted bytes from
 /// the data file, then returns the last fully-committed height.
-/// If no checkpoint exists, starts from NU5 activation.
+/// If no checkpoint exists, returns the block before NU6.3 activation so the
+/// first request includes the activation block.
 pub fn resume_height(dir: &Path) -> Result<u64> {
+    file_store::ensure_ironwood_dataset(dir)?;
     match file_store::load_checkpoint(dir)? {
-        Some((h, offset)) if h >= NU5_ACTIVATION_HEIGHT => {
+        Some((h, offset)) if h >= NU6_3_ACTIVATION_HEIGHT => {
             file_store::truncate_to_checkpoint(dir, offset)?;
             Ok(h)
         }
-        _ => Ok(NU5_ACTIVATION_HEIGHT),
+        Some((h, _)) => anyhow::bail!(
+            "checkpoint height {h} predates NU6.3 activation; set SVOTE_PIR_SYNC_RESET=1 to rebuild"
+        ),
+        None => {
+            file_store::truncate_to_checkpoint(dir, 0)?;
+            Ok(INITIAL_SYNC_HEIGHT)
+        }
     }
+}
+
+fn extract_ironwood_nullifiers(block: CompactBlock) -> Result<Vec<(u64, Vec<u8>)>> {
+    let mut nullifiers = Vec::new();
+    for tx in block.vtx {
+        for action in tx.ironwood_actions {
+            anyhow::ensure!(
+                action.nullifier.len() == 32,
+                "Ironwood nullifier at height {} has {} bytes; expected 32",
+                block.height,
+                action.nullifier.len()
+            );
+            nullifiers.push((block.height, action.nullifier));
+        }
+    }
+    Ok(nullifiers)
+}
+
+fn validate_ironwood_tree_state(url: &str, expected_height: u64, state: &TreeState) -> Result<()> {
+    anyhow::ensure!(
+        state.network == "main",
+        "lightwalletd {url} returned network {:?}; expected main",
+        state.network
+    );
+    anyhow::ensure!(
+        state.height == expected_height,
+        "lightwalletd {url} returned tree state height {}; expected {}",
+        state.height,
+        expected_height
+    );
+    anyhow::ensure!(
+        !state.ironwood_tree.is_empty(),
+        "lightwalletd {url} omitted the Ironwood tree at height {expected_height}; use an Ironwood-capable endpoint"
+    );
+    Ok(())
+}
+
+async fn require_ironwood_tree_state(
+    client: &mut CompactTxStreamerClient<Channel>,
+    url: &str,
+    height: u64,
+) -> Result<()> {
+    let state = client
+        .get_tree_state(Request::new(BlockId {
+            height,
+            hash: vec![],
+        }))
+        .await
+        .with_context(|| format!("get Ironwood tree state from {url} at height {height}"))?
+        .into_inner();
+    validate_ironwood_tree_state(url, height, &state)
 }
 
 /// Stream blocks `[start, end]` from a single server and return collected
@@ -70,11 +131,7 @@ async fn fetch_block_range(
 
     let mut nf_buffer: Vec<(u64, Vec<u8>)> = Vec::new();
     while let Some(block) = stream.message().await? {
-        for tx in block.vtx {
-            for a in tx.actions {
-                nf_buffer.push((block.height, a.nullifier));
-            }
-        }
+        nf_buffer.extend(extract_ironwood_nullifiers(block)?);
     }
     Ok(nf_buffer)
 }
@@ -117,7 +174,7 @@ fn build_batch_ranges(current: u64, target: u64, n: usize) -> Vec<(u64, u64)> {
 ///
 /// Connects to each URL in `lwd_urls`, streams blocks from the resume point to
 /// `max_height` (or chain tip when `None`) using parallel downloads (one batch
-/// per server), and appends all Orchard nullifiers to the data file.  Calls
+/// per server), and appends all Ironwood nullifiers to the data file. Calls
 /// `progress` after each parallel cycle with
 /// `(last_height, target_height, cycle_nullifier_count, total_nullifier_count)`.
 pub async fn sync(
@@ -126,7 +183,11 @@ pub async fn sync(
     max_height: Option<u64>,
     progress: impl Fn(u64, u64, u64, u64),
 ) -> Result<SyncResult> {
-    std::fs::create_dir_all(dir)?;
+    anyhow::ensure!(
+        !lwd_urls.is_empty(),
+        "at least one lightwalletd URL is required"
+    );
+    file_store::ensure_ironwood_dataset(dir)?;
 
     let mut clients = Vec::with_capacity(lwd_urls.len());
     for url in lwd_urls {
@@ -143,10 +204,17 @@ pub async fn sync(
     let existing = file_store::nullifier_count(dir)?;
     let target = resolve_target(start, max_height, chain_tip);
 
-    if start > NU5_ACTIVATION_HEIGHT {
+    for (url, client) in lwd_urls.iter().zip(clients.iter_mut()) {
+        require_ironwood_tree_state(client, url, target).await?;
+    }
+
+    if start >= NU6_3_ACTIVATION_HEIGHT {
         info!(height = start, existing, "resuming from checkpoint");
     } else {
-        info!(height = NU5_ACTIVATION_HEIGHT, "starting fresh from NU5 activation");
+        info!(
+            height = NU6_3_ACTIVATION_HEIGHT,
+            "starting fresh from NU6.3 activation"
+        );
     }
     if let Some(h) = max_height {
         info!(max_height = h, chain_tip, "max height set");
@@ -208,7 +276,7 @@ pub struct SyncResult {
     pub chain_tip: u64,
     /// Number of blocks downloaded in this sync cycle.
     pub blocks_synced: u64,
-    /// Number of Orchard nullifiers appended in this sync cycle.
+    /// Number of Ironwood nullifiers appended in this sync cycle.
     pub nullifiers_synced: u64,
 }
 
@@ -223,25 +291,147 @@ mod tests {
     #[test]
     fn resume_height_fresh() {
         let dir = temp_dir("fresh");
-        assert_eq!(resume_height(&dir).unwrap(), NU5_ACTIVATION_HEIGHT);
+        assert_eq!(resume_height(&dir).unwrap(), NU6_3_ACTIVATION_HEIGHT - 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resume_height_discards_uncheckpointed_first_batch() {
+        let dir = temp_dir("fresh_partial");
+        file_store::ensure_ironwood_dataset(&dir).unwrap();
+        file_store::append_nullifiers(
+            &dir,
+            &[(NU6_3_ACTIVATION_HEIGHT, vec![1u8; 32])],
+        )
+        .unwrap();
+
+        assert_eq!(resume_height(&dir).unwrap(), NU6_3_ACTIVATION_HEIGHT - 1);
+        assert_eq!(file_store::nullifier_count(&dir).unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compact_tx_decodes_ironwood_tag_nine() {
+        use prost::Message;
+
+        let mut encoded = vec![0x4a, 0x22, 0x0a, 0x20];
+        encoded.extend([7u8; 32]);
+        let tx = crate::rpc::CompactTx::decode(encoded.as_slice()).unwrap();
+
+        assert!(tx.actions.is_empty());
+        assert_eq!(tx.ironwood_actions.len(), 1);
+        assert_eq!(tx.ironwood_actions[0].nullifier, vec![7u8; 32]);
+    }
+
+    #[test]
+    fn extracts_only_ironwood_actions() {
+        let mut tx = crate::rpc::CompactTx::default();
+        tx.actions.push(crate::rpc::CompactOrchardAction {
+            nullifier: vec![1u8; 32],
+            ..Default::default()
+        });
+        tx.ironwood_actions.push(crate::rpc::CompactOrchardAction {
+            nullifier: vec![2u8; 32],
+            ..Default::default()
+        });
+        let mut block = CompactBlock {
+            height: NU6_3_ACTIVATION_HEIGHT,
+            ..Default::default()
+        };
+        block.vtx.push(tx);
+
+        let nullifiers = extract_ironwood_nullifiers(block).unwrap();
+        assert_eq!(nullifiers, vec![(NU6_3_ACTIVATION_HEIGHT, vec![2u8; 32])]);
+    }
+
+    #[test]
+    fn rejects_malformed_ironwood_nullifier() {
+        let mut tx = crate::rpc::CompactTx::default();
+        tx.ironwood_actions.push(crate::rpc::CompactOrchardAction {
+            nullifier: vec![2u8; 31],
+            ..Default::default()
+        });
+        let mut block = CompactBlock {
+            height: NU6_3_ACTIVATION_HEIGHT,
+            ..Default::default()
+        };
+        block.vtx.push(tx);
+
+        let err = extract_ironwood_nullifiers(block).unwrap_err().to_string();
+        assert!(err.contains("31 bytes"), "{err}");
+    }
+
+    #[test]
+    fn tree_state_decodes_ironwood_tag_seven() {
+        use prost::Message;
+
+        let state = TreeState::decode([0x3a, 0x02, b'i', b'w'].as_slice()).unwrap();
+        assert_eq!(state.ironwood_tree, "iw");
+    }
+
+    #[test]
+    fn validates_ironwood_tree_state() {
+        let state = TreeState {
+            network: "main".to_owned(),
+            height: NU6_3_ACTIVATION_HEIGHT,
+            ironwood_tree: "00".to_owned(),
+            ..Default::default()
+        };
+        validate_ironwood_tree_state("https://lwd.example", NU6_3_ACTIVATION_HEIGHT, &state)
+            .unwrap();
+
+        let mut legacy = state.clone();
+        legacy.ironwood_tree.clear();
+        let err = validate_ironwood_tree_state(
+            "https://legacy.example",
+            NU6_3_ACTIVATION_HEIGHT,
+            &legacy,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("legacy.example"), "{err}");
+        assert!(err.contains("Ironwood"), "{err}");
+
+        let mut wrong_network = state.clone();
+        wrong_network.network = "test".to_owned();
+        let err = validate_ironwood_tree_state(
+            "https://testnet.example",
+            NU6_3_ACTIVATION_HEIGHT,
+            &wrong_network,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("expected main"), "{err}");
+
+        let mut wrong_height = state;
+        wrong_height.height += 1;
+        let err = validate_ironwood_tree_state(
+            "https://lagging.example",
+            NU6_3_ACTIVATION_HEIGHT,
+            &wrong_height,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("expected 3428143"), "{err}");
     }
 
     #[test]
     fn resume_height_from_checkpoint() {
         let dir = temp_dir("resume");
+        file_store::ensure_ironwood_dataset(&dir).unwrap();
 
         // Write some nullifiers and commit a checkpoint
         let nfs = vec![
-            (1_700_000u64, vec![1u8; 32]),
-            (1_700_000, vec![2u8; 32]),
-            (1_700_001, vec![3u8; 32]),
+            (3_500_000u64, vec![1u8; 32]),
+            (3_500_000, vec![2u8; 32]),
+            (3_500_001, vec![3u8; 32]),
         ];
         let offset = file_store::append_nullifiers(&dir, &nfs).unwrap();
-        file_store::save_checkpoint(&dir, 1_700_001, offset).unwrap();
+        file_store::save_checkpoint(&dir, 3_500_001, offset).unwrap();
 
         let h = resume_height(&dir).unwrap();
-        assert_eq!(h, 1_700_001);
+        assert_eq!(h, 3_500_001);
 
         // All 3 nullifiers should still be present (checkpoint was exact)
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 3);
@@ -252,20 +442,21 @@ mod tests {
     #[test]
     fn resume_height_truncates_uncommitted() {
         let dir = temp_dir("trunc");
+        file_store::ensure_ironwood_dataset(&dir).unwrap();
 
         // Committed batch
-        let batch1 = vec![(1_700_000u64, vec![1u8; 32]), (1_700_000, vec![2u8; 32])];
+        let batch1 = vec![(3_500_000u64, vec![1u8; 32]), (3_500_000, vec![2u8; 32])];
         let offset = file_store::append_nullifiers(&dir, &batch1).unwrap();
-        file_store::save_checkpoint(&dir, 1_700_000, offset).unwrap();
+        file_store::save_checkpoint(&dir, 3_500_000, offset).unwrap();
 
         // Uncommitted partial batch (simulates crash)
-        let batch2 = vec![(1_700_001u64, vec![3u8; 32])];
+        let batch2 = vec![(3_500_001u64, vec![3u8; 32])];
         file_store::append_nullifiers(&dir, &batch2).unwrap();
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 3);
 
         // resume_height should truncate back to the committed state
         let h = resume_height(&dir).unwrap();
-        assert_eq!(h, 1_700_000);
+        assert_eq!(h, 3_500_000);
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);

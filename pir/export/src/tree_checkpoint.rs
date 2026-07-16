@@ -1,6 +1,6 @@
 //! Versioned on-disk checkpoint for [`super::PirTree`] (`nullifiers.tree`).
 //!
-//! Layout: fixed header + bincode payload. Files without the `SVOTEPT1` magic
+//! Layout: fixed header + bincode payload. Files without the `SVOTEPT2` magic
 //! are rejected so callers can remove them and rebuild.
 
 use std::fs::{self, File, OpenOptions};
@@ -15,13 +15,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{PirTree, PIR_DEPTH};
 
-/// Magic ASCII tag for `nullifiers.tree` v1.
-pub const TREE_MAGIC: &[u8; 8] = b"SVOTEPT1";
+/// Magic ASCII tag for the Ironwood `nullifiers.tree` format.
+pub const TREE_MAGIC: &[u8; 8] = b"SVOTEPT2";
 
 /// Header: magic (8) + schema_version u32 LE (4) + height u64 LE (8) + reserved u64 LE (8).
 pub const TREE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
 
-const TREE_SCHEMA_V1: u32 = 1;
+const TREE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct PirTreeWire {
@@ -106,13 +106,18 @@ pub fn read_tree_checkpoint_header(path: &Path) -> Result<Option<(u32, u64)>> {
         .with_context(|| format!("read header {}", path.display()))?;
     if &hdr[0..8] != TREE_MAGIC.as_slice() {
         bail!(
-            "nullifiers.tree at {} is not a v1 tree checkpoint (missing magic SVOTEPT1); \
+            "nullifiers.tree at {} is not an Ironwood tree checkpoint (missing magic SVOTEPT2); \
              remove it and re-run sync",
             path.display()
         );
     }
     let schema = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
     let height = u64::from_le_bytes(hdr[12..20].try_into().unwrap());
+    let dataset_version = u64::from_le_bytes(hdr[20..28].try_into().unwrap());
+    anyhow::ensure!(
+        schema == TREE_SCHEMA_VERSION && dataset_version == u64::from(pir_types::DATASET_VERSION),
+        "unsupported nullifiers.tree schema or dataset version; remove it and re-run sync"
+    );
     Ok(Some((schema, height)))
 }
 
@@ -127,16 +132,16 @@ pub fn load_tree_checkpoint(path: &Path, expected_height: u64) -> Result<Option<
         .with_context(|| format!("read header {}", path.display()))?;
     if &hdr[0..8] != TREE_MAGIC.as_slice() {
         bail!(
-            "nullifiers.tree at {} is not a v1 tree checkpoint; remove it and re-run sync",
+            "nullifiers.tree at {} is not an Ironwood tree checkpoint; remove it and re-run sync",
             path.display()
         );
     }
     let schema = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
-    if schema != TREE_SCHEMA_V1 {
+    if schema != TREE_SCHEMA_VERSION {
         bail!(
             "unsupported nullifiers.tree schema_version {} (expected {})",
             schema,
-            TREE_SCHEMA_V1
+            TREE_SCHEMA_VERSION
         );
     }
     let height = u64::from_le_bytes(hdr[12..20].try_into().unwrap());
@@ -147,6 +152,13 @@ pub fn load_tree_checkpoint(path: &Path, expected_height: u64) -> Result<Option<
             expected_height
         );
     }
+    let dataset_version = u64::from_le_bytes(hdr[20..28].try_into().unwrap());
+    anyhow::ensure!(
+        dataset_version == u64::from(pir_types::DATASET_VERSION),
+        "nullifiers.tree dataset version {} does not match expected {}; remove it and re-run sync",
+        dataset_version,
+        pir_types::DATASET_VERSION
+    );
     let mut payload = Vec::new();
     f.read_to_end(&mut payload)
         .with_context(|| format!("read payload {}", path.display()))?;
@@ -177,9 +189,9 @@ pub fn save_tree_checkpoint(path: &Path, tree: &PirTree, chain_height: u64) -> R
 
     let mut hdr = [0u8; TREE_HEADER_LEN];
     hdr[0..8].copy_from_slice(TREE_MAGIC.as_slice());
-    hdr[8..12].copy_from_slice(&TREE_SCHEMA_V1.to_le_bytes());
+    hdr[8..12].copy_from_slice(&TREE_SCHEMA_VERSION.to_le_bytes());
     hdr[12..20].copy_from_slice(&chain_height.to_le_bytes());
-    hdr[20..28].copy_from_slice(&0u64.to_le_bytes());
+    hdr[20..28].copy_from_slice(&u64::from(pir_types::DATASET_VERSION).to_le_bytes());
     f.write_all(&hdr)?;
     f.write_all(&payload)?;
     f.sync_all().context("fsync tree checkpoint tmp")?;
@@ -231,5 +243,17 @@ mod tests {
         let path = dir.path().join("nullifiers.tree");
         save_tree_checkpoint(&path, &tiny_tree(), 1).unwrap();
         assert!(load_tree_checkpoint(&path, 2).is_err());
+    }
+
+    #[test]
+    fn legacy_tree_magic_fails() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nullifiers.tree");
+        let mut header = [0u8; TREE_HEADER_LEN];
+        header[..8].copy_from_slice(b"SVOTEPT1");
+        std::fs::write(&path, header).unwrap();
+
+        let err = read_tree_checkpoint_header(&path).unwrap_err().to_string();
+        assert!(err.contains("Ironwood"), "{err}");
     }
 }

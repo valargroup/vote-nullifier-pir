@@ -25,15 +25,15 @@ pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] = &[
     "pir_root.json",
 ];
 
-/// Validate that `height` is a legal export target: at or above NU5 activation
+/// Validate that `height` is a legal export target: at or above NU6.3 activation
 /// and a multiple of 10 (the ingestion block-alignment granularity).
 pub fn validate_export_height(height: u64) -> anyhow::Result<()> {
-    use crate::sync_nullifiers::NU5_ACTIVATION_HEIGHT;
+    use crate::sync_nullifiers::NU6_3_ACTIVATION_HEIGHT;
     anyhow::ensure!(
-        height >= NU5_ACTIVATION_HEIGHT,
-        "height {} is below NU5 activation ({})",
+        height >= NU6_3_ACTIVATION_HEIGHT,
+        "height {} is below NU6.3 activation ({})",
         height,
-        NU5_ACTIVATION_HEIGHT
+        NU6_3_ACTIVATION_HEIGHT
     );
     anyhow::ensure!(
         height.is_multiple_of(10),

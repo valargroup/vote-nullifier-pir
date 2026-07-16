@@ -2,6 +2,7 @@
 //!
 //! Provides:
 //!   - `doctor` — Pre-flight host checks vs runbook hardware guidance.
+//!   - `dataset-info` — Print the supported nullifier dataset identity.
 //!   - `sync` — Resumable ingest, `nullifiers.tree` checkpoint, PIR tier export.
 //!   - `serve` — Start the PIR HTTP server (feature-gated behind `serve`).
 
@@ -30,7 +31,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "nf-server",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Nullifier PIR pipeline: doctor, sync (ingest + export), and serve"
+    about = "Nullifier PIR pipeline: inspect, sync, and serve"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,6 +43,8 @@ struct Cli {
 enum Command {
     /// Check host resources vs runbook recommendations (advisory warnings only)
     Doctor(cmd_doctor::Args),
+    /// Print the supported nullifier dataset identity as JSON
+    DatasetInfo,
     /// Ingest nullifiers, build tree checkpoint, export PIR tiers (resumable)
     Sync(cmd_sync::Args),
     /// Start the PIR HTTP server (requires --features serve)
@@ -117,6 +120,16 @@ fn main() -> anyhow::Result<()> {
         .block_on(async {
             match cli.command {
                 Command::Doctor(args) => Ok(cmd_doctor::run(args)?),
+                Command::DatasetInfo => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "nullifier_pool": pir_types::NULLIFIER_POOL,
+                            "dataset_version": pir_types::DATASET_VERSION,
+                        })
+                    );
+                    Ok(())
+                }
                 Command::Sync(args) => cmd_sync::run(args).await,
                 #[cfg(feature = "serve")]
                 Command::Serve(args) => cmd_serve::run(args).await,

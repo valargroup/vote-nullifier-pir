@@ -27,7 +27,8 @@
 //! ```
 //!
 //! `manifest.json` may list additional objects (for example
-//! `nullifiers.bin`, `nullifiers.checkpoint`, `nullifiers.tree`) when
+//! `nullifiers.bin`, `nullifiers.checkpoint`, `nullifiers.dataset.json`,
+//! `nullifiers.tree`) when
 //! operators publish them alongside a snapshot. **`nf-server serve`
 //! ignores those extras** and only downloads [`SNAPSHOT_FILES`]; other
 //! tooling may fetch them from the same prefix using the manifest hashes.
@@ -81,13 +82,11 @@ pub const PIR_SNAPSHOTS_PATH: &str = "/snapshots";
 /// already in place.
 const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"];
 
-/// Subset of `pir_root.json` that the bootstrap reads to decide whether
-/// the local snapshot is already at the right height. We deliberately
-/// don't import the full `PirMetadata` struct from `pir-types` — the
-/// only field we care about here is `height`, and being lenient about
-/// the rest avoids tying the bootstrap path to schema changes elsewhere.
+/// Dataset identity and height read from `pir_root.json` during bootstrap.
 #[derive(Debug, Deserialize)]
 struct PirRootHeader {
+    nullifier_pool: String,
+    dataset_version: u32,
     #[serde(default)]
     height: Option<u64>,
 }
@@ -102,8 +101,10 @@ struct ManifestFile {
 /// Wire format of `manifest.json` published by `publish-snapshot.yml`.
 #[derive(Debug, Deserialize)]
 struct PublishedManifest {
-    /// `1` today; bumped if the file layout changes.
+    /// `2` for snapshots with required Ironwood dataset identity.
     schema_version: u32,
+    nullifier_pool: String,
+    dataset_version: u32,
     /// Block height the snapshot was built at; must equal the height
     /// embedded in the URL and in `pir_root.json`.
     height: u64,
@@ -375,7 +376,34 @@ fn read_local_height(pir_data_dir: &Path) -> Option<u64> {
     let path = pir_data_dir.join("pir_root.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let meta: PirRootHeader = serde_json::from_str(&raw).ok()?;
-    meta.height
+    if pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version) {
+        meta.height
+    } else {
+        None
+    }
+}
+
+fn validate_pir_root(path: &Path, expected_height: u64) -> Result<()> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let root: PirRootHeader =
+        serde_json::from_str(&raw).with_context(|| format!("decode {}", path.display()))?;
+    anyhow::ensure!(
+        pir_types::is_current_dataset(&root.nullifier_pool, root.dataset_version),
+        "{} identifies pool {:?} dataset version {}; expected {:?} version {}",
+        path.display(),
+        root.nullifier_pool,
+        root.dataset_version,
+        pir_types::NULLIFIER_POOL,
+        pir_types::DATASET_VERSION
+    );
+    anyhow::ensure!(
+        root.height == Some(expected_height),
+        "{} height {:?} does not match requested snapshot height {}",
+        path.display(),
+        root.height,
+        expected_height
+    );
+    Ok(())
 }
 
 /// Download manifest + tier files for `height`, verify sha256s, and
@@ -403,10 +431,19 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         .await
         .with_context(|| format!("decode {manifest_url}"))?;
 
-    if manifest.schema_version != 1 {
+    if manifest.schema_version != 2 {
         bail!(
-            "manifest schema_version = {} (only 1 is supported); upgrade nf-server",
+            "manifest schema_version = {} (only 2 is supported); publish an Ironwood snapshot",
             manifest.schema_version
+        );
+    }
+    if !pir_types::is_current_dataset(&manifest.nullifier_pool, manifest.dataset_version) {
+        bail!(
+            "manifest identifies pool {:?} dataset version {}; expected {:?} version {}",
+            manifest.nullifier_pool,
+            manifest.dataset_version,
+            pir_types::NULLIFIER_POOL,
+            pir_types::DATASET_VERSION
         );
     }
     if manifest.height != height {
@@ -438,6 +475,8 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         let written = download_and_verify(&client, &url, &dest, &entry.sha256, entry.size).await?;
         total_bytes = total_bytes.saturating_add(written);
     }
+
+    validate_pir_root(&staging.join("pir_root.json"), height)?;
 
     install_from_staging(&staging, &cfg.pir_data_dir)?;
 
@@ -574,10 +613,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn write_pir_root(dir: &Path, height: Option<u64>) {
-        // Mirrors the relevant fields of `pir_types::PirMetadata` without
-        // depending on it: the bootstrap reads only `height`, but the
-        // file shape on disk is fixed by `pir-export`.
+        // Mirrors the on-disk shape written by `pir-export`.
         let mut m = serde_json::json!({
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
             "root25": "00",
             "root29": "00",
             "num_ranges": 1,
@@ -634,6 +673,28 @@ mod tests {
     fn read_local_height_returns_none_when_height_field_absent() {
         let tmp = TempDir::new().unwrap();
         write_pir_root(tmp.path(), None);
+        assert_eq!(read_local_height(tmp.path()), None);
+    }
+
+    #[test]
+    fn read_local_height_rejects_legacy_dataset() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("pir_root.json"),
+            r#"{"height":42,"root25":"00"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_local_height(tmp.path()), None);
+    }
+
+    #[test]
+    fn read_local_height_rejects_wrong_pool() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("pir_root.json"),
+            r#"{"nullifier_pool":"orchard","dataset_version":1,"height":42}"#,
+        )
+        .unwrap();
         assert_eq!(read_local_height(tmp.path()), None);
     }
 
@@ -773,7 +834,9 @@ mod tests {
     #[test]
     fn manifest_decodes_canonical_payload() {
         let raw = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
             "height": 100,
             "created_at": "2026-01-01T00:00:00Z",
             "nf_server_sha256": "deadbeef",
@@ -786,7 +849,7 @@ mod tests {
             }
         });
         let m: PublishedManifest = serde_json::from_value(raw).unwrap();
-        assert_eq!(m.schema_version, 1);
+        assert_eq!(m.schema_version, 2);
         assert_eq!(m.height, 100);
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
@@ -799,7 +862,9 @@ mod tests {
     #[test]
     fn manifest_decodes_with_optional_nullifier_artifacts() {
         let raw = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
             "height": 100,
             "created_at": "2026-01-01T00:00:00Z",
             "nf_server_sha256": "deadbeef",
@@ -811,6 +876,7 @@ mod tests {
                 "pir_root.json": { "size": 4, "sha256": "33" },
                 "nullifiers.bin": { "size": 5, "sha256": "44" },
                 "nullifiers.checkpoint": { "size": 16, "sha256": "55" },
+                "nullifiers.dataset.json": { "size": 52, "sha256": "77" },
                 "nullifiers.tree": { "size": 7, "sha256": "66" }
             }
         });

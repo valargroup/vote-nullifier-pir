@@ -30,9 +30,8 @@ pub struct Args {
     #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
 
-    /// Directory for all on-disk state: nullifiers.bin, nullifiers.checkpoint,
-    /// nullifiers.index, nullifiers.tree, tier0.bin, tier1.bin, tier2.bin, and
-    /// pir_root.json. Required for snapshot rebuilds via POST /snapshot/prepare.
+    /// Directory for the dataset marker, nullifiers, tree, and PIR tier files.
+    /// Required for snapshot rebuilds via POST /snapshot/prepare.
     #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
     pir_data_dir: PathBuf,
 

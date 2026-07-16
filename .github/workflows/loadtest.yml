@@ -95,28 +95,51 @@ jobs:
               ;;
           esac
           curl -fsSL --retry 3 "$SNAPSHOTS_BASE/$HEIGHT/manifest.json" -o manifest.json
-          if ! jq -e '.files["nullifiers.bin"]' manifest.json >/dev/null 2>&1; then
-            echo "ERROR: snapshot $HEIGHT has no nullifiers.bin in manifest."
-            echo "Publish that height from 'Publish nullifier snapshot' with include_nullifier_artifacts enabled."
+          if ! jq -e \
+            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            manifest.json >/dev/null; then
+            echo "ERROR: snapshot manifest is not Ironwood dataset version 1 with schema version 2"
             exit 1
           fi
-          EXPECT_SHA=$(jq -r '.files["nullifiers.bin"].sha256' manifest.json)
-          EXPECT_SIZE=$(jq -r '.files["nullifiers.bin"].size' manifest.json)
-          echo "Fetching $SNAPSHOTS_BASE/$HEIGHT/nullifiers.bin"
-          curl -fL --retry 3 -o nullifiers.bin "$SNAPSHOTS_BASE/$HEIGHT/nullifiers.bin"
-          ACTUAL_SIZE=$(wc -c < nullifiers.bin | tr -d ' ')
-          if [ "$ACTUAL_SIZE" != "$EXPECT_SIZE" ]; then
-            echo "ERROR: nullifiers.bin size mismatch (expected $EXPECT_SIZE, got $ACTUAL_SIZE)"
+
+          for f in nullifiers.dataset.json nullifiers.bin; do
+            if ! jq -e --arg f "$f" \
+              '(.files[$f].sha256 | type == "string") and (.files[$f].size | type == "number")' \
+              manifest.json >/dev/null; then
+              echo "ERROR: snapshot $HEIGHT has no valid $f entry in manifest."
+              echo "Publish that height with include_nullifier_artifacts enabled."
+              exit 1
+            fi
+          done
+
+          download_and_verify() {
+            local f="$1"
+            local expected_sha expected_size actual_sha actual_size
+            expected_sha=$(jq -r --arg f "$f" '.files[$f].sha256' manifest.json)
+            expected_size=$(jq -r --arg f "$f" '.files[$f].size' manifest.json)
+            echo "Fetching $SNAPSHOTS_BASE/$HEIGHT/$f"
+            curl -fL --retry 3 -o "$f" "$SNAPSHOTS_BASE/$HEIGHT/$f"
+            actual_size=$(wc -c < "$f" | tr -d ' ')
+            if [ "$actual_size" != "$expected_size" ]; then
+              echo "ERROR: $f size mismatch (expected $expected_size, got $actual_size)"
+              exit 1
+            fi
+            actual_sha=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "ERROR: $f sha256 mismatch"
+              exit 1
+            fi
+          }
+
+          download_and_verify nullifiers.dataset.json
+          if ! jq -e \
+            '.nullifier_pool == "ironwood" and .dataset_version == 1' \
+            nullifiers.dataset.json >/dev/null; then
+            echo "ERROR: nullifiers.dataset.json has the wrong dataset identity"
             exit 1
           fi
-          ACTUAL_SHA=$(sha256sum nullifiers.bin | awk '{print $1}')
-          if [ "$ACTUAL_SHA" != "$EXPECT_SHA" ]; then
-            echo "ERROR: nullifiers.bin sha256 mismatch"
-            echo "  expected: $EXPECT_SHA"
-            echo "  actual:   $ACTUAL_SHA"
-            exit 1
-          fi
-          echo "Fetched nullifiers.bin for height $HEIGHT (verified against manifest)"
+          download_and_verify nullifiers.bin
+          echo "Fetched Ironwood nullifiers for height $HEIGHT (verified against manifest)"
 
       - name: Run load test
         run: |

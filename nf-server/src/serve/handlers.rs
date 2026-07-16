@@ -146,6 +146,8 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
     let guard = require_serving!(state);
     let s = guard.as_ref().expect("guaranteed Some by require_serving");
     let info = RootInfo {
+        nullifier_pool: s.metadata.nullifier_pool.clone(),
+        dataset_version: s.metadata.dataset_version,
         root29: s.metadata.root29.clone(),
         root25: s.metadata.root25.clone(),
         num_ranges: s.metadata.num_ranges,

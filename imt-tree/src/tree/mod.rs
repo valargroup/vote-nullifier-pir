@@ -10,9 +10,8 @@ mod tests;
 /// Depth of the nullifier Merkle tree.
 ///
 /// Each on-chain nullifier produces approximately one gap; with K=2 punctured
-/// ranges, ~n/2 leaves are needed for n nullifiers. Zcash mainnet currently
-/// has under 64M Orchard nullifiers. We plan for this circuit to support up
-/// to 256M nullifiers, so the tree needs capacity for ~2^28 leaves:
+/// ranges, ~n/2 leaves are needed for n nullifiers. The circuit is designed
+/// to support up to 256M nullifiers, so the tree needs ~2^28 leaves:
 /// `log2(256 << 20) + 1 = 29`.
 pub const TREE_DEPTH: usize = 29;
 
@@ -181,5 +180,4 @@ pub fn build_levels(mut leaves: Vec<Fp>, empty: &[Fp; TREE_DEPTH], depth: usize)
 
     (root, levels)
 }
-
 

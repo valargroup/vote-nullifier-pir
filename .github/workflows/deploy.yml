@@ -106,6 +106,13 @@ jobs:
           echo "==> Fetching $MANIFEST_URL"
           curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
 
+          if ! jq -e \
+            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            manifest.json >/dev/null; then
+            echo "manifest is not Ironwood dataset version 1 with schema version 2" >&2
+            exit 1
+          fi
+
           MANIFEST_HEIGHT="$(jq -r '.height // empty' manifest.json)"
           if [ "$MANIFEST_HEIGHT" != "$HEIGHT" ]; then
             echo "manifest height ($MANIFEST_HEIGHT) does not match requested height ($HEIGHT)" >&2
@@ -135,11 +142,15 @@ jobs:
 
       - name: Stage deploy artifacts
         run: |
+          set -euo pipefail
           cp docs/nullifier-query-server.service .
           rm -rf nf-server/
           curl -fL --retry 5 -o nf-server \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
           chmod +x nf-server
+          DATASET_INFO=$(./nf-server dataset-info)
+          printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"'
+          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -159,6 +170,12 @@ jobs:
           envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
           script: |
             set -eu
+            DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
+            if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+              echo "FAIL: staged nf-server does not support Ironwood dataset version 1."
+              exit 1
+            fi
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
 
@@ -262,6 +279,13 @@ jobs:
               exit 1
             fi
 
+            ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
+            if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+              echo "FAIL: backup is not serving Ironwood dataset version 1."
+              exit 1
+            fi
+
             if [ -n "$FORCED_HEIGHT" ]; then
               METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
               metric_value() {
@@ -303,11 +327,15 @@ jobs:
 
       - name: Stage deploy artifacts
         run: |
+          set -euo pipefail
           cp docs/nullifier-query-server.service .
           rm -rf nf-server/
           curl -fL --retry 5 -o nf-server \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
           chmod +x nf-server
+          DATASET_INFO=$(./nf-server dataset-info)
+          printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"'
+          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -327,6 +355,12 @@ jobs:
           envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
           script: |
             set -eu
+            DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
+            if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+              echo "FAIL: staged nf-server does not support Ironwood dataset version 1."
+              exit 1
+            fi
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
             DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
 
@@ -421,6 +455,13 @@ jobs:
               sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || \
                 sudo grep -i nullifier /var/log/syslog 2>/dev/null | tail -30 || \
                 echo "No logs available"
+              exit 1
+            fi
+
+            ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
+            if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+              echo "FAIL: primary is not serving Ironwood dataset version 1."
               exit 1
             fi
 

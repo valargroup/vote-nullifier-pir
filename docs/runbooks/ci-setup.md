@@ -30,6 +30,7 @@ sudo systemctl stop nullifier-query-server || true
 
 # Move data files (nullifiers + optional tree live next to tier files)
 sudo mv /path/to/nullifiers.bin        /opt/nf-ingest/pir-data/
+sudo mv /path/to/nullifiers.dataset.json /opt/nf-ingest/pir-data/
 sudo mv /path/to/nullifiers.checkpoint /opt/nf-ingest/pir-data/
 sudo mv /path/to/nullifiers.index      /opt/nf-ingest/pir-data/ 2>/dev/null || true
 sudo mv /path/to/nullifiers.tree       /opt/nf-ingest/pir-data/ 2>/dev/null || true
@@ -42,6 +43,8 @@ sudo mv /path/to/nullifiers.tree       /opt/nf-ingest/pir-data/ 2>/dev/null || t
 # Ensure the deploy user can write (if deploy runs as a different user)
 # sudo chown -R DEPLOY_USER:DEPLOY_USER /opt/nf-ingest
 ```
+
+Move `nullifiers.dataset.json` with the raw data. Legacy Orchard data has no compatible marker and must be rebuilt with `SVOTE_PIR_SYNC_RESET=1`.
 
 The unit file in `docs/nullifier-query-server.service` uses `/opt/nf-ingest/pir-data` as `SVOTE_PIR_DATA_DIR` by default.
 
@@ -156,6 +159,16 @@ for the full bump procedure. The old per-host timer-based resync flow
 was removed from `vote-infrastructure/cloud-init/pir.yaml`; use
 [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml)
 if you need `nf-server sync` + restart on one machine outside the publish path.
+
+For the one-time Orchard-to-Ironwood migration:
+
+1. Install the new `nf-server` on the publisher host.
+2. Publish with `reset_dataset=true` and record the resulting height.
+3. Deploy the same release at that forced height, backup first and then primary.
+4. Verify both `/root` responses, then update the environment `pir.json`.
+
+Leave `reset_dataset` false for later bumps. Published manifests use schema 2
+and identify `nullifier_pool: "ironwood"` with `dataset_version: 1`.
 
 ### Changing deploy path or restart command
 
@@ -280,7 +293,7 @@ flowchart LR
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, and mirrors release artifacts to DO Spaces. It does **not** deploy to any fleet; operators run `deploy.yml` explicitly. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, writes environment-aware `/etc/default/nf-server` PIR config defaults, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Optional `height` validates a published PIR snapshot, forces bootstrap to that height during deploy, verifies `nf_snapshot_served_height == height`, then clears the temporary override. Hosts are rolled backup-then-primary so the readiness gate on one host completes before the next is touched. |
-| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, optional `include_nullifier_artifacts`) | Runs `nf-server sync` on the canonical `PIR_SNAPSHOT_PUBLISHER_HOST` (nullifiers under `DEPLOY_PATH/pir-data`, tier artifacts staged under `/tmp` then uploaded), builds `manifest.json`, uploads `s3://${DO_BUCKET:-shielded-vote}/snapshots/<height>/{tier*.bin,pir_root.json,manifest.json}` to DO Spaces, then verifies the published manifest, `pir_root.json`, and `tier0.bin` through the configured public base. This workflow is global, not environment-targeted. Set **`include_nullifier_artifacts`** to also upload `nullifiers.bin`, `nullifiers.checkpoint`, and `nullifiers.tree` into the same prefix (large); default is **false** so routine snapshot bumps stay tier-only. After publishing, update `<env>/pir.json`; replicas pick up that height via startup self-bootstrap on next restart. |
+| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, `include_nullifier_artifacts`, `reset_dataset`) | Syncs the canonical publisher, emits a schema 2 Ironwood manifest, uploads tiers, and verifies the public manifest and root. `include_nullifier_artifacts` also uploads `nullifiers.bin`, its checkpoint, tree, and `nullifiers.dataset.json`. Use `reset_dataset` only for the one-time migration. After publishing, update `<env>/pir.json` and restart the fleet. |
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`, optional `height`) | Rolling restart of the PIR fleet. Writes environment-specific `/etc/default/nf-server` PIR config defaults, restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies either the forced `height` or `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (input height, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint through the static/dynamic voting config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for that height. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |

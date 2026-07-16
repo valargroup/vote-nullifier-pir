@@ -40,9 +40,10 @@ use imt_tree::tree::{
 // Re-export tier-layout constants and PirMetadata from pir-types so that
 // existing consumers (tier submodules, tests, downstream crates) keep working.
 pub use pir_types::{
-    PirMetadata, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS, TIER2_ITEM_BITS,
-    TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS, TIER2_ROW_BYTES,
+    PirMetadata, DATASET_VERSION, NULLIFIER_POOL, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS,
+    TIER1_LAYERS, TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS,
+    TIER2_ITEM_BITS, TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS,
+    TIER2_ROW_BYTES,
 };
 
 /// Depth of the full circuit tree (unchanged from existing system).
@@ -272,10 +273,14 @@ pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Res
     if !root_path.exists() {
         return Ok(false);
     }
-    let meta: PirMetadata =
-        serde_json::from_str(&std::fs::read_to_string(&root_path).context("read pir_root.json")?)
-            .context("decode pir_root.json")?;
-    if meta.height != Some(expected_height) {
+    let Ok(meta) = serde_json::from_str::<PirMetadata>(
+        &std::fs::read_to_string(&root_path).context("read pir_root.json")?,
+    ) else {
+        return Ok(false);
+    };
+    if meta.height != Some(expected_height)
+        || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
+    {
         return Ok(false);
     }
     let t0 = output_dir.join("tier0.bin");
@@ -399,6 +404,8 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
 
     // Metadata
     let metadata = PirMetadata {
+        nullifier_pool: NULLIFIER_POOL.to_owned(),
+        dataset_version: DATASET_VERSION,
         root25: hex::encode(tree.root25.to_repr()),
         root29: hex::encode(tree.root29.to_repr()),
         num_ranges: tree.ranges.len(),

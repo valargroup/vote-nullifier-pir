@@ -1,6 +1,7 @@
 //! Standalone CLI for building PIR tier files from a nullifier data file.
 //!
-//! Dev helper: build tier files from a `nullifiers.bin` at an arbitrary path.
+//! Dev helper: build tier files from an Ironwood `nullifiers.bin`.
+//! A matching `nullifiers.dataset.json` must be in the same directory.
 //! For production paths, use `nf-server sync` (nullifiers + `nullifiers.tree` + tiers).
 //! Requires the `cli` feature
 //! (enabled by default when building this binary target).
@@ -19,7 +20,7 @@ use nf_ingest::file_store;
 #[derive(Parser)]
 #[command(name = "pir-export", about = "Build PIR tier databases from nullifier data")]
 struct Args {
-    /// Path to nullifiers.bin (sorted 32-byte Fp elements).
+    /// Path to an Ironwood nullifiers.bin with an adjacent dataset marker.
     #[arg(long)]
     nullifiers: PathBuf,
 
@@ -36,6 +37,12 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let t_total = Instant::now();
+
+    let nullifier_dir = args
+        .nullifiers
+        .parent()
+        .context("nullifiers path has no parent directory")?;
+    file_store::ensure_ironwood_dataset(nullifier_dir)?;
 
     eprintln!("Loading nullifiers from {:?}...", args.nullifiers);
     let t0 = Instant::now();

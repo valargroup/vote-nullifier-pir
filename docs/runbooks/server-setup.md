@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vote-nullifier PIR lets a client prove that a Zcash Orchard nullifier is **not** in the on-chain nullifier set, without revealing *which* nullifier it is asking about. This service is a building block for shielded voting.
+Vote-nullifier PIR lets a client prove that a Zcash Ironwood nullifier is **not** in the on-chain Ironwood nullifier set, without revealing *which* nullifier it is asking about. This service is a building block for shielded voting.
 
 This runbook covers the operator side: standing up an `nf-server` host that answers PIR queries from clients over HTTP. One server is a single `nf-server` binary listening on a single port (default `3000`); see [Recommended hardware](#recommended-hardware) for the target SKU.
 
@@ -15,7 +15,7 @@ This runbook covers the operator side: standing up an `nf-server` host that answ
 There are two data-source modes the server can run in:
 
 1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
-2. **Synced** — the PIR server runs `nf-server sync`: stream Orchard nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+2. **Synced** — the PIR server runs `nf-server sync`: stream Ironwood nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from compatible on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
 
 ## Quick start
 
@@ -55,9 +55,9 @@ Why these numbers:
   - ~7 GB tier files (`tier0.bin` + `tier1.bin` + `tier2.bin` + `pir_root.json`)
   - ~14 GB precompute cache (`tier1.precompute` ≈ 720 MB + `tier2.precompute` ≈ 13 GB), written by `serve` after first YPIR setup; see [Files under `SVOTE_PIR_DATA_DIR`](#files-under-svote_pir_data_dir)
   - ~14 GB transient peak during cache rewrite (atomic `.tmp` + rename means the new cache exists alongside the old briefly)
-  - ~2 GB nullifier data + working space
+  - Nullifier data and working space, which grow with Ironwood usage
   - Total ~37 GB minimum, ~65 GB recommended for headroom
-  - On synced hosts, also reserve for `nullifiers.bin` growth: it grows linearly with the chain and is ~2 GB at chain tip today. Re-check this number when sizing a host for a new snapshot rotation.
+  - On synced hosts, re-check `nullifiers.bin` size before each snapshot rotation.
 
 Verify a candidate host with [`nf-server doctor`](#host-health-check-nf-server-doctor) before installing.
 
@@ -179,13 +179,14 @@ After install, verify end-to-end without a real client:
 ```bash
 curl -fsS http://127.0.0.1:3000/ready                                   # 200 OK
 curl -fsS http://127.0.0.1:3000/health | jq -r '.status'                # ok (starting / rebuilding / error while warming)
-curl -fsS http://127.0.0.1:3000/root   | jq '{height, pir_depth, num_ranges}'
+curl -fsS http://127.0.0.1:3000/root   | jq '{nullifier_pool, dataset_version, height, pir_depth, num_ranges}'
 ```
 
 `GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
-Compare the `height` from `/root` to `snapshot_height` from the environment's
-published `pir.json`; they should match while bootstrap is enabled.
+Confirm `/root` reports `nullifier_pool: "ironwood"` and `dataset_version: 1`.
+Its `height` should match `snapshot_height` from the environment's published
+`pir.json` while bootstrap is enabled.
 
 ## Host health check (`nf-server doctor`)
 
@@ -229,9 +230,9 @@ Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, boot
 
 **On startup**, `serve` fetches the environment's PIR snapshot config
 (`SVOTE_PIR_CONFIG_URL`, for example `https://voting.valargroup.org/prod/pir.json`),
-reads its `snapshot_height`, compares that height to local `pir_root.json`, and
-downloads the matching snapshot tiers from `SVOTE_PIR_PRECOMPUTED_BASE_URL` if
-they don't match. For zero-touch migration, hosts that only have the legacy
+reads its `snapshot_height`, compares that height and the Ironwood dataset
+identity to local `pir_root.json`, and downloads matching snapshot tiers from
+`SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. For zero-touch migration, hosts that only have the legacy
 `SVOTE_PIR_VOTING_CONFIG_URL` derive `prod/pir.json` or `stage/pir.json` when
 that URL clearly identifies an environment; ambiguous legacy URLs fall back to
 the old active-round discovery path. With default workflow settings, existing
@@ -243,8 +244,8 @@ The compiled fallback for `SVOTE_PIR_PRECOMPUTED_BASE_URL` points at
 `start_pir.sh` with matching `DO_BUCKET`, `DO_REGION`, and `DO_PUBLIC_BASE_URL`
 values so fresh installs write that value automatically.
 
-If no configured snapshot height is available, `serve` keeps serving the
-existing local snapshot. On a fresh host with no local `pir_root.json`, set
+If no configured snapshot height is available, `serve` keeps serving a
+compatible local snapshot. On a fresh host with no local `pir_root.json`, set
 `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=<height>` to bootstrap a specific published
 snapshot. The force setting bypasses PIR/voting-config discovery, so remove it
 after the host has loaded the intended snapshot unless the override is still
@@ -288,9 +289,11 @@ Useful flags:
 - `--invalidate-after-blocks` — force `nullifiers.tree` and tier blobs to rebuild when new blocks stream in.
 - `--max-height <H>` — stop at `H` (must be a multiple of 10). Without it, syncs to mainnet chain tip, capped by the active round snapshot height when bootstrap is enabled.
 
-`nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped. To start clean, set `SVOTE_PIR_SYNC_RESET=1`.
+`nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped when the dataset identity matches.
 
-**Sync time** is governed by lightwalletd nullifier streaming, not local CPU — roughly ~16 min from NU5 activation to mainnet tip as of early 2026 (grows with chain length; refresh on each release).
+Legacy Orchard data cannot be resumed as Ironwood. On the first Ironwood sync, set `SVOTE_PIR_SYNC_RESET=1` to remove the old raw data and all derived artifacts. A missing or incompatible `nullifiers.dataset.json` fails closed instead of relabeling existing bytes.
+
+**Sync time** is governed by lightwalletd nullifier streaming, not local CPU, and grows with chain length from Ironwood activation.
 
 After sync, tier files are local — but CDN bootstrap still runs on the next `serve` startup unless you disable it (`SVOTE_PIR_CONFIG_URL=` in `/etc/default/nf-server`).
 
@@ -302,7 +305,7 @@ When bootstrap is enabled and your local nullifier checkpoint is **above** the a
 SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH=RESYNC
 ```
 
-This wipes `nullifiers.bin`, the checkpoint, the index, `nullifiers.tree`, and tier files, then re-syncs from scratch.
+This wipes `nullifiers.bin`, `nullifiers.dataset.json`, the checkpoint, the index, `nullifiers.tree`, and tier files, then re-syncs from scratch.
 
 ## Configuring the service
 
@@ -356,7 +359,7 @@ Browse `/metrics` once after install for the full series list; names are stable 
 
 `SVOTE_PIR_DATA_DIR` is **disposable** for bootstrapped hosts: tier files come from the CDN and the snapshot height is fixed by the environment `pir.json` (or the legacy active-round fallback for older host configs). To recover, reinstall and restart — `start_pir.sh` and the systemd unit will re-bootstrap. No backups required for serve-only hosts.
 
-For synced hosts, `nullifiers.bin` + `nullifiers.checkpoint` + `nullifiers.index` represent ~16 minutes of lightwalletd streaming work; back them up if you want to skip a re-stream after disk loss. Tier files are derivable.
+For synced hosts, back up `nullifiers.bin`, `nullifiers.dataset.json`, `nullifiers.checkpoint`, and `nullifiers.index` together if you want to skip a re-stream after disk loss. Tier files are derivable.
 
 ## Upgrading
 
@@ -431,7 +434,7 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 |-----------------|------|
 | `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`). |
 | `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`). |
-| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete nullifiers + tree + tiers before run. |
+| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete the dataset marker, nullifiers, tree, and tiers before the run. Required once when migrating legacy Orchard data. |
 | `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above the active round `snapshot_height`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `vote_servers` that expose an active round with `snapshot_height`. |
 
@@ -443,12 +446,13 @@ Everything on disk under `--pir-data-dir` (default `/opt/nf-ingest/pir-data` for
 
 | File | Stage / source | Purpose |
 |------|----------------|---------|
-| `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Orchard nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
+| `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Ironwood nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
+| `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `nullifier_pool: "ironwood"` and `dataset_version: 1`. It must travel with raw nullifier artifacts. |
 | `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`; half-written batches are discarded on startup. |
 | `nullifiers.index` | Stage 1 — sync | Per-batch height index; lets `sync` and `POST /snapshot/prepare` export a snapshot at a past height. Auto-rebuilt if missing. |
 | `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
 | `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries (mmap'd by `serve`). Identical to `<precomputed-base>/snapshots/<height>/tier*.bin`. |
-| `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: tree roots, tier byte sizes, and `height`. Source of truth for "what height am I serving"; installed **last** so a half-applied bootstrap retries cleanly next start. |
+| `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: dataset identity, tree roots, tier byte sizes, and `height`. Installed **last** so a half-applied bootstrap retries cleanly next start. |
 | `tier1.precompute`, `tier2.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Skips the ~50–120 s YPIR offline precomputation on subsequent boots. Auto-invalidated by content hash when the corresponding `tier{N}.bin` changes; safe to delete (next boot recomputes). Sizes: tier 1 ≈ 720 MB, tier 2 ≈ 13 GB on the production scenario. **Not** distributed via the CDN; each host writes its own. |
 
 When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above (except CDN staging) and rebuilds from lightwalletd; for tier-only corruption on a `serve` host, `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` re-bootstraps from the CDN. The precompute caches are wiped along with everything else.
@@ -464,7 +468,7 @@ When in doubt, `SVOTE_PIR_SYNC_RESET=1 nf-server sync` deletes all of the above 
 | `GET /tier0` | Client | Download tier-0 of the PIR tree in plaintext (small, public). |
 | `GET /params/tier1`, `GET /params/tier2` | Client | YPIR scenario parameters needed to build a query. |
 | `POST /tier1/query`, `POST /tier2/query` | Client | Submit an encrypted PIR query, get an encrypted response. |
-| `GET /root` | Client | Current tree roots, depth, `num_ranges`, and serving `height`. |
+| `GET /root` | Client | Dataset identity, current tree roots, depth, `num_ranges`, and serving `height`. |
 | `GET /health` | Ops | JSON: `status` (`starting` / `ok` / `rebuilding` / `error`) plus tier row metadata. Always 200. |
 | `GET /ready` | Ops / load balancer | 200 only when the internal phase is `Serving`; **503** with a JSON `phase` body while still starting or on error. |
 | `GET /metrics` | Ops | Prometheus exposition. |
@@ -480,6 +484,7 @@ Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -f
 | `status` stays `"starting"`, log shows no configured snapshot height and no local snapshot | Bootstrap is enabled on a fresh host but neither `pir.json` nor legacy active-round fallback produced a height. | Set `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` to a published snapshot height, pre-stage `pir-data`, or publish/update the environment `pir.json`. |
 | `status` stays `"starting"`, log shows tier download 404 / hash mismatch | CDN base URL wrong, or release/snapshot mismatch | Verify `SVOTE_PIR_PRECOMPUTED_BASE_URL`; confirm `<base>/snapshots/<height>/manifest.json` exists. |
 | `status` is `"error"` after bootstrap, "tier load failed" | Corrupt or partial files under `SVOTE_PIR_DATA_DIR` | `rm -rf /opt/nf-ingest/pir-data/* && systemctl restart nullifier-query-server` to re-bootstrap from the CDN. |
+| Sync rejects a missing or incompatible dataset marker | Existing files are legacy or belong to another dataset version | Set `SVOTE_PIR_SYNC_RESET=1` and rerun sync. Do not create the marker by hand. |
 | Crash-loop, `journalctl` shows `SIGILL` immediately at startup | Binary built with AVX-512 on a CPU without it | Run `nf-server doctor`; move to an AVX-512 host or use `linux-arm64`. |
 | `/ready` returns 503 indefinitely, no errors | Long bootstrap (cold start) — see [Bootstrapped mode](#bootstrapped-mode) | Wait ~2 min on the recommended SKU. If it doesn't clear, check `/health`. |
 | `nf-server sync` aborts with `RESYNC` prompt | Local nullifier checkpoint is above the active round `snapshot_height` | See [Height-mismatch wipe](#height-mismatch-wipe-resync). |

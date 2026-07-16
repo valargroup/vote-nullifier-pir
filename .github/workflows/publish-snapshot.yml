@@ -3,9 +3,8 @@
 # and the admin UI. Runs on the canonical snapshot publisher host so
 # fleet-specific staging/production targeting cannot change the output path.
 #
-# Pure publish operation: writes tier blobs under /tmp on the host, reads
-# nullifiers from the live /opt/nf-ingest/pir-data/ tree (never mutates it),
-# never restarts the service.
+# Syncs the canonical publisher data, writes tier blobs under /tmp, and never
+# restarts the service. The reset input is only for one-time dataset migrations.
 #
 # Requires repository or environment secrets:
 #   PIR_SNAPSHOT_PUBLISHER_HOST, DEPLOY_USER, SSH_KEY,
@@ -21,7 +20,12 @@ on:
         required: false
         type: string
       include_nullifier_artifacts:
-        description: "If true, also upload nullifiers.bin, nullifiers.checkpoint, and nullifiers.tree under snapshots/<height>/ (large). Default false keeps uploads tier-only."
+        description: "If true, also upload nullifiers.bin, nullifiers.checkpoint, nullifiers.tree, and nullifiers.dataset.json under snapshots/<height>/ (large)."
+        required: false
+        type: boolean
+        default: false
+      reset_dataset:
+        description: "One-time migration only: wipe the publisher dataset and rebuild it as Ironwood."
         required: false
         type: boolean
         default: false
@@ -61,7 +65,7 @@ jobs:
             echo "Target height (explicit): $H"
           else
             echo "value=" >> "$GITHUB_OUTPUT"
-            echo "Target height: latest chain tip (resolved on backup host)"
+            echo "Target height: latest chain tip (resolved on publisher host)"
           fi
 
       - name: Build snapshot, upload to DO Spaces, verify
@@ -79,6 +83,7 @@ jobs:
             set -euo pipefail
 
             REQUESTED_H="${{ steps.round_height.outputs.value }}"
+            RESET_DATASET="${{ inputs.reset_dataset }}"
             STAGE="/tmp/snap-build-$$"
             BUCKET="${{ env.DO_BUCKET }}"
             REGION="${{ env.DO_REGION }}"
@@ -116,6 +121,22 @@ jobs:
             echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
             cd "${{ env.DEPLOY_PATH }}"
             export SVOTE_PIR_VOTING_CONFIG_URL=
+            EXPECTED_NULLIFIER_POOL=ironwood
+            EXPECTED_DATASET_VERSION=1
+            if ! DATASET_INFO=$(./nf-server dataset-info 2>/dev/null) || ! jq -e \
+              --arg pool "$EXPECTED_NULLIFIER_POOL" \
+              --argjson version "$EXPECTED_DATASET_VERSION" \
+              '.nullifier_pool == $pool and .dataset_version == $version' \
+              <<<"$DATASET_INFO" >/dev/null; then
+              echo "ERROR: installed nf-server is not Ironwood dataset version 1; refusing to sync or reset" >&2
+              exit 1
+            fi
+            if [ "$RESET_DATASET" = "true" ]; then
+              echo "    reset_dataset=true (wiping the publisher dataset before sync)"
+              export SVOTE_PIR_SYNC_RESET=1
+            else
+              unset SVOTE_PIR_SYNC_RESET
+            fi
             rm -rf "$STAGE"
             mkdir -p "$STAGE"
             if [ -n "$REQUESTED_H" ]; then
@@ -135,6 +156,27 @@ jobs:
                 --lwd-url https://us.zec.stardust.rest:443 \
                 --non-interactive \
                 --invalidate-after-blocks
+            fi
+
+            NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
+            DATASET_MARKER="$NF_DIR/nullifiers.dataset.json"
+
+            echo "==> Validate Ironwood dataset identity"
+            if ! jq -e \
+              --arg pool "$EXPECTED_NULLIFIER_POOL" \
+              --argjson version "$EXPECTED_DATASET_VERSION" \
+              '.nullifier_pool == $pool and .dataset_version == $version' \
+              "$STAGE/pir_root.json" >/dev/null; then
+              echo "ERROR: pir_root.json is not the expected Ironwood dataset version" >&2
+              exit 1
+            fi
+            if [ ! -f "$DATASET_MARKER" ] || ! jq -e \
+              --arg pool "$EXPECTED_NULLIFIER_POOL" \
+              --argjson version "$EXPECTED_DATASET_VERSION" \
+              '.nullifier_pool == $pool and .dataset_version == $version' \
+              "$DATASET_MARKER" >/dev/null; then
+              echo "ERROR: $DATASET_MARKER is missing or has the wrong dataset identity" >&2
+              exit 1
             fi
 
             echo "==> Read height from exported pir_root.json"
@@ -165,15 +207,22 @@ jobs:
             NF_JSON='{}'
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               echo "    include_nullifier_artifacts=true (adding on-chain + tree blobs to manifest)"
-              NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
-              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree nullifiers.dataset.json; do
                 if [ ! -f "$NF_DIR/$f" ]; then
                   echo "ERROR: missing $NF_DIR/$f — run sync on this host first or disable the flag"
                   exit 1
                 fi
               done
+              CHECKPOINT_SIZE=$(stat -c%s "$NF_DIR/nullifiers.checkpoint")
+              CHECKPOINT_HEIGHT=$(od -An -t u8 -j 0 -N 8 "$NF_DIR/nullifiers.checkpoint" | tr -d ' ')
+              CHECKPOINT_OFFSET=$(od -An -t u8 -j 8 -N 8 "$NF_DIR/nullifiers.checkpoint" | tr -d ' ')
+              NULLIFIERS_SIZE=$(stat -c%s "$NF_DIR/nullifiers.bin")
+              if [ "$CHECKPOINT_SIZE" != "16" ] || [ "$CHECKPOINT_HEIGHT" != "$H" ] || [ "$CHECKPOINT_OFFSET" != "$NULLIFIERS_SIZE" ]; then
+                echo "ERROR: raw nullifier artifacts are not an exact checkpoint for exported height $H" >&2
+                exit 1
+              fi
               NF_JSON=$(
-                for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+                for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree nullifiers.dataset.json; do
                   size=$(stat -c%s "$NF_DIR/$f")
                   sha=$(sha256sum "$NF_DIR/$f" | awk '{print $1}')
                   jq -n --arg name "$f" --argjson size "$size" --arg sha "$sha" \
@@ -184,13 +233,17 @@ jobs:
             FILES_JSON=$(jq -n --argjson tier "$TIER_JSON" --argjson nf "$NF_JSON" '$tier + $nf')
             jq -n \
               --argjson height "$H" \
+              --arg nullifier_pool "$EXPECTED_NULLIFIER_POOL" \
+              --argjson dataset_version "$EXPECTED_DATASET_VERSION" \
               --arg created_at "$CREATED_AT" \
               --arg nf_server_sha256 "$BIN_SHA" \
               --arg git_ref "${{ github.ref_name }}" \
               --arg git_sha "${{ github.sha }}" \
               --argjson files "$FILES_JSON" \
               '{
-                schema_version: 1,
+                schema_version: 2,
+                nullifier_pool: $nullifier_pool,
+                dataset_version: $dataset_version,
                 height: $height,
                 created_at: $created_at,
                 nf_server_sha256: $nf_server_sha256,
@@ -206,8 +259,7 @@ jobs:
                 --acl-public --force --no-progress
             done
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
-              NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
-              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree nullifiers.dataset.json; do
                 echo "  - $f (nullifier / tree bundle)"
                 s3cmd -c "$S3CFG" put "$NF_DIR/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
                   --acl-public --force --no-progress
@@ -221,7 +273,7 @@ jobs:
             echo "==> Enforce public-read ACL on all uploaded files"
             ACL_FILES="tier0.bin tier1.bin tier2.bin pir_root.json"
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
-              ACL_FILES="$ACL_FILES nullifiers.bin nullifiers.checkpoint nullifiers.tree"
+              ACL_FILES="$ACL_FILES nullifiers.bin nullifiers.checkpoint nullifiers.tree nullifiers.dataset.json"
             fi
             for f in $ACL_FILES manifest.json; do
               s3cmd -c "$S3CFG" setacl --acl-public "s3://$BUCKET/$PREFIX/$H/$f"
@@ -234,6 +286,14 @@ jobs:
             REMOTE_HEIGHT=$(jq -r '.height' "$VERIFY_DIR/manifest.json")
             REMOTE_TIER0_SHA=$(jq -r '.files["tier0.bin"].sha256' "$VERIFY_DIR/manifest.json")
             REMOTE_ROOT_SHA=$(jq -r '.files["pir_root.json"].sha256 // empty' "$VERIFY_DIR/manifest.json")
+            if ! jq -e \
+              --arg pool "$EXPECTED_NULLIFIER_POOL" \
+              --argjson version "$EXPECTED_DATASET_VERSION" \
+              '.schema_version == 2 and .nullifier_pool == $pool and .dataset_version == $version' \
+              "$VERIFY_DIR/manifest.json" >/dev/null; then
+              echo "ERROR: remote manifest has the wrong schema or dataset identity"
+              exit 1
+            fi
             if [ "$REMOTE_HEIGHT" != "$H" ]; then
               echo "ERROR: remote manifest height ($REMOTE_HEIGHT) != $H"
               exit 1
@@ -244,6 +304,14 @@ jobs:
             fi
             curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/pir_root.json" -o "$VERIFY_DIR/pir_root.json"
             REMOTE_ROOT_HEIGHT=$(jq -r '.height // empty' "$VERIFY_DIR/pir_root.json")
+            if ! jq -e \
+              --arg pool "$EXPECTED_NULLIFIER_POOL" \
+              --argjson version "$EXPECTED_DATASET_VERSION" \
+              '.nullifier_pool == $pool and .dataset_version == $version' \
+              "$VERIFY_DIR/pir_root.json" >/dev/null; then
+              echo "ERROR: remote pir_root.json has the wrong dataset identity"
+              exit 1
+            fi
             if [ "$REMOTE_ROOT_HEIGHT" != "$H" ]; then
               echo "ERROR: remote pir_root.json height ($REMOTE_ROOT_HEIGHT) != $H"
               exit 1
@@ -264,9 +332,23 @@ jobs:
               exit 1
             fi
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
-              NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
               echo "==> Verify nullifier/tree entries: local disk matches published manifest (no multi-GB re-download)"
-              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree; do
+              curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/nullifiers.dataset.json" -o "$VERIFY_DIR/nullifiers.dataset.json"
+              if ! jq -e \
+                --arg pool "$EXPECTED_NULLIFIER_POOL" \
+                --argjson version "$EXPECTED_DATASET_VERSION" \
+                '.nullifier_pool == $pool and .dataset_version == $version' \
+                "$VERIFY_DIR/nullifiers.dataset.json" >/dev/null; then
+                echo "ERROR: remote nullifiers.dataset.json has the wrong dataset identity"
+                exit 1
+              fi
+              EXPECTED_DATASET_SHA=$(jq -r '.files["nullifiers.dataset.json"].sha256 // empty' "$VERIFY_DIR/manifest.json")
+              ACTUAL_DATASET_SHA=$(sha256sum "$VERIFY_DIR/nullifiers.dataset.json" | awk '{print $1}')
+              if [ -z "$EXPECTED_DATASET_SHA" ] || [ "$ACTUAL_DATASET_SHA" != "$EXPECTED_DATASET_SHA" ]; then
+                echo "ERROR: downloaded nullifiers.dataset.json sha256 mismatch"
+                exit 1
+              fi
+              for f in nullifiers.bin nullifiers.checkpoint nullifiers.tree nullifiers.dataset.json; do
                 EXPECT=$(jq -r --arg n "$f" '.files[$n].sha256 // empty' "$VERIFY_DIR/manifest.json")
                 if [ -z "$EXPECT" ]; then
                   echo "ERROR: manifest missing files[$f] after upload"
@@ -314,7 +396,8 @@ jobs:
                   "fields": [
                     { "type": "mrkdwn", "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Publish nullifier snapshot>" },
                     { "type": "mrkdwn", "text": "*Height:*\n`${{ github.event.inputs.height || 'latest' }}`" },
-                    { "type": "mrkdwn", "text": "*Include nullifier artifacts:*\n`${{ inputs.include_nullifier_artifacts }}`" }
+                    { "type": "mrkdwn", "text": "*Include nullifier artifacts:*\n`${{ inputs.include_nullifier_artifacts }}`" },
+                    { "type": "mrkdwn", "text": "*Reset dataset:*\n`${{ inputs.reset_dataset }}`" }
                   ]
                 }
               ]
