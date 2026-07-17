@@ -91,7 +91,7 @@ Set these GitHub Environment variables in both environments:
 | `VOTING_CONFIG_URL` | `https://voting.valargroup.org/stage/static-voting-config.json` | `https://voting.valargroup.org/prod/static-voting-config.json` | Optional legacy fallback URL written by deploy/restart workflows as `SVOTE_PIR_VOTING_CONFIG_URL`. |
 | `PRECOMPUTED_BASE_URL` | `https://shielded-vote.nyc3.digitaloceanspaces.com` | `https://shielded-vote.nyc3.digitaloceanspaces.com` | Base URL used when forcing a deploy to a published snapshot height. |
 | `SNAPSHOTS_BASE_URL` | `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots` | `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots` | Base URL used to validate forced snapshot heights. |
-| `LWD_URLS` | Testnet post-NU6.3 endpoints | Mainnet post-NU6.3 endpoints | Comma-separated lightwalletd gRPC URLs used by `publish-snapshot.yml`. |
+| `LWD_URLS` | Testnet post-NU6.3 endpoints | Mainnet post-NU6.3 endpoints | Required comma-separated lightwalletd gRPC URLs used for snapshot publishing and server rebuilds. |
 
 `release.yml` and `publish-snapshot.yml` use repository-level DigitalOcean
 secrets and repository variables for the shared bucket. Snapshots are separated

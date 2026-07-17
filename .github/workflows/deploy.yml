@@ -65,7 +65,7 @@ env:
 
 jobs:
   validate_height:
-    name: Validate forced snapshot height
+    name: Validate deploy inputs
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     outputs:
@@ -73,12 +73,17 @@ jobs:
     env:
       SNAPSHOTS_BASE_URL: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
-      - name: Validate optional height
+      - name: Validate inputs
         id: validate
         env:
           REQUESTED_HEIGHT: ${{ inputs.height }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
         run: |
           set -euo pipefail
+          if [ -z "${LWD_URLS//[[:space:],]/}" ]; then
+            echo "LWD_URLS must name at least one lightwalletd endpoint." >&2
+            exit 1
+          fi
           HEIGHT="$REQUESTED_HEIGHT"
           HEIGHT="$(printf '%s' "$HEIGHT" | tr -d '[:space:]')"
 
@@ -177,7 +182,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -215,10 +220,11 @@ jobs:
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL|LWD_URLS)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
               echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "LWD_URLS=$LWD_URLS"
               echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
@@ -259,6 +265,7 @@ jobs:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -370,7 +377,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -408,10 +415,11 @@ jobs:
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL|LWD_URLS)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
               echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "LWD_URLS=$LWD_URLS"
               echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
@@ -452,6 +460,7 @@ jobs:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
