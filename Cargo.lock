@@ -2041,7 +2041,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pir-client"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "anyhow",
  "ff",
@@ -2134,13 +2134,14 @@ dependencies = [
 
 [[package]]
 name = "pir-types"
-version = "0.3.0-rc.1"
+version = "0.3.0-rc.2"
 dependencies = [
  "anyhow",
  "ff",
  "imt-tree",
  "pasta_curves",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

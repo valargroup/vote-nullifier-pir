@@ -36,7 +36,7 @@ snapshot. There is no harm in running it again.
 When `height` is set, the workflow first validates the DO snapshot manifest and
 the required tier objects (`tier0.bin`, `tier1.bin`, `tier2.bin`,
 `pir_root.json`) before touching any host. Only use schema 2 snapshots whose
-manifest and root identify Ironwood dataset version 1. Each host then gets a temporary
+manifest identifies Ironwood dataset version 1 and the root identifies the selected Zcash network. Each host then gets a temporary
 systemd drop-in:
 
 ```ini
@@ -46,7 +46,7 @@ Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=<PRECOMPUTED_BASE_URL>
 ```
 
 That explicit force setting takes precedence over PIR/voting-config
-discovery and makes `nf-server` download from `snapshots/<height>/`. After
+discovery and makes `nf-server` download from `snapshots/<network>/<height>/`. After
 `/ready` succeeds and
 `nf_snapshot_served_height == height`, the workflow removes the drop-in and
 runs `systemctl daemon-reload` again. The running process keeps serving the
@@ -123,11 +123,11 @@ public endpoints once the workflow is green:
 ```bash
 for host in pir-primary pir-backup; do
     echo "=== $host ==="
-    curl -s "https://$host.valargroup.org/root" | jq '{nullifier_pool, dataset_version, height, root25}'
+    curl -s "https://$host.valargroup.org/root" | jq '{zcash_network, nullifier_pool, dataset_version, height, root25}'
 done
 ```
 
-Both should report `nullifier_pool: "ironwood"`, `dataset_version: 1`, and identical heights and roots.
+Both should report the expected `zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 1`, and identical heights and roots.
 
 ## Failure modes
 
@@ -139,8 +139,8 @@ Both should report `nullifier_pool: "ironwood"`, `dataset_version: 1`, and ident
 | Job fails with `served (X) != forced height (Y)` | Forced bootstrap ran but the host did not load the requested snapshot. | Inspect `nf_snapshot_bootstrap_outcomes_total` in the workflow log and `journalctl -u nullifier-query-server`. The temporary force-snapshot drop-in is intentionally left on the host for debugging/retry. |
 | Job logs `expected=0` and `served>0` | No PIR config or legacy fallback exposed a `snapshot_height`, so the server kept serving its local snapshot. This is acceptable while `/ready` is green. | No action unless you expected a configured height. Confirm the environment `pir.json` and legacy static/dynamic config if this is surprising. |
 | Job fails with `expected=0` and `served=0` | The server is ready but has no usable local snapshot, or metrics are missing. | Check `nf_snapshot_bootstrap_outcomes_total` in the workflow log, then inspect `journalctl -u nullifier-query-server`. If this is a fresh host with no configured height, use the workflow `height` input, pre-stage `pir-data`, or publish/update `pir.json`. |
-| Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm the snapshot exists in the bucket: `curl -sfI "${SNAPSHOTS_BASE_URL}/<expected>/manifest.json"`. If 404, run `Publish nullifier snapshot` for that height before updating `pir.json`. If 200, look for a sha256 mismatch in the journal. |
-| Job fails with `tier1.bin size mismatch` (or similar) | Locally cached `pir-data/` is from a partial bootstrap or a different `nf-server` build. | SSH in: `sudo rm -rf /opt/nf-ingest/pir-data/* && sudo systemctl restart nullifier-query-server`. The next bootstrap repopulates from the bucket. |
+| Job fails with `served (X) < expected (Y)` | Replica started but the bootstrap "fell through" — check `nf_snapshot_bootstrap_outcomes_total{result="fell_through"}`. | Confirm `<SNAPSHOTS_BASE_URL>/<network>/<expected>/manifest.json` exists, then inspect the journal for a hash or network mismatch. |
+| Job fails with `tier1.bin size mismatch` (or similar) | The selected network directory contains a partial bootstrap. | Clear only `/opt/nf-ingest/pir-data/<network>/*` and restart. |
 | Sentry fires `alert:snapshot_stale` for the host you just restarted | Same as the row above — bootstrap fell through and `served < expected` for >30 minutes. | Same recovery. The watchdog emits a follow-up info event ("snapshot height converged") once the gap closes. |
 
 ## SSH fallback (CI unavailable)

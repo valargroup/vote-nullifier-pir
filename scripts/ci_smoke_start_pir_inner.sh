@@ -10,7 +10,40 @@ echo "$*" >> /tmp/systemctl.log
 exit 0
 MOCK
 chmod +x /mockbin/systemctl
+
+cat >/mockbin/curl <<'MOCK'
+#!/bin/bash
+case "$*" in
+  *'http://127.0.0.1:3000/ready'*)
+    exit 0
+    ;;
+  *'/nullifier-query-server.service'*)
+    output=""
+    previous=""
+    for arg in "$@"; do
+      if [ "$previous" = "-o" ]; then
+        output="$arg"
+        break
+      fi
+      previous="$arg"
+    done
+    [ -n "$output" ] || exit 2
+    cp /release-service "$output"
+    exit 0
+    ;;
+esac
+exec /usr/bin/curl "$@"
+MOCK
+chmod +x /mockbin/curl
 export PATH="/mockbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+missing_network_output="$(mktemp)"
+if env -u SVOTE_ZCASH_NETWORK bash /start_pir.sh >"$missing_network_output" 2>&1; then
+  echo "start_pir smoke: installer accepted a missing SVOTE_ZCASH_NETWORK" >&2
+  exit 1
+fi
+grep -Fq 'SVOTE_ZCASH_NETWORK must be set to main or test' "$missing_network_output"
+export SVOTE_ZCASH_NETWORK=test
 
 installer_output="$(mktemp)"
 if bash /start_pir.sh >"$installer_output" 2>&1; then
@@ -32,10 +65,18 @@ grep -Fq '==> Starting nullifier-query-server' "$installer_output"
 test -x /opt/nf-ingest/nf-server
 test -L /usr/local/bin/nf-server
 test "$(readlink /usr/local/bin/nf-server)" = /opt/nf-ingest/nf-server
+test -d /opt/nf-ingest/pir-data/test
 test -f /etc/systemd/system/nullifier-query-server.service
+grep -Fxq 'ExecStart=/opt/nf-ingest/nf-server serve --port 3000' /etc/systemd/system/nullifier-query-server.service
+if grep -Fq -- '--pir-data-dir' /etc/systemd/system/nullifier-query-server.service; then
+  echo "start_pir smoke: service overrides SVOTE_PIR_DATA_DIR" >&2
+  exit 1
+fi
 test -f /etc/default/nf-server
-grep -Fq SVOTE_PIR_CONFIG_URL /etc/default/nf-server
-grep -Fq SVOTE_PIR_VOTING_CONFIG_URL /etc/default/nf-server
+grep -Fxq 'SVOTE_ZCASH_NETWORK=test' /etc/default/nf-server
+grep -Fxq 'SVOTE_PIR_DATA_DIR=/opt/nf-ingest/pir-data/test' /etc/default/nf-server
+grep -Fxq 'SVOTE_PIR_CONFIG_URL=https://voting.valargroup.org/stage/pir.json' /etc/default/nf-server
+grep -Fxq 'SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/stage/static-voting-config.json' /etc/default/nf-server
 grep -Fq SVOTE_PIR_PRECOMPUTED_BASE_URL /etc/default/nf-server
 command -v curl >/dev/null
 
@@ -43,16 +84,22 @@ if [ -f /update_pir.sh ]; then
   echo 'RUST_LOG=info,nf_server=debug' >> /etc/default/nf-server
   cp /etc/default/nf-server /tmp/nf-server.defaults.before-update
 
-  cat >/mockbin/curl <<'MOCK'
-#!/bin/bash
-case "$*" in
-  *'http://127.0.0.1:3000/ready'*)
-    exit 0
-    ;;
-esac
-exec /usr/bin/curl "$@"
-MOCK
-  chmod +x /mockbin/curl
+  systemctl_lines_before="$(wc -l < /tmp/systemctl.log)"
+  conflicting_network_output="$(mktemp)"
+  if SVOTE_ZCASH_NETWORK=main bash /update_pir.sh --force >"$conflicting_network_output" 2>&1; then
+    echo "start_pir smoke: updater changed an installed network" >&2
+    exit 1
+  fi
+  grep -Fq 'Refusing to change Zcash network from test to main' "$conflicting_network_output"
+  if grep -Fq '==> Downloading release checksums' "$conflicting_network_output"; then
+    echo "start_pir smoke: updater downloaded artifacts before rejecting a network change" >&2
+    exit 1
+  fi
+  cmp -s /tmp/nf-server.defaults.before-update /etc/default/nf-server
+  test ! -d /opt/nf-ingest/pir-data/main
+  test "$(wc -l < /tmp/systemctl.log)" -eq "$systemctl_lines_before"
+
+  unset SVOTE_ZCASH_NETWORK
 
   updater_output="$(mktemp)"
   if bash /update_pir.sh --force >"$updater_output" 2>&1; then
@@ -76,7 +123,15 @@ MOCK
   test -x /opt/nf-ingest/nf-server
   test -L /usr/local/bin/nf-server
   test "$(readlink /usr/local/bin/nf-server)" = /opt/nf-ingest/nf-server
+  test -d /opt/nf-ingest/pir-data/test
   test -f /etc/systemd/system/nullifier-query-server.service
+  grep -Fxq 'ExecStart=/opt/nf-ingest/nf-server serve --port 3000' /etc/systemd/system/nullifier-query-server.service
+  if grep -Fq -- '--pir-data-dir' /etc/systemd/system/nullifier-query-server.service; then
+    echo "start_pir smoke: refreshed service overrides SVOTE_PIR_DATA_DIR" >&2
+    exit 1
+  fi
+  grep -Fxq 'SVOTE_ZCASH_NETWORK=test' /etc/default/nf-server
+  grep -Fxq 'SVOTE_PIR_DATA_DIR=/opt/nf-ingest/pir-data/test' /etc/default/nf-server
   grep -Fxq 'daemon-reload' /tmp/systemctl.log
   grep -Fxq 'restart nullifier-query-server.service' /tmp/systemctl.log
 fi

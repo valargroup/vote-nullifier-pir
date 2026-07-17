@@ -4,8 +4,8 @@
 #   nf-server-linux-amd64, nf-server-linux-arm64,
 #   nf-server-darwin-amd64, nf-server-darwin-arm64,
 #   nullifier-query-server.service, SHA256SUMS
-# DO Spaces: start_pir.sh (latest + scripts/start_pir/<snapshot_height>/),
-#   update_pir.sh (latest + scripts/update_pir/<tag>/), and SHA256SUMS-<tag>
+# DO Spaces: tag-scoped start/update scripts and SHA256SUMS-<tag>.
+# Stable tags also update the latest and snapshot-height installer aliases.
 #   (same contents as GitHub Releases SHA256SUMS)
 #
 # The zally (Shielded-Vote) release workflow fetches these binaries via
@@ -129,6 +129,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
           files: |
             nf-server-linux-amd64
             nf-server-linux-arm64
@@ -149,6 +151,7 @@ jobs:
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
       DO_PRECOMPUTED_BASE_URL: ${{ vars.DO_PRECOMPUTED_BASE_URL }}
+      IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -238,30 +241,38 @@ jobs:
               "s3://${DO_BUCKET}/binaries/vote-pir/SHA256SUMS-${VERSION}"
           fi
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-            "s3://${DO_BUCKET}/start_pir.sh"
-          s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
-            "s3://${DO_BUCKET}/update_pir.sh"
+            "s3://${DO_BUCKET}/scripts/start_pir/${VERSION}/start_pir.sh"
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
             "s3://${DO_BUCKET}/scripts/update_pir/${VERSION}/update_pir.sh"
-          PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
-          HEIGHT=""
-          if CONFIG="$(curl -fsSL "$PIR_CONFIG_URL")"; then
-            HEIGHT="$(jq -r '.snapshot_height // empty' <<<"$CONFIG" 2>/dev/null || true)"
-          fi
 
-          if [ -n "$HEIGHT" ]; then
-            case "$HEIGHT" in
-              *[!0-9]*)
-                echo "PIR config snapshot_height must be numeric when present, got: ${HEIGHT}" >&2
-                exit 1
-                ;;
-              *)
-                s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-                  "s3://${DO_BUCKET}/scripts/start_pir/${HEIGHT}/start_pir.sh"
-                ;;
-            esac
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "Prerelease ${VERSION}: leaving latest installer aliases unchanged."
           else
-            echo "No PIR config snapshot_height found; skipping per-height start_pir.sh upload."
+            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
+              "s3://${DO_BUCKET}/start_pir.sh"
+            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
+              "s3://${DO_BUCKET}/update_pir.sh"
+
+            PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
+            HEIGHT=""
+            if CONFIG="$(curl -fsSL "$PIR_CONFIG_URL")"; then
+              HEIGHT="$(jq -r '.snapshot_height // empty' <<<"$CONFIG" 2>/dev/null || true)"
+            fi
+
+            if [ -n "$HEIGHT" ]; then
+              case "$HEIGHT" in
+                *[!0-9]*)
+                  echo "PIR config snapshot_height must be numeric when present, got: ${HEIGHT}" >&2
+                  exit 1
+                  ;;
+                *)
+                  s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
+                    "s3://${DO_BUCKET}/scripts/start_pir/${HEIGHT}/start_pir.sh"
+                  ;;
+              esac
+            else
+              echo "No PIR config snapshot_height found; skipping per-height start_pir.sh upload."
+            fi
           fi
 
   notify-slack:

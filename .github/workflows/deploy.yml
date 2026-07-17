@@ -61,6 +61,7 @@ permissions:
 
 env:
   DEPLOY_PATH: /opt/nf-ingest
+  SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
 
 jobs:
   validate_height:
@@ -102,14 +103,14 @@ jobs:
             exit 1
           fi
 
-          MANIFEST_URL="$SNAPSHOTS_BASE_URL/$HEIGHT/manifest.json"
+          MANIFEST_URL="$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/manifest.json"
           echo "==> Fetching $MANIFEST_URL"
           curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
 
           if ! jq -e \
             '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
             manifest.json >/dev/null; then
-            echo "manifest is not Ironwood dataset version 1 with schema version 2" >&2
+            echo "manifest has the wrong schema or dataset identity" >&2
             exit 1
           fi
 
@@ -124,11 +125,17 @@ jobs:
               echo "manifest is missing required file entry: $f" >&2
               exit 1
             fi
-            curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$HEIGHT/$f" >/dev/null
+            curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/$f" >/dev/null
           done
 
+          curl -fsSL --retry 3 "$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/pir_root.json" -o pir_root.json
+          if ! jq -e --arg network "$SVOTE_ZCASH_NETWORK" '.zcash_network == $network' pir_root.json >/dev/null; then
+            echo "pir_root.json is not for Zcash network $SVOTE_ZCASH_NETWORK" >&2
+            exit 1
+          fi
+
           echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
-          echo "Snapshot $HEIGHT is published and has all required tier files."
+          echo "$SVOTE_ZCASH_NETWORK snapshot $HEIGHT is published and has all required tier files."
 
   deploy_backup:
     name: Deploy ${{ inputs.release_tag }} to backup
@@ -167,7 +174,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -198,21 +205,25 @@ jobs:
                 exit 1
                 ;;
             esac
+            PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
             PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
             VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
             PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
+              echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
               echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
             } >> "$tmp"
             sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
             rm -f "$tmp"
+            sudo install -d -m 0755 "$PIR_DATA_DIR"
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
                 echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
@@ -252,7 +263,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: FORCED_HEIGHT
+          envs: FORCED_HEIGHT,SVOTE_ZCASH_NETWORK
           # Cold-start budget: snapshot self-bootstrap (Phase 3, up to
           # ~30s for a same-region 6 GB CDN download from a DO Spaces
           # bucket) + load_serving_state which mmaps + parses ~6 GB of
@@ -281,8 +292,9 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
-              echo "FAIL: backup is not serving Ironwood dataset version 1."
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
+              echo "FAIL: backup is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 1."
               exit 1
             fi
 
@@ -300,7 +312,7 @@ jobs:
               printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
               if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
                 echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
-                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                echo "Hint: ensure snapshots/${SVOTE_ZCASH_NETWORK}/${FORCED_HEIGHT}/ is published and inspect bootstrap outcomes above."
                 exit 1
               fi
               echo "OK: backup is serving forced snapshot height $SERVED"
@@ -352,7 +364,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -383,21 +395,25 @@ jobs:
                 exit 1
                 ;;
             esac
+            PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
             PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
             VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
             PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
+              echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
               echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
             } >> "$tmp"
             sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
             rm -f "$tmp"
+            sudo install -d -m 0755 "$PIR_DATA_DIR"
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
                 echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
@@ -437,7 +453,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: FORCED_HEIGHT
+          envs: FORCED_HEIGHT,SVOTE_ZCASH_NETWORK
           command_timeout: 11m
           script: |
             set -eu
@@ -460,8 +476,9 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
-              echo "FAIL: primary is not serving Ironwood dataset version 1."
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
+              echo "FAIL: primary is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 1."
               exit 1
             fi
 
@@ -479,7 +496,7 @@ jobs:
               printf '%s\n' "$METRICS" | awk '$1 ~ /^nf_snapshot_bootstrap_outcomes_total/ {print "  " $0}' || true
               if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
                 echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
-                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                echo "Hint: ensure snapshots/${SVOTE_ZCASH_NETWORK}/${FORCED_HEIGHT}/ is published and inspect bootstrap outcomes above."
                 exit 1
               fi
               echo "OK: primary is serving forced snapshot height $SERVED"

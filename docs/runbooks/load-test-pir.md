@@ -22,14 +22,14 @@ traffic is indistinguishable from a real wallet client.
 - **`nullifiers.bin`** — the raw nullifier file for the deployed
   snapshot. Available locally in the repo root after `make bootstrap`,
   or from the published bucket at
-  `<SNAPSHOTS_BASE_URL>/<snapshot_height>/nullifiers.bin` (for example
-  `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots/<snapshot_height>/nullifiers.bin`)
+  `<SNAPSHOTS_BASE_URL>/<network>/<snapshot_height>/nullifiers.bin` (for example
+  `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots/test/<snapshot_height>/nullifiers.bin`)
   where `<snapshot_height>` matches the environment's
   [`pir.json`](https://voting.valargroup.org/prod/pir.json).
   That object exists only after **Publish nullifier snapshot** was run
   for that height with **`include_nullifier_artifacts`** enabled; verify
-  size and SHA-256 against `snapshots/<height>/manifest.json`. The manifest and
-  bundled `nullifiers.dataset.json` must identify Ironwood dataset version 1.
+  size and SHA-256 against `snapshots/<network>/<height>/manifest.json`. The bundled
+  `nullifiers.dataset.json` must identify the same network and Ironwood dataset version 1.
 - **A reachable PIR server** — either `localhost:3000` or a production
   host behind the Caddy TLS reverse proxy.
 
@@ -97,7 +97,7 @@ workflow is a `workflow_dispatch` job with these inputs:
 | `duration` | `60s` | Passed to `--duration`. |
 
 The workflow builds `pir-test` in release mode, uses the `snapshot_height`
-input to download `snapshots/<height>/manifest.json` plus `nullifiers.bin`,
+input to download `snapshots/<network>/<height>/manifest.json` plus `nullifiers.bin`,
 checks size and SHA-256 against the manifest, then runs the load test and
 uploads `summary.json` as a build artifact. The snapshot must have been
 published with **`include_nullifier_artifacts`** so `nullifiers.bin` appears in

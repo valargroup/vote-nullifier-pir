@@ -61,7 +61,7 @@ The system operates as a resumable pipeline:
 nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ──> client query
 ```
 
-1. **`nf-server sync`** — Streams Ironwood nullifiers into `nullifiers.bin` (with dataset marker, checkpoint, and index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default all under `--pir-data-dir`). Reruns skip completed stages.
+1. **`nf-server sync`** — Streams Ironwood nullifiers into `nullifiers.bin` (with dataset marker, checkpoint, and index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `--pir-data-dir`. The dataset marker and root metadata identify the Zcash network. Reruns skip completed stages.
 2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
 
 ## Build & Run
@@ -74,8 +74,8 @@ cargo build --release
 
 # Or use the Makefile for the standard pipeline:
 make build          # Build nf-server binary
-make sync           # Ingest + tree + tiers (resumable)
-make serve          # Start PIR HTTP server on port 3000
+SVOTE_ZCASH_NETWORK=test LWD_URLS="$TESTNET_LWD_URLS" PIR_DATA_DIR=pir-data/test make sync
+SVOTE_ZCASH_NETWORK=test PIR_DATA_DIR=pir-data/test make serve
 nf-server dataset-info  # Print the supported pool and dataset version
 
 # Run tests
@@ -89,9 +89,10 @@ Override via environment variables or Make arguments:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SVOTE_ZCASH_NETWORK` | required | Zcash network: `main` or `test` |
 | `PIR_DATA_DIR` | `pir-data` | On-disk root: `nullifiers.bin`, dataset marker, checkpoint, index, `nullifiers.tree`, and tier files (`SVOTE_PIR_DATA_DIR` for `nf-server`) |
 | `LWD_URL` | `https://us.zec.stardust.rest:443` | Lightwalletd gRPC endpoint |
-| `LWD_URLS` | unset | Comma-separated post-NU6.3 lightwalletd endpoints. Overrides `LWD_URL` when set. |
+| `LWD_URLS` | unset | Comma-separated lightwalletd endpoints for `SVOTE_ZCASH_NETWORK`. Overrides `LWD_URL` when set. |
 | `PORT` | `3000` | HTTP server port |
 | `SYNC_HEIGHT` | chain tip | Sync up to this block height (must be a multiple of 10) |
 | `SVOTE_PIR_SYNC_RESET` | unset | Set to `1` to wipe the dataset, tree, and tiers before `sync` |
@@ -103,16 +104,16 @@ See [docs/runbooks/server-setup.md](docs/runbooks/server-setup.md) for productio
 
 ## Storage Format
 
-All data is stored as flat binary files under one directory (by default `./pir-data`, overridable via `PIR_DATA_DIR` / `SVOTE_PIR_DATA_DIR`):
+All data is stored as flat binary files under one network-specific directory (overridable via `PIR_DATA_DIR` / `SVOTE_PIR_DATA_DIR`):
 
 - `nullifiers.bin` — Append-only raw 32-byte Ironwood nullifier blobs
-- `nullifiers.dataset.json` — Dataset identity (`nullifier_pool: "ironwood"`, `dataset_version: 1`)
+- `nullifiers.dataset.json` — Dataset identity (`zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 1`)
 - `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
 - `nullifiers.index` — Height-to-offset index for subset loading
 - `nullifiers.tree` — Versioned PIR Merkle checkpoint (see `pir-export`)
 - `tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json` — PIR tier payload and root metadata, including the dataset identity
 
-Legacy Orchard artifacts are not reusable. Run the first Ironwood sync with `SVOTE_PIR_SYNC_RESET=1`.
+Unlabeled and Orchard artifacts are not reusable. Keep mainnet and testnet data in separate directories and rebuild each dataset with `SVOTE_PIR_SYNC_RESET=1`.
 
 ## PIR Write Ups
 

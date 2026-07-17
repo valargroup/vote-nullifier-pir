@@ -1014,6 +1014,7 @@ mod tests {
                 &tree.empty_hashes,
             );
             let root_info = pir_types::RootInfo {
+                zcash_network: pir_types::ZcashNetwork::Test,
                 nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
                 dataset_version: pir_types::DATASET_VERSION,
                 root29: hex::encode(tree.root29.to_repr()),

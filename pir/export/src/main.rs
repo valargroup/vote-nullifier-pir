@@ -42,7 +42,7 @@ fn main() -> Result<()> {
         .nullifiers
         .parent()
         .context("nullifiers path has no parent directory")?;
-    file_store::ensure_ironwood_dataset(nullifier_dir)?;
+    let network = file_store::dataset_network(nullifier_dir)?;
 
     eprintln!("Loading nullifiers from {:?}...", args.nullifiers);
     let t0 = Instant::now();
@@ -68,7 +68,7 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    pir_export::build_and_export(nfs, &args.output_dir, height)?;
+    pir_export::build_and_export(nfs, &args.output_dir, network, height)?;
 
     eprintln!("\nDone! Total time: {:.1}s", t_total.elapsed().as_secs_f64());
     Ok(())

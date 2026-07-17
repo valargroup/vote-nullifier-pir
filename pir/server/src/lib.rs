@@ -609,12 +609,21 @@ pub const TIER2_PRECOMPUTE_FILE: &str = "tier2.precompute";
 /// `pir_data_dir`, plus the precompute caches `tier{1,2}.precompute` if
 /// present and valid. Cache miss falls back to recompute and writes a
 /// fresh cache for next boot.
-pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState> {
+pub fn load_serving_state(
+    pir_data_dir: &std::path::Path,
+    expected_network: pir_types::ZcashNetwork,
+) -> Result<ServingState> {
     let t_total = Instant::now();
 
     let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
         pir_data_dir.join("pir_root.json"),
     )?)?;
+    anyhow::ensure!(
+        metadata.zcash_network == expected_network,
+        "PIR dataset Zcash network is {}; expected {}",
+        metadata.zcash_network,
+        expected_network
+    );
     anyhow::ensure!(
         pir_types::is_current_dataset(&metadata.nullifier_pool, metadata.dataset_version),
         "unsupported nullifier dataset {:?} version {}; expected {:?} version {}",
@@ -698,6 +707,7 @@ mod tests {
     fn rejects_wrong_dataset_before_loading_tiers() {
         let dir = tempfile::tempdir().unwrap();
         let metadata = PirMetadata {
+            zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: "orchard".to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
             root25: "00".to_owned(),
@@ -717,11 +727,43 @@ mod tests {
         )
         .unwrap();
 
-        let err = match load_serving_state(dir.path()) {
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
             Ok(_) => panic!("wrong dataset must be rejected"),
             Err(err) => err.to_string(),
         };
         assert!(err.contains("orchard"), "{err}");
+        assert!(!err.contains("tier0.bin"), "{err}");
+    }
+
+    #[test]
+    fn rejects_wrong_network_before_loading_tiers() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = PirMetadata {
+            zcash_network: pir_types::ZcashNetwork::Test,
+            nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
+            dataset_version: pir_types::DATASET_VERSION,
+            root25: "00".to_owned(),
+            root29: "00".to_owned(),
+            num_ranges: 0,
+            pir_depth: 25,
+            tier0_bytes: 0,
+            tier1_rows: 0,
+            tier1_row_bytes: 0,
+            tier2_rows: 0,
+            tier2_row_bytes: 0,
+            height: Some(1),
+        };
+        std::fs::write(
+            dir.path().join("pir_root.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
+            Ok(_) => panic!("wrong network must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("network is test; expected main"), "{err}");
         assert!(!err.contains("tier0.bin"), "{err}");
     }
 }

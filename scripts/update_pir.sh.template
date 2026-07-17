@@ -123,6 +123,53 @@ if [ ! -f "$DEFAULTS_PATH" ]; then
   exit 1
 fi
 
+read_default() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); value=$0 } END { print value }' "$DEFAULTS_PATH"
+}
+
+INSTALLED_ZCASH_NETWORK="$(read_default SVOTE_ZCASH_NETWORK)"
+REQUESTED_ZCASH_NETWORK="${SVOTE_ZCASH_NETWORK:-}"
+
+case "$INSTALLED_ZCASH_NETWORK" in
+  main|test)
+    if [ -n "$REQUESTED_ZCASH_NETWORK" ] \
+      && [ "$REQUESTED_ZCASH_NETWORK" != "$INSTALLED_ZCASH_NETWORK" ]; then
+      echo "Refusing to change Zcash network from ${INSTALLED_ZCASH_NETWORK} to ${REQUESTED_ZCASH_NETWORK}; reinstall to switch networks." >&2
+      exit 1
+    fi
+    ZCASH_NETWORK="$INSTALLED_ZCASH_NETWORK"
+    ;;
+  '')
+    ZCASH_NETWORK="$REQUESTED_ZCASH_NETWORK"
+    ;;
+  *)
+    echo "Invalid SVOTE_ZCASH_NETWORK in ${DEFAULTS_PATH}: ${INSTALLED_ZCASH_NETWORK}" >&2
+    exit 1
+    ;;
+esac
+
+case "$ZCASH_NETWORK" in
+  main|test) ;;
+  *)
+    echo "SVOTE_ZCASH_NETWORK must be set to main or test when it is absent from ${DEFAULTS_PATH}." >&2
+    exit 1
+    ;;
+esac
+PIR_DATA_DIR="${INSTALL_DIR}/pir-data/${ZCASH_NETWORK}"
+
+if [ "$REFRESH_UNIT" = false ]; then
+  if [ ! -f "$SERVICE_PATH" ]; then
+    echo "${SERVICE_PATH} was not found; remove --no-unit so the release unit is installed." >&2
+    exit 1
+  fi
+  if grep -q -- '--pir-data-dir' "$SERVICE_PATH" \
+    && ! grep -Fq -- "--pir-data-dir ${PIR_DATA_DIR}" "$SERVICE_PATH"; then
+    echo "${SERVICE_PATH} overrides the network data directory; remove --no-unit to refresh it." >&2
+    exit 1
+  fi
+fi
+
 ensure_curl_and_ca_certificates() {
   local need=false
 
@@ -214,11 +261,30 @@ if [ -z "$EXPECTED" ]; then
   exit 1
 fi
 
+if [ "$REFRESH_UNIT" = true ]; then
+  log "Downloading systemd service"
+  curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_TMP" \
+    "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${SERVICE_NAME}"
+fi
+
 if [ -x "${INSTALL_DIR}/${BINARY_NAME}" ] && [ "$FORCE" = false ]; then
   CURRENT="$(sha256sum "${INSTALL_DIR}/${BINARY_NAME}" | awk '{ print $1 }')"
   if [ "$CURRENT" = "$EXPECTED" ]; then
-    log "nf-server ${RELEASE_TAG} for ${PLATFORM} is already installed; no restart needed"
-    exit 0
+    CONFIG_CURRENT=false
+    if grep -Fxq "SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}" "$DEFAULTS_PATH" \
+      && grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH" \
+      && [ -d "$PIR_DATA_DIR" ]; then
+      CONFIG_CURRENT=true
+    fi
+    UNIT_CURRENT=true
+    if [ "$REFRESH_UNIT" = true ] && ! cmp -s "$SERVICE_TMP" "$SERVICE_PATH"; then
+      UNIT_CURRENT=false
+    fi
+    if [ "$CONFIG_CURRENT" = true ] && [ "$UNIT_CURRENT" = true ]; then
+      log "nf-server ${RELEASE_TAG} for ${PLATFORM} is already installed; no restart needed"
+      exit 0
+    fi
+    log "nf-server binary is current; refreshing runtime configuration"
   fi
 fi
 
@@ -237,20 +303,26 @@ if [ "$EXPECTED" != "$ACTUAL" ]; then
   exit 1
 fi
 
-if [ "$REFRESH_UNIT" = true ]; then
-  log "Downloading systemd service"
-  curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_TMP" \
-    "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${SERVICE_NAME}"
-fi
-
 log "Installing nf-server under ${INSTALL_DIR}"
-install -d -m 0755 "${INSTALL_DIR}/pir-data"
+install -d -m 0755 "$PIR_DATA_DIR"
 install -m 0755 "$BINARY_PATH" "${INSTALL_DIR}/${BINARY_NAME}.new"
 mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
 ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "$SYMLINK_PATH"
 
 if [ "$REFRESH_UNIT" = true ]; then
   install -m 0644 "$SERVICE_TMP" "$SERVICE_PATH"
+fi
+
+if ! grep -Fxq "SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}" "$DEFAULTS_PATH" \
+  || ! grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH"; then
+  DEFAULTS_TMP="${tmp}/nf-server.defaults"
+  awk '$0 !~ /^SVOTE_ZCASH_NETWORK=/ && $0 !~ /^SVOTE_PIR_DATA_DIR=/' \
+    "$DEFAULTS_PATH" > "$DEFAULTS_TMP"
+  {
+    printf 'SVOTE_ZCASH_NETWORK=%s\n' "$ZCASH_NETWORK"
+    printf 'SVOTE_PIR_DATA_DIR=%s\n' "$PIR_DATA_DIR"
+  } >> "$DEFAULTS_TMP"
+  install -m 0644 "$DEFAULTS_TMP" "$DEFAULTS_PATH"
 fi
 
 log "Restarting ${SERVICE_NAME}"
@@ -287,6 +359,8 @@ echo "Environment data:"
 echo "  Version:           ${RELEASE_TAG}"
 echo "  Platform:          ${PLATFORM}"
 echo "  Install directory: ${INSTALL_DIR}"
+echo "  Zcash network:     ${ZCASH_NETWORK}"
+echo "  PIR data directory: ${PIR_DATA_DIR}"
 echo "  Service:           nullifier-query-server (systemd)"
 echo
 echo "How to monitor:"

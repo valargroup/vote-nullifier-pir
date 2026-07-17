@@ -43,6 +43,8 @@ jobs:
           # (the only build configuration in which the bootstrap and
           # /metrics modules are compiled in).
           cargo test -p nf-server --features serve
+          cargo run --quiet -p nf-server --features serve -- serve --help \
+            | grep -Fq -- '--zcash-network'
 
   notify-slack:
     name: Slack Notification

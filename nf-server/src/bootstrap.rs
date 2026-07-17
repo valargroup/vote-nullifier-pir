@@ -19,11 +19,11 @@
 //! ## URL layout (matches `.github/workflows/publish-snapshot.yml`)
 //!
 //! ```text
-//! <precomputed_base_url>/snapshots/<height>/manifest.json
-//! <precomputed_base_url>/snapshots/<height>/tier0.bin
-//! <precomputed_base_url>/snapshots/<height>/tier1.bin
-//! <precomputed_base_url>/snapshots/<height>/tier2.bin
-//! <precomputed_base_url>/snapshots/<height>/pir_root.json
+//! <precomputed_base_url>/snapshots/<network>/<height>/manifest.json
+//! <precomputed_base_url>/snapshots/<network>/<height>/tier0.bin
+//! <precomputed_base_url>/snapshots/<network>/<height>/tier1.bin
+//! <precomputed_base_url>/snapshots/<network>/<height>/tier2.bin
+//! <precomputed_base_url>/snapshots/<network>/<height>/pir_root.json
 //! ```
 //!
 //! `manifest.json` may list additional objects (for example
@@ -85,6 +85,7 @@ const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_ro
 /// Dataset identity and height read from `pir_root.json` during bootstrap.
 #[derive(Debug, Deserialize)]
 struct PirRootHeader {
+    zcash_network: pir_types::ZcashNetwork,
     nullifier_pool: String,
     dataset_version: u32,
     #[serde(default)]
@@ -117,6 +118,8 @@ struct PublishedManifest {
 /// composes paths without doubled slashes.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Zcash network this server is allowed to serve.
+    pub zcash_network: pir_types::ZcashNetwork,
     /// Where to fetch the environment-scoped PIR config from. `None` means
     /// derive from the legacy `voting_config_url`; `Some("")` disables bootstrap.
     pub pir_config_url: Option<String>,
@@ -150,14 +153,8 @@ impl Config {
         "https://shielded-vote.nyc3.digitaloceanspaces.com";
 }
 
-fn validate_force_snapshot_height(height: u64) -> Result<()> {
-    if height == 0 {
-        bail!("force snapshot height must be greater than zero");
-    }
-    if height % 10 != 0 {
-        bail!("force snapshot height must be a multiple of 10, got {height}");
-    }
-    Ok(())
+fn validate_force_snapshot_height(height: u64, network: pir_types::ZcashNetwork) -> Result<()> {
+    nf_ingest::config::validate_export_height(height, network)
 }
 
 /// Outcome of [`run`], used for logging/metrics.
@@ -189,13 +186,13 @@ pub async fn run(cfg: &Config) -> Result<Outcome> {
     let started = Instant::now();
     metrics::bootstrap_attempts_inc();
 
-    let local_height = read_local_height(&cfg.pir_data_dir);
+    let local_height = read_local_height(&cfg.pir_data_dir, cfg.zcash_network);
     if let Some(h) = local_height {
         metrics::served_height_set(h);
     }
 
     if let Some(h) = cfg.force_snapshot_height {
-        validate_force_snapshot_height(h)?;
+        validate_force_snapshot_height(h, cfg.zcash_network)?;
         metrics::expected_height_set(h);
         info!(
             local = ?local_height,
@@ -247,7 +244,13 @@ async fn resolve_expected_height(cfg: &Config, source: pir_config::Source) -> Re
             resolve_legacy_voting_height(cfg).await
         }
         pir_config::Source::Url { url, strict } => {
-            match pir_config::fetch_required_snapshot_height(&url, cfg.http_timeout).await {
+            match pir_config::fetch_required_snapshot_height(
+                &url,
+                cfg.zcash_network,
+                cfg.http_timeout,
+            )
+            .await
+            {
                 Ok(h) => {
                     info!(height = h, url = %url, "PIR config snapshot_height resolved");
                     metrics::expected_height_set(h);
@@ -280,6 +283,7 @@ async fn resolve_legacy_voting_height(cfg: &Config) -> Result<Option<u64>> {
     .await
     {
         Ok(Some(h)) => {
+            nf_ingest::config::validate_export_height(h, cfg.zcash_network)?;
             info!(height = h, "active round snapshot_height resolved");
             metrics::expected_height_set(h);
             Ok(Some(h))
@@ -372,21 +376,37 @@ async fn bootstrap_to_height(
 ///
 /// Returns `None` if the file is missing, unreadable, malformed, or
 /// has no height field. Any of those means "you need to bootstrap".
-fn read_local_height(pir_data_dir: &Path) -> Option<u64> {
+fn read_local_height(
+    pir_data_dir: &Path,
+    expected_network: pir_types::ZcashNetwork,
+) -> Option<u64> {
     let path = pir_data_dir.join("pir_root.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let meta: PirRootHeader = serde_json::from_str(&raw).ok()?;
-    if pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version) {
+    if meta.zcash_network == expected_network
+        && pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
+    {
         meta.height
     } else {
         None
     }
 }
 
-fn validate_pir_root(path: &Path, expected_height: u64) -> Result<()> {
+fn validate_pir_root(
+    path: &Path,
+    expected_network: pir_types::ZcashNetwork,
+    expected_height: u64,
+) -> Result<()> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let root: PirRootHeader =
         serde_json::from_str(&raw).with_context(|| format!("decode {}", path.display()))?;
+    anyhow::ensure!(
+        root.zcash_network == expected_network,
+        "{} identifies Zcash network {}; expected {}",
+        path.display(),
+        root.zcash_network,
+        expected_network
+    );
     anyhow::ensure!(
         pir_types::is_current_dataset(&root.nullifier_pool, root.dataset_version),
         "{} identifies pool {:?} dataset version {}; expected {:?} version {}",
@@ -415,8 +435,8 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         .context("build reqwest client")?;
 
     let snapshot_dir = format!(
-        "{}{}/{}",
-        cfg.precomputed_base_url, PIR_SNAPSHOTS_PATH, height
+        "{}{}/{}/{}",
+        cfg.precomputed_base_url, PIR_SNAPSHOTS_PATH, cfg.zcash_network, height
     );
     let manifest_url = format!("{snapshot_dir}/manifest.json");
 
@@ -476,7 +496,7 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         total_bytes = total_bytes.saturating_add(written);
     }
 
-    validate_pir_root(&staging.join("pir_root.json"), height)?;
+    validate_pir_root(&staging.join("pir_root.json"), cfg.zcash_network, height)?;
 
     install_from_staging(&staging, &cfg.pir_data_dir)?;
 
@@ -612,9 +632,13 @@ mod tests {
 
     use tempfile::TempDir;
 
+    const TEST_NETWORK: pir_types::ZcashNetwork = pir_types::ZcashNetwork::Test;
+    const TEST_HEIGHT: u64 = nf_ingest::config::NU6_3_TESTNET_ACTIVATION_HEIGHT;
+
     fn write_pir_root(dir: &Path, height: Option<u64>) {
         // Mirrors the on-disk shape written by `pir-export`.
         let mut m = serde_json::json!({
+            "zcash_network": TEST_NETWORK,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
             "root25": "00",
@@ -645,35 +669,38 @@ mod tests {
         );
         assert!(
             !Config::DEFAULT_PRECOMPUTED_BASE_URL.contains("/snapshots"),
-            "precomputed base is the bucket origin; bootstrap appends /snapshots/<height>"
+            "precomputed base is the bucket origin; bootstrap appends /snapshots/<network>/<height>"
         );
     }
 
     #[test]
     fn read_local_height_returns_none_for_missing_file() {
         let tmp = TempDir::new().unwrap();
-        assert_eq!(read_local_height(tmp.path()), None);
+        assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
     }
 
     #[test]
     fn read_local_height_returns_none_for_malformed_file() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("pir_root.json"), b"not json").unwrap();
-        assert_eq!(read_local_height(tmp.path()), None);
+        assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
     }
 
     #[test]
     fn read_local_height_extracts_height() {
         let tmp = TempDir::new().unwrap();
-        write_pir_root(tmp.path(), Some(42));
-        assert_eq!(read_local_height(tmp.path()), Some(42));
+        write_pir_root(tmp.path(), Some(TEST_HEIGHT));
+        assert_eq!(
+            read_local_height(tmp.path(), TEST_NETWORK),
+            Some(TEST_HEIGHT)
+        );
     }
 
     #[test]
     fn read_local_height_returns_none_when_height_field_absent() {
         let tmp = TempDir::new().unwrap();
         write_pir_root(tmp.path(), None);
-        assert_eq!(read_local_height(tmp.path()), None);
+        assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
     }
 
     #[test]
@@ -681,10 +708,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("pir_root.json"),
-            r#"{"height":42,"root25":"00"}"#,
+            format!(r#"{{"height":{TEST_HEIGHT},"root25":"00"}}"#),
         )
         .unwrap();
-        assert_eq!(read_local_height(tmp.path()), None);
+        assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
     }
 
     #[test]
@@ -692,10 +719,27 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("pir_root.json"),
-            r#"{"nullifier_pool":"orchard","dataset_version":1,"height":42}"#,
+            serde_json::to_vec(&serde_json::json!({
+                "zcash_network": TEST_NETWORK,
+                "nullifier_pool": "orchard",
+                "dataset_version": pir_types::DATASET_VERSION,
+                "height": TEST_HEIGHT,
+            }))
+            .unwrap(),
         )
         .unwrap();
-        assert_eq!(read_local_height(tmp.path()), None);
+        assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
+    }
+
+    #[test]
+    fn read_local_height_rejects_wrong_network() {
+        let tmp = TempDir::new().unwrap();
+        write_pir_root(tmp.path(), Some(TEST_HEIGHT));
+
+        assert_eq!(
+            read_local_height(tmp.path(), pir_types::ZcashNetwork::Main),
+            None
+        );
     }
 
     #[test]
@@ -719,6 +763,7 @@ mod tests {
     async fn run_disabled_when_voting_config_url_empty() {
         let tmp = TempDir::new().unwrap();
         let cfg = Config {
+            zcash_network: TEST_NETWORK,
             pir_config_url: None,
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
@@ -733,28 +778,30 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn run_force_height_takes_precedence_over_empty_voting_config() {
         let tmp = TempDir::new().unwrap();
-        write_pir_root(tmp.path(), Some(100));
+        write_pir_root(tmp.path(), Some(TEST_HEIGHT));
         let cfg = Config {
+            zcash_network: TEST_NETWORK,
             pir_config_url: None,
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
-            force_snapshot_height: Some(100),
+            force_snapshot_height: Some(TEST_HEIGHT),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
         };
         let outcome = run(&cfg).await.unwrap();
-        assert_eq!(outcome, Outcome::AlreadyAtHeight(100));
+        assert_eq!(outcome, Outcome::AlreadyAtHeight(TEST_HEIGHT));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_force_height_requires_precomputed_base_when_local_differs() {
         let tmp = TempDir::new().unwrap();
-        write_pir_root(tmp.path(), Some(90));
+        write_pir_root(tmp.path(), Some(TEST_HEIGHT - 10));
         let cfg = Config {
+            zcash_network: TEST_NETWORK,
             pir_config_url: None,
             voting_config_url: String::new(),
             precomputed_base_url: String::new(),
-            force_snapshot_height: Some(100),
+            force_snapshot_height: Some(TEST_HEIGHT),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
         };
@@ -772,10 +819,11 @@ mod tests {
     async fn run_force_height_rejects_invalid_height() {
         let tmp = TempDir::new().unwrap();
         let cfg = Config {
+            zcash_network: TEST_NETWORK,
             pir_config_url: None,
             voting_config_url: String::new(),
             precomputed_base_url: "ignored".into(),
-            force_snapshot_height: Some(101),
+            force_snapshot_height: Some(TEST_HEIGHT + 1),
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(1),
         };
@@ -805,6 +853,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let cfg = Config {
+            zcash_network: TEST_NETWORK,
             pir_config_url: None,
             voting_config_url: format!("http://127.0.0.1:{}/cfg.json", addr.port()),
             precomputed_base_url: String::new(),
@@ -821,6 +870,7 @@ mod tests {
     async fn run_errors_when_voting_config_connection_refused() {
         let tmp = TempDir::new().unwrap();
         let cfg = Config {
+            zcash_network: TEST_NETWORK,
             pir_config_url: None,
             voting_config_url: "http://127.0.0.1:1/voting-config.json".into(),
             precomputed_base_url: String::new(),
@@ -837,7 +887,7 @@ mod tests {
             "schema_version": 2,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "height": 100,
+            "height": TEST_HEIGHT,
             "created_at": "2026-01-01T00:00:00Z",
             "nf_server_sha256": "deadbeef",
             "publisher": { "git_ref": "main", "git_sha": "abc" },
@@ -850,7 +900,8 @@ mod tests {
         });
         let m: PublishedManifest = serde_json::from_value(raw).unwrap();
         assert_eq!(m.schema_version, 2);
-        assert_eq!(m.height, 100);
+        assert_eq!(m.dataset_version, pir_types::DATASET_VERSION);
+        assert_eq!(m.height, TEST_HEIGHT);
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
         assert_eq!(
@@ -865,7 +916,7 @@ mod tests {
             "schema_version": 2,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "height": 100,
+            "height": TEST_HEIGHT,
             "created_at": "2026-01-01T00:00:00Z",
             "nf_server_sha256": "deadbeef",
             "publisher": { "git_ref": "main", "git_sha": "abc" },

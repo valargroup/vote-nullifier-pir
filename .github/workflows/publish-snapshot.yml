@@ -1,7 +1,6 @@
 # Build a PIR snapshot at a given block height and publish it to DO Spaces
-# under s3://${DO_BUCKET}/snapshots/<height>/ for download by nf-server replicas
-# and the admin UI. Runs on the canonical snapshot publisher host so
-# fleet-specific staging/production targeting cannot change the output path.
+# under s3://${DO_BUCKET}/snapshots/<network>/<height>/ for download by replicas
+# and the admin UI. Runs on the canonical snapshot publisher host.
 #
 # Syncs the canonical publisher data, writes tier blobs under /tmp, and never
 # restarts the service. The reset input is only for one-time dataset migrations.
@@ -9,8 +8,8 @@
 # Requires repository or environment secrets:
 #   PIR_SNAPSHOT_PUBLISHER_HOST, DEPLOY_USER, SSH_KEY,
 #   DO_ACCESS_KEY, DO_SECRET_KEY.
-# Requires a repository variable:
-#   LWD_URLS (comma-separated post-NU6.3 lightwalletd endpoints).
+# Requires an environment variable:
+#   LWD_URLS (testnet endpoints in staging, mainnet endpoints in production).
 
 name: Publish nullifier snapshot
 
@@ -22,7 +21,7 @@ on:
         required: false
         type: string
       include_nullifier_artifacts:
-        description: "If true, also upload nullifiers.bin, nullifiers.checkpoint, nullifiers.tree, and nullifiers.dataset.json under snapshots/<height>/ (large)."
+        description: "If true, also upload raw artifacts under snapshots/<network>/<height>/ (large)."
         required: false
         type: boolean
         default: false
@@ -76,25 +75,26 @@ jobs:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
           DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
           LWD_URLS: ${{ vars.LWD_URLS }}
+          SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
         with:
           host: ${{ secrets.PIR_SNAPSHOT_PUBLISHER_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: DO_ACCESS_KEY,DO_SECRET_KEY,LWD_URLS
+          envs: DO_ACCESS_KEY,DO_SECRET_KEY,LWD_URLS,SVOTE_ZCASH_NETWORK
           command_timeout: 90m
           script: |
             set -euo pipefail
 
             REQUESTED_H="${{ steps.round_height.outputs.value }}"
             RESET_DATASET="${{ inputs.reset_dataset }}"
-            STAGE="/tmp/snap-build-$$"
+            STAGE="/tmp/snap-build-${SVOTE_ZCASH_NETWORK}-$$"
             BUCKET="${{ env.DO_BUCKET }}"
             REGION="${{ env.DO_REGION }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE_URL="${{ env.DO_PUBLIC_BASE_URL }}"
             LWD_URLS="${LWD_URLS:-}"
             if [ -z "${LWD_URLS//[[:space:],]/}" ]; then
-              echo "LWD_URLS must name at least one post-NU6.3 lightwalletd endpoint." >&2
+              echo "LWD_URLS must name at least one $SVOTE_ZCASH_NETWORK lightwalletd endpoint." >&2
               exit 1
             fi
             if [ -z "$BUCKET" ] || [ -z "$REGION" ] || [ -z "$PREFIX" ]; then
@@ -103,6 +103,7 @@ jobs:
             fi
             PREFIX="${PREFIX#/}"
             PREFIX="${PREFIX%/}"
+            PREFIX="${PREFIX}/${SVOTE_ZCASH_NETWORK}"
             PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://${BUCKET}.${REGION}.digitaloceanspaces.com}"
             PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
             SNAPSHOT_PUBLIC_BASE="${PUBLIC_BASE_URL}/${PREFIX}"
@@ -126,9 +127,10 @@ jobs:
             use_https = True
             EOF
 
-            echo "==> Sync nullifiers + tree checkpoint + PIR tiers (staging)"
+            echo "==> Sync $SVOTE_ZCASH_NETWORK nullifiers + tree checkpoint + PIR tiers"
             cd "${{ env.DEPLOY_PATH }}"
             export SVOTE_PIR_VOTING_CONFIG_URL=
+            export SVOTE_PIR_DATA_DIR="${{ env.DEPLOY_PATH }}/pir-data/${SVOTE_ZCASH_NETWORK}"
             EXPECTED_NULLIFIER_POOL=ironwood
             EXPECTED_DATASET_VERSION=1
             if ! DATASET_INFO=$(./nf-server dataset-info 2>/dev/null) || ! jq -e \
@@ -150,7 +152,6 @@ jobs:
             if [ -n "$REQUESTED_H" ]; then
               echo "    up to explicit height $REQUESTED_H"
               ./nf-server sync \
-                --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
                 --non-interactive \
                 --invalidate-after-blocks \
@@ -158,28 +159,29 @@ jobs:
             else
               echo "    to latest chain tip"
               ./nf-server sync \
-                --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
                 --non-interactive \
                 --invalidate-after-blocks
             fi
 
-            NF_DIR="${{ env.DEPLOY_PATH }}/pir-data"
+            NF_DIR="$SVOTE_PIR_DATA_DIR"
             DATASET_MARKER="$NF_DIR/nullifiers.dataset.json"
 
             echo "==> Validate Ironwood dataset identity"
             if ! jq -e \
+              --arg network "$SVOTE_ZCASH_NETWORK" \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.nullifier_pool == $pool and .dataset_version == $version' \
+              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version' \
               "$STAGE/pir_root.json" >/dev/null; then
               echo "ERROR: pir_root.json is not the expected Ironwood dataset version" >&2
               exit 1
             fi
             if [ ! -f "$DATASET_MARKER" ] || ! jq -e \
+              --arg network "$SVOTE_ZCASH_NETWORK" \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.nullifier_pool == $pool and .dataset_version == $version' \
+              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version' \
               "$DATASET_MARKER" >/dev/null; then
               echo "ERROR: $DATASET_MARKER is missing or has the wrong dataset identity" >&2
               exit 1
@@ -311,9 +313,10 @@ jobs:
             curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/pir_root.json" -o "$VERIFY_DIR/pir_root.json"
             REMOTE_ROOT_HEIGHT=$(jq -r '.height // empty' "$VERIFY_DIR/pir_root.json")
             if ! jq -e \
+              --arg network "$SVOTE_ZCASH_NETWORK" \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.nullifier_pool == $pool and .dataset_version == $version' \
+              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version' \
               "$VERIFY_DIR/pir_root.json" >/dev/null; then
               echo "ERROR: remote pir_root.json has the wrong dataset identity"
               exit 1
@@ -341,9 +344,10 @@ jobs:
               echo "==> Verify nullifier/tree entries: local disk matches published manifest (no multi-GB re-download)"
               curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/nullifiers.dataset.json" -o "$VERIFY_DIR/nullifiers.dataset.json"
               if ! jq -e \
+                --arg network "$SVOTE_ZCASH_NETWORK" \
                 --arg pool "$EXPECTED_NULLIFIER_POOL" \
                 --argjson version "$EXPECTED_DATASET_VERSION" \
-                '.nullifier_pool == $pool and .dataset_version == $version' \
+                '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version' \
                 "$VERIFY_DIR/nullifiers.dataset.json" >/dev/null; then
                 echo "ERROR: remote nullifiers.dataset.json has the wrong dataset identity"
                 exit 1
@@ -369,13 +373,13 @@ jobs:
                 fi
               done
             fi
-            echo "==> Snapshot $H published and verified at $SNAPSHOT_PUBLIC_BASE/$H/"
+            echo "==> $SVOTE_ZCASH_NETWORK snapshot $H published and verified at $SNAPSHOT_PUBLIC_BASE/$H/"
             case "${{ inputs.target_environment }}" in
               production) CONFIG_ENV=prod ;;
               staging) CONFIG_ENV=stage ;;
               *) CONFIG_ENV="${{ inputs.target_environment }}" ;;
             esac
-            echo "Next step: update ${CONFIG_ENV}/pir.json in token-holder-voting-config to snapshot_height=$H, then restart the PIR fleet."
+            echo "Next step: update ${CONFIG_ENV}/pir.json to snapshot_height=$H, then restart the fleet."
 
   notify-slack:
     name: Slack Notification

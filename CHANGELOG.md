@@ -1,5 +1,10 @@
 # Unreleased
 
+# pir-types 0.3.0-rc.2 and pir-client 0.4.0-rc.2
+
+- Add Zcash network identity to Ironwood ingestion, snapshot artifacts, and `/root` responses.
+- Keep RC installers tag-scoped; stable tags update the latest aliases.
+
 # pir-types 0.3.0-rc.1 and pir-client 0.4.0-rc.1
 
 - Switched PIR ingestion, artifacts, bootstrap metadata, and clients to an Ironwood-only dataset identity. Existing raw datasets require one explicit reset.

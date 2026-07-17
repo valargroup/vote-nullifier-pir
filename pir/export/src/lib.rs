@@ -262,13 +262,22 @@ pub fn materialize_tree_checkpoint_with_progress(
 }
 
 /// Write `tier*.bin` and `pir_root.json` from an in-memory [`PirTree`].
-pub fn export_tiers_from_tree(tree: &PirTree, output_dir: &Path, height: Option<u64>) -> Result<()> {
-    export_all(tree, output_dir, height)
+pub fn export_tiers_from_tree(
+    tree: &PirTree,
+    output_dir: &Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+) -> Result<()> {
+    export_all(tree, output_dir, network, height)
 }
 
 /// Returns `true` when `pir_root.json` lists `expected_height` and tier files
 /// on disk match the expected sizes from layout constants and metadata.
-pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Result<bool> {
+pub fn tiers_complete_for_height(
+    output_dir: &Path,
+    expected_network: pir_types::ZcashNetwork,
+    expected_height: u64,
+) -> Result<bool> {
     let root_path = output_dir.join("pir_root.json");
     if !root_path.exists() {
         return Ok(false);
@@ -278,7 +287,8 @@ pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Res
     ) else {
         return Ok(false);
     };
-    if meta.height != Some(expected_height)
+    if meta.zcash_network != expected_network
+        || meta.height != Some(expected_height)
         || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
     {
         return Ok(false);
@@ -311,9 +321,10 @@ pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Res
 pub fn build_and_export(
     nfs: Vec<Fp>,
     output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<PirTree> {
-    build_and_export_with_progress(nfs, output_dir, height, |_, _| {})
+    build_and_export_with_progress(nfs, output_dir, network, height, |_, _| {})
 }
 
 /// Build the PIR tree and export tier files, calling `on_progress(message, pct)`
@@ -321,6 +332,7 @@ pub fn build_and_export(
 pub fn build_and_export_with_progress(
     nfs: Vec<Fp>,
     output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
     height: Option<u64>,
     on_progress: impl Fn(&str, u8),
 ) -> Result<PirTree> {
@@ -343,7 +355,7 @@ pub fn build_and_export_with_progress(
 
     on_progress("writing tier files", 40);
     info!(?output_dir, "exporting tier files");
-    export_tiers_from_tree(&tree, output_dir, height)?;
+    export_tiers_from_tree(&tree, output_dir, network, height)?;
 
     on_progress("tier files written", 55);
     Ok(tree)
@@ -371,7 +383,12 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
 }
 
 /// Export all tier files and metadata to the given directory.
-pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u64>) -> Result<()> {
+pub fn export_all(
+    tree: &PirTree,
+    output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
 
     // Tier 0
@@ -404,6 +421,7 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
 
     // Metadata
     let metadata = PirMetadata {
+        zcash_network: network,
         nullifier_pool: NULLIFIER_POOL.to_owned(),
         dataset_version: DATASET_VERSION,
         root25: hex::encode(tree.root25.to_repr()),

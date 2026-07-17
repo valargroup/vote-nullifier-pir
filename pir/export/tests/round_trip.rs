@@ -207,7 +207,13 @@ fn test_build_and_export_writes_files() {
     let _ = std::fs::remove_dir_all(&dir);
 
     let nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
-    let tree = pir_export::build_and_export(nfs, &dir, Some(2_800_000)).unwrap();
+    let tree = pir_export::build_and_export(
+        nfs,
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        Some(4_134_000),
+    )
+    .unwrap();
 
     // Verify files exist
     assert!(dir.join("tier0.bin").exists());
@@ -219,12 +225,25 @@ fn test_build_and_export_writes_files() {
     let meta: pir_export::PirMetadata =
         serde_json::from_str(&std::fs::read_to_string(dir.join("pir_root.json")).unwrap())
             .unwrap();
-    assert_eq!(meta.height, Some(2_800_000));
+    assert_eq!(meta.zcash_network, pir_types::ZcashNetwork::Test);
+    assert_eq!(meta.height, Some(4_134_000));
     assert_eq!(meta.nullifier_pool, pir_types::NULLIFIER_POOL);
     assert_eq!(meta.dataset_version, pir_types::DATASET_VERSION);
     assert_eq!(meta.pir_depth, pir_export::PIR_DEPTH);
     assert_eq!(meta.root29, hex::encode(tree.root29.to_repr()));
     assert!(meta.num_ranges > 25); // K=2 punctured ranges from 50 nfs + sentinels
+    assert!(pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        4_134_000,
+    )
+    .unwrap());
+    assert!(!pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Main,
+        4_134_000,
+    )
+    .unwrap());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -78,7 +78,7 @@ async fn check_active_round(chain_url: &str) -> Result<Option<String>> {
 /// We no longer support kicking off in-process snapshot rebuilds over HTTP.
 /// To move a server to a newer height, restart `nf-server serve` and let
 /// `bootstrap::run` pull the latest published snapshot from the CDN
-/// (`<precomputed_base_url>/snapshots/<height>/...`); the canonical height
+/// (`<precomputed_base_url>/snapshots/<network>/<height>/...`); the canonical height
 /// comes from the active on-chain voting round. The handler is kept (and
 /// wired into the router) for historical reasons so that callers get a
 /// clear, structured 410 response instead of a 404.
@@ -106,7 +106,7 @@ async fn _post_snapshot_prepare_legacy(
 ) -> axum::response::Response {
     let height = req.height;
 
-    if let Err(e) = nf_ingest::config::validate_export_height(height) {
+    if let Err(e) = nf_ingest::config::validate_export_height(height, state.zcash_network) {
         return (
             StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": e.to_string() })),
@@ -277,6 +277,7 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
             rt.block_on(sync_nullifiers::sync(
                 &dd,
                 &lwd,
+                state_ref.zcash_network,
                 Some(target_height),
                 |h, t, _, _| {
                     info!(height = h, target = t, "nullifier sync progress");
@@ -322,11 +323,12 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
         let nfs = file_store::load_nullifiers_up_to(&dd, byte_offset)?;
         info!(count = nfs.len(), "Nullifiers loaded");
 
-        if !pir_export::tiers_complete_for_height(&pd, idx_height)? {
+        if !pir_export::tiers_complete_for_height(&pd, state_ref.zcash_network, idx_height)? {
             sync_pipeline::export_tree_and_tiers_from_nullifiers(
                 nfs,
                 &dd,
                 &pd,
+                state_ref.zcash_network,
                 idx_height,
                 |msg, pct| {
                     let overall_pct = 10 + (pct as u16 * 45 / 55).min(45) as u8;
@@ -354,8 +356,9 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
     }
 
     let pd = pir_data_dir.clone();
+    let network = state.zcash_network;
     let new_serving =
-        tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd)).await??;
+        tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd, network)).await??;
 
     {
         let mut serving = state.serving.write().await;

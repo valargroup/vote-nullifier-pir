@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::Args as ClapArgs;
+use pir_types::ZcashNetwork;
 
 use nf_ingest::config;
 use nf_ingest::file_store;
@@ -96,6 +97,10 @@ fn prompt_resync_ahead_of_voting(local: u64, snap: u64, non_interactive: bool) -
 
 #[derive(ClapArgs)]
 pub struct Args {
+    /// Zcash network to ingest.
+    #[arg(long, env = "SVOTE_ZCASH_NETWORK")]
+    zcash_network: ZcashNetwork,
+
     /// Directory for nullifiers.bin, nullifiers.checkpoint, nullifiers.index, and
     /// `nullifiers.tree` (same root passed to the tree export step).
     #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
@@ -158,7 +163,7 @@ pub async fn run(args: Args) -> Result<()> {
         );
         delete_sync_artifacts(&nullifier_root, &tier_dir)?;
     }
-    file_store::ensure_ironwood_dataset(&nullifier_root)?;
+    file_store::ensure_ironwood_dataset(&nullifier_root, args.zcash_network)?;
 
     let voting_url = args.voting_config_url.trim();
     let timeout = Duration::from_secs(args.http_timeout_secs.max(1));
@@ -183,7 +188,7 @@ pub async fn run(args: Args) -> Result<()> {
 
     let mut target = chain_tip;
     if let Some(m) = args.max_height {
-        config::validate_export_height(m)?;
+        config::validate_export_height(m, args.zcash_network)?;
         target = target.min(m);
     }
     if let Some(s) = snapshot_height {
@@ -193,7 +198,7 @@ pub async fn run(args: Args) -> Result<()> {
     // PIR snapshots and voting-config `snapshot_height` are defined on 10-block
     // boundaries (see `nf_ingest::config::validate_export_height`).
     let export_target = (target / 10) * 10;
-    config::validate_export_height(export_target).with_context(|| {
+    config::validate_export_height(export_target, args.zcash_network).with_context(|| {
         format!("aligned export height {export_target} (from cap {target}, chain_tip={chain_tip})")
     })?;
 
@@ -232,11 +237,13 @@ pub async fn run(args: Args) -> Result<()> {
             let nullifier_sync = sync_nullifiers::sync(
                 data_dir,
                 &lwd_urls,
+                args.zcash_network,
                 Some(export_target),
                 |height, tgt, batch, total| {
                     let elapsed = t_start.elapsed().as_secs_f64();
                     let bps = if elapsed > 0.0 {
-                        height.saturating_sub(sync_nullifiers::NU6_3_ACTIVATION_HEIGHT) as f64
+                        height.saturating_sub(config::nu6_3_activation_height(args.zcash_network))
+                            as f64
                             / elapsed
                     } else {
                         0.0
@@ -305,7 +312,11 @@ pub async fn run(args: Args) -> Result<()> {
         let export_target_c = export_target;
         let ch_c = ch;
         tokio::task::spawn_blocking(move || -> Result<()> {
-            if pir_export::tiers_complete_for_height(&pir_dir_c, export_target_c)? {
+            if pir_export::tiers_complete_for_height(
+                &pir_dir_c,
+                args.zcash_network,
+                export_target_c,
+            )? {
                 println!("Stage 3/3: PIR tier files already complete at height {export_target_c}");
                 return Ok(());
             }
@@ -328,6 +339,7 @@ pub async fn run(args: Args) -> Result<()> {
                 nfs,
                 &data_dir_c,
                 &pir_dir_c,
+                args.zcash_network,
                 export_target_c,
                 |msg, _| eprintln!("    {msg}"),
             )?;

@@ -10,6 +10,7 @@ pub fn export_tree_and_tiers_from_nullifiers(
     nfs: Vec<Fp>,
     data_dir: &Path,
     pir_dir: &Path,
+    network: pir_types::ZcashNetwork,
     chain_height: u64,
     progress: impl Fn(&str, u8) + Send,
 ) -> Result<()> {
@@ -28,6 +29,6 @@ pub fn export_tree_and_tiers_from_nullifiers(
             progress,
         )?,
     };
-    pir_export::export_tiers_from_tree(&tree, pir_dir, Some(chain_height))?;
+    pir_export::export_tiers_from_tree(&tree, pir_dir, network, Some(chain_height))?;
     Ok(())
 }
