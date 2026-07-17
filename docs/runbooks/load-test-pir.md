@@ -236,6 +236,7 @@ Run a series with increasing concurrency and compare:
 for c in 1 2 4 8; do
   ./target/release/pir-test load \
     --url http://localhost:3000 \
+    --zcash-network test \
     --nullifiers ./nullifiers.bin \
     --concurrency $c \
     --duration 30s \

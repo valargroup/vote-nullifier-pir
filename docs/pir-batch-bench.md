@@ -14,6 +14,7 @@ mise exec -- cargo build --release -p pir-test
 # K=1 single query
 ./target/release/pir-test bench-server \
     --url https://pir.valargroup.org \
+    --zcash-network main \
     --nullifiers ./nullifiers.bin \
     --iterations 30 --warmup 3 \
     --batch-size 1 --mode single \
@@ -24,6 +25,7 @@ mise exec -- cargo build --release -p pir-test
 # K=5 parallel (today's prod path: PirClient::fetch_proofs uses try_join_all)
 ./target/release/pir-test bench-server \
     --url https://pir.valargroup.org \
+    --zcash-network main \
     --nullifiers ./nullifiers.bin \
     --iterations 30 --warmup 3 \
     --batch-size 5 --mode parallel \
@@ -34,6 +36,7 @@ mise exec -- cargo build --release -p pir-test
 # K=5 sequential (naive for-loop; useful upper bound)
 ./target/release/pir-test bench-server \
     --url https://pir.valargroup.org \
+    --zcash-network main \
     --nullifiers ./nullifiers.bin \
     --iterations 15 --warmup 3 \
     --batch-size 5 --mode sequential \
@@ -47,6 +50,7 @@ mise exec -- cargo build --release -p pir-test
 # isolate HTTP/2 contention from per-query upload bandwidth).
 ./target/release/pir-test bench-server \
     --url https://pir.valargroup.org \
+    --zcash-network main \
     --nullifiers ./nullifiers.bin \
     --iterations 30 --warmup 3 \
     --batch-size 5 --mode single-tls \
@@ -564,6 +568,7 @@ Commands:
 ```bash
 ./target/release/pir-test bench-server \
     --url https://pir.valargroup.org \
+    --zcash-network main \
     --nullifiers /tmp/pir-bench-nullifiers.bin \
     --iterations 30 --warmup 3 \
     --batch-size 5 --mode batched \
@@ -573,6 +578,7 @@ Commands:
 
 ./target/release/pir-test bench-server \
     --url https://pir-backup.valargroup.org \
+    --zcash-network main \
     --nullifiers /tmp/pir-bench-nullifiers.bin \
     --iterations 30 --warmup 3 \
     --batch-size 5 --mode batched \
@@ -672,6 +678,7 @@ tests for K=5 wire bytes vs serial and K∈{3,16} unchanged with `parallel-k5`.
 ```bash
 ./target/release/pir-test bench-server \
     --url https://pir-backup.valargroup.org \
+    --zcash-network main \
     --nullifiers ./nullifiers.bin \
     --iterations 30 --warmup 3 \
     --batch-size 5 --mode batched \
