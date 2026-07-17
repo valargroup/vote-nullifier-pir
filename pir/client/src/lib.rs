@@ -213,6 +213,14 @@ impl PirClient {
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
                 .context("parse /root response")?;
         anyhow::ensure!(
+            pir_types::is_current_dataset(&root_info.nullifier_pool, root_info.dataset_version),
+            "server nullifier dataset {:?} version {} is unsupported; expected {:?} version {}",
+            root_info.nullifier_pool,
+            root_info.dataset_version,
+            pir_types::NULLIFIER_POOL,
+            pir_types::DATASET_VERSION
+        );
+        anyhow::ensure!(
             root_info.pir_depth == PIR_DEPTH,
             "server pir_depth {} != expected {}",
             root_info.pir_depth,
@@ -1006,6 +1014,8 @@ mod tests {
                 &tree.empty_hashes,
             );
             let root_info = pir_types::RootInfo {
+                nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
+                dataset_version: pir_types::DATASET_VERSION,
                 root29: hex::encode(tree.root29.to_repr()),
                 root25: hex::encode(tree.root25.to_repr()),
                 num_ranges: tree.ranges.len(),
@@ -1161,5 +1171,24 @@ mod tests {
         );
         assert_eq!(transport.count_hits("/tier1/query"), K);
         assert_eq!(transport.count_hits("/tier2/query"), K);
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_nullifier_pool() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&transport.gets.get("/root").unwrap().body).unwrap();
+        root["nullifier_pool"] = serde_json::Value::String("orchard".to_owned());
+        transport
+            .gets
+            .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+
+        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await {
+            Ok(_) => panic!("wrong pool must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("orchard"), "{err}");
     }
 }

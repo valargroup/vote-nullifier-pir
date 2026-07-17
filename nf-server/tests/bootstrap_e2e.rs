@@ -116,6 +116,8 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
     blobs.insert(
         "pir_root.json".to_string(),
         serde_json::to_vec(&json!({
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
             "root25": "00",
             "root29": "00",
             "num_ranges": 1,
@@ -138,7 +140,9 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
         );
     }
     let manifest = json!({
-        "schema_version": 1,
+        "schema_version": 2,
+        "nullifier_pool": pir_types::NULLIFIER_POOL,
+        "dataset_version": pir_types::DATASET_VERSION,
         "height": height,
         "created_at": "2026-01-01T00:00:00Z",
         "nf_server_sha256": "deadbeef",
@@ -227,6 +231,8 @@ fn write_local_pir_root(dir: &std::path::Path, height: u64) {
     std::fs::write(
         dir.join("pir_root.json"),
         serde_json::to_vec(&json!({
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
             "root25": "00",
             "root29": "00",
             "num_ranges": 0,
@@ -391,7 +397,9 @@ async fn manifest_height_mismatch_falls_through() {
     // Overwrite the manifest at /snapshots/h/manifest.json with one
     // whose embedded height claims h+1.
     let bogus_manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
+        "nullifier_pool": pir_types::NULLIFIER_POOL,
+        "dataset_version": pir_types::DATASET_VERSION,
         "height": h + 1,
         "created_at": "2026-01-01T00:00:00Z",
         "files": {
@@ -454,6 +462,39 @@ async fn already_at_height_is_a_no_op() {
     assert_eq!(outcome, Outcome::AlreadyAtHeight(h));
     // tier files must NOT have been written.
     assert!(!tmp.path().join("tier0.bin").exists());
+}
+
+#[tokio::test]
+async fn legacy_local_root_is_replaced_at_the_same_height() {
+    let bucket = MockBucket::default();
+    let h = 405u64;
+    let blobs = stage_snapshot(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+    stage_voting_config(&bucket, &base, Some(h));
+
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("pir_root.json"),
+        serde_json::to_vec(&json!({ "height": h, "root25": "legacy" })).unwrap(),
+    )
+    .unwrap();
+    let cfg = Config {
+        pir_config_url: None,
+        voting_config_url: format!("{base}/voting-config.json"),
+        precomputed_base_url: base,
+        force_snapshot_height: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    assert_eq!(
+        bootstrap::run(&cfg).await.unwrap(),
+        Outcome::BootstrappedTo(h)
+    );
+    assert_eq!(
+        std::fs::read(tmp.path().join("tier0.bin")).unwrap(),
+        blobs["tier0.bin"]
+    );
 }
 
 #[tokio::test]

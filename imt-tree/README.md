@@ -6,11 +6,10 @@ Indexed Merkle Tree (IMT) for nullifier non-membership proofs in [Zcash shielded
 
 ### Scale and Capacity
 
-Zcash mainnet currently has ~51M Orchard nullifiers (documented upper bound: 64M). The tree is sized for up to **256M nullifiers** (future-proof):
+The full circuit tree is sized for up to **256M nullifiers**:
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Current nullifiers | ~51M | Mainnet as of Feb 2026 |
 | Design capacity | 256M | Future-proof headroom |
 | Leaves per tree | `(n + 1) / 2` punctured ranges for `n + sentinels` nullifiers | K=2: each leaf covers two gaps |
 | `TREE_DEPTH` | **29** | `2^29 = 536M` leaf slots, comfortably above 256M |
@@ -174,7 +173,7 @@ constraint count contributor for the IMT check.
 ```
                       OFF-CHAIN (imt-tree + pir crates)
                       ─────────────────────────────────
-Zcash chain --> nf-server sync --> nullifiers.bin (51M nullifiers)
+Zcash chain --> nf-server sync --> nullifiers.bin (Ironwood nullifiers)
                                           |
                                   prepare_nullifiers()
                                   (sort, sentinels, K=2 ranges)

@@ -1,6 +1,6 @@
 # Vote Nullifier PIR
 
-Private Information Retrieval (PIR) system for Zcash nullifier non-membership proofs. Allows a client to prove that a nullifier does **not** exist in the on-chain nullifier set without revealing *which* nullifier it is querying — a key building block for shielded voting.
+Private Information Retrieval (PIR) system for Ironwood nullifier non-membership proofs. Allows a client to prove that a nullifier does **not** exist in the on-chain Ironwood nullifier set without revealing *which* nullifier it is querying — a key building block for shielded voting.
 
 - [ZIP Specification (PR)](https://github.com/zcash/zips/pull/1198)
 - [PIR Tree Specification](docs/pir-tree-spec.md)
@@ -50,7 +50,7 @@ graph TD
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides an async `PirClient` API and a local in-process mode. |
 | **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
-| **nf-server** | `nf-server/` | Unified CLI: `sync` (nullifiers from lightwalletd → `nullifiers.tree` → tier files) and `serve` (PIR HTTP server, feature-gated). |
+| **nf-server** | `nf-server/` | Unified CLI: `dataset-info`, `sync` (lightwalletd → `nullifiers.tree` → tier files), and `serve` (PIR HTTP server, feature-gated). |
 | **pir-test** | `pir/test/` | End-to-end test harness with `small`, `local`, `server`, and `bench` modes. |
 
 ## Pipeline
@@ -61,7 +61,7 @@ The system operates as a resumable pipeline:
 nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ──> client query
 ```
 
-1. **`nf-server sync`** — Streams Orchard nullifiers into `nullifiers.bin` (with checkpoint/index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default all under `--pir-data-dir`). Reruns skip completed stages.
+1. **`nf-server sync`** — Streams Ironwood nullifiers into `nullifiers.bin` (with dataset marker, checkpoint, and index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` (by default all under `--pir-data-dir`). Reruns skip completed stages.
 2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
 
 ## Build & Run
@@ -76,6 +76,7 @@ cargo build --release
 make build          # Build nf-server binary
 make sync           # Ingest + tree + tiers (resumable)
 make serve          # Start PIR HTTP server on port 3000
+nf-server dataset-info  # Print the supported pool and dataset version
 
 # Run tests
 make test           # Unit tests for imt-tree and nf-ingest
@@ -88,11 +89,12 @@ Override via environment variables or Make arguments:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PIR_DATA_DIR` | `pir-data` | On-disk root: `nullifiers.bin`, checkpoint, index, `nullifiers.tree`, and tier files (`SVOTE_PIR_DATA_DIR` for `nf-server`) |
+| `PIR_DATA_DIR` | `pir-data` | On-disk root: `nullifiers.bin`, dataset marker, checkpoint, index, `nullifiers.tree`, and tier files (`SVOTE_PIR_DATA_DIR` for `nf-server`) |
 | `LWD_URL` | `https://us.zec.stardust.rest:443` | Lightwalletd gRPC endpoint |
+| `LWD_URLS` | unset | Comma-separated post-NU6.3 lightwalletd endpoints. Overrides `LWD_URL` when set. |
 | `PORT` | `3000` | HTTP server port |
 | `SYNC_HEIGHT` | chain tip | Sync up to this block height (must be a multiple of 10) |
-| `SVOTE_PIR_SYNC_RESET` | unset | Set to `1` to wipe nullifiers + tree + tiers before `sync` |
+| `SVOTE_PIR_SYNC_RESET` | unset | Set to `1` to wipe the dataset, tree, and tiers before `sync` |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | (see `nf-server sync --help`) | Empty string skips voting-config fetch during `sync` |
 
 ## Deployment
@@ -103,11 +105,14 @@ See [docs/runbooks/server-setup.md](docs/runbooks/server-setup.md) for productio
 
 All data is stored as flat binary files under one directory (by default `./pir-data`, overridable via `PIR_DATA_DIR` / `SVOTE_PIR_DATA_DIR`):
 
-- `nullifiers.bin` — Append-only raw 32-byte nullifier blobs
+- `nullifiers.bin` — Append-only raw 32-byte Ironwood nullifier blobs
+- `nullifiers.dataset.json` — Dataset identity (`nullifier_pool: "ironwood"`, `dataset_version: 1`)
 - `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
 - `nullifiers.index` — Height-to-offset index for subset loading
-- `nullifiers.tree` — Versioned PIR Merkle checkpoint (magic `SVOTEPT1`; see `pir-export`)
-- `tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json` — PIR tier payload and root metadata
+- `nullifiers.tree` — Versioned PIR Merkle checkpoint (see `pir-export`)
+- `tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json` — PIR tier payload and root metadata, including the dataset identity
+
+Legacy Orchard artifacts are not reusable. Run the first Ironwood sync with `SVOTE_PIR_SYNC_RESET=1`.
 
 ## PIR Write Ups
 

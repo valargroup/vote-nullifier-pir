@@ -4,16 +4,17 @@
 #
 # Under PIR_DATA_DIR (default `pir-data/` at repo root when using Make):
 #   nullifiers.bin         – append-only raw 32-byte nullifier blobs
+#   nullifiers.dataset.json – nullifier pool + dataset version
 #   nullifiers.checkpoint  – 16-byte (height LE, offset LE) crash-recovery marker
 #   nullifiers.index       – height → byte offset index
-#   nullifiers.tree        – v1 bincode PIR Merkle checkpoint (SVOTEPT1 magic)
+#   nullifiers.tree        – versioned bincode PIR Merkle checkpoint
 #   tier0/1/2.bin, pir_root.json – PIR tier payload + metadata
 #
 # Pipeline: `make sync` → `make serve`
 # ──────────────────────────────────
 # `make sync` runs `nf-server sync` (nullifiers from lightwalletd → tree checkpoint → tiers).
 # Empty `SVOTE_PIR_VOTING_CONFIG_URL` skips voting height cap / prompts.
-# `SVOTE_PIR_SYNC_RESET=1` wipes nullifiers + tree + tiers before a run.
+# `SVOTE_PIR_SYNC_RESET=1` wipes the dataset + tree + tiers before a run.
 # `make sync-invalidate` passes `--invalidate-after-blocks` (rebuild tree + tiers when new blocks were synced).
 
 ROOT        := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
@@ -81,7 +82,7 @@ test: ## Run unit tests for all subcrates
 	cd $(SERVICE_DIR) && cargo test --lib
 
 status: ## Show nullifier sync progress (count + checkpoint + tree file)
-	@NF="$(PIR_DATA_DIR)/nullifiers.bin"; CP="$(PIR_DATA_DIR)/nullifiers.checkpoint"; \
+	@NF="$(PIR_DATA_DIR)/nullifiers.bin"; DATASET="$(PIR_DATA_DIR)/nullifiers.dataset.json"; CP="$(PIR_DATA_DIR)/nullifiers.checkpoint"; \
 	TREE="$(PIR_DATA_DIR)/nullifiers.tree"; \
 	echo "PIR data directory: $(PIR_DATA_DIR)"; \
 	if [ -f "$$NF" ]; then \
@@ -91,6 +92,11 @@ status: ## Show nullifier sync progress (count + checkpoint + tree file)
 		echo "  nullifiers.bin: $$COUNT nullifiers ($$SIZE)"; \
 	else \
 		echo "  nullifiers.bin: not found"; \
+	fi; \
+	if [ -f "$$DATASET" ]; then \
+		echo "  dataset: $$(tr -d '\n' < "$$DATASET")"; \
+	else \
+		echo "  dataset: not found"; \
 	fi; \
 	if [ -f "$$CP" ]; then \
 		HEIGHT=$$(od -An -t u8 -j 0 -N 8 "$$CP" | tr -d ' '); \
@@ -110,6 +116,7 @@ clean: ## Remove built artifacts and data files
 	cd $(IMT_DIR) && cargo clean
 	cd $(SERVICE_DIR) && cargo clean
 	cd $(NF_DIR) && cargo clean
-	rm -f $(PIR_DATA_DIR)/nullifiers.bin $(PIR_DATA_DIR)/nullifiers.checkpoint $(PIR_DATA_DIR)/nullifiers.index \
+	rm -f $(PIR_DATA_DIR)/nullifiers.bin $(PIR_DATA_DIR)/nullifiers.dataset.json $(PIR_DATA_DIR)/nullifiers.dataset.json.tmp \
+		$(PIR_DATA_DIR)/nullifiers.checkpoint $(PIR_DATA_DIR)/nullifiers.checkpoint.tmp $(PIR_DATA_DIR)/nullifiers.index \
 		$(PIR_DATA_DIR)/nullifiers.tree $(PIR_DATA_DIR)/nullifiers.tree.tmp \
 		$(PIR_DATA_DIR)/tier0.bin $(PIR_DATA_DIR)/tier1.bin $(PIR_DATA_DIR)/tier2.bin $(PIR_DATA_DIR)/pir_root.json

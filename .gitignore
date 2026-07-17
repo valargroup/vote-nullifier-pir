@@ -1,7 +1,10 @@
 target/
 nullifiers.db*
 nullifiers.bin
+nullifiers.dataset.json
+nullifiers.dataset.json.tmp
 nullifiers.checkpoint
+nullifiers.checkpoint.tmp
 nullifiers.tree
 nullifiers.index
 pir-data/

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 imt-tree = { workspace = true }
+pir-types = { path = "../pir/types" }
 anyhow = "1.0"
 hex = "0.4"
 ff = "0.13"

@@ -30,7 +30,10 @@ fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
     for name in [
         "nullifiers.bin",
         "nullifiers.checkpoint",
+        "nullifiers.checkpoint.tmp",
         "nullifiers.index",
+        file_store::DATASET_MARKER_FILENAME,
+        "nullifiers.dataset.json.tmp",
         "nullifiers.tree",
         "nullifiers.tree.tmp",
     ] {
@@ -155,6 +158,7 @@ pub async fn run(args: Args) -> Result<()> {
         );
         delete_sync_artifacts(&nullifier_root, &tier_dir)?;
     }
+    file_store::ensure_ironwood_dataset(&nullifier_root)?;
 
     let voting_url = args.voting_config_url.trim();
     let timeout = Duration::from_secs(args.http_timeout_secs.max(1));
@@ -221,7 +225,7 @@ pub async fn run(args: Args) -> Result<()> {
         println!("Export block height: {export_target} (cap {target}, chain_tip={chain_tip})");
         if needs_nullifier_sync {
             println!(
-                "Stage 1/3: syncing Orchard nullifiers via {} lightwalletd server(s)",
+                "Stage 1/3: syncing Ironwood nullifiers via {} lightwalletd server(s)",
                 lwd_urls.len()
             );
             let t_start = std::time::Instant::now();
@@ -232,7 +236,8 @@ pub async fn run(args: Args) -> Result<()> {
                 |height, tgt, batch, total| {
                     let elapsed = t_start.elapsed().as_secs_f64();
                     let bps = if elapsed > 0.0 {
-                        (height - sync_nullifiers::NU5_ACTIVATION_HEIGHT) as f64 / elapsed
+                        height.saturating_sub(sync_nullifiers::NU6_3_ACTIVATION_HEIGHT) as f64
+                            / elapsed
                     } else {
                         0.0
                     };

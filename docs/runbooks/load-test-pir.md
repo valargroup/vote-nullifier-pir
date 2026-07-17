@@ -28,8 +28,8 @@ traffic is indistinguishable from a real wallet client.
   [`pir.json`](https://voting.valargroup.org/prod/pir.json).
   That object exists only after **Publish nullifier snapshot** was run
   for that height with **`include_nullifier_artifacts`** enabled; verify
-  size and SHA-256 against `snapshots/<height>/manifest.json` before
-  trusting a download.
+  size and SHA-256 against `snapshots/<height>/manifest.json`. The manifest and
+  bundled `nullifiers.dataset.json` must identify Ironwood dataset version 1.
 - **A reachable PIR server** — either `localhost:3000` or a production
   host behind the Caddy TLS reverse proxy.
 
@@ -51,9 +51,8 @@ cargo build --release -p pir-test
 ### Startup time
 
 The tool loads `nullifiers.bin` and calls `prepare_nullifiers` to build
-the range index. With ~50 M nullifiers this takes **~15–20 s** (release
-mode) before the first request is sent. This is a one-time cost per
-run; the actual load phase starts after the "Starting load phase" line.
+the range index before the first request. This is a one-time cost per run;
+the actual load phase starts after the "Starting load phase" line.
 
 ### All flags
 

@@ -24,8 +24,7 @@ pub mod tier2;
 /// Depth of the PIR Merkle tree.
 ///
 /// With punctured-range leaves (K=2), each leaf covers two gaps, halving the
-/// leaf count compared to K=1. Depth 25 supports 2^25 = 33,554,432 leaf
-/// slots, enough for ~25.5M punctured ranges from ~51M nullifiers.
+/// leaf count compared to K=1. Depth 25 supports 2^25 = 33,554,432 leaf slots.
 pub const PIR_DEPTH: usize = 25;
 
 /// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 9).
@@ -74,9 +73,24 @@ pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
+/// Shielded pool represented by the current PIR dataset.
+pub const NULLIFIER_POOL: &str = "ironwood";
+
+/// Version of the nullifier dataset contract.
+pub const DATASET_VERSION: u32 = 1;
+
+/// Returns whether a pool and version identify the current PIR dataset.
+pub fn is_current_dataset(nullifier_pool: &str, dataset_version: u32) -> bool {
+    nullifier_pool == NULLIFIER_POOL && dataset_version == DATASET_VERSION
+}
+
 /// Metadata written to `pir_root.json` alongside the tier files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PirMetadata {
+    /// Shielded pool whose nullifiers populate this dataset.
+    pub nullifier_pool: String,
+    /// Version of the nullifier dataset contract.
+    pub dataset_version: u32,
     /// Hex-encoded depth-25 Merkle root (PIR tree root for K=2).
     pub root25: String,
     /// Hex-encoded depth-29 Merkle root (circuit-compatible).
@@ -114,6 +128,10 @@ pub struct YpirScenario {
 /// Root hash and metadata returned by `GET /root`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootInfo {
+    /// Shielded pool whose nullifiers populate this dataset.
+    pub nullifier_pool: String,
+    /// Version of the nullifier dataset contract.
+    pub dataset_version: u32,
     pub root29: String,
     pub root25: String,
     pub num_ranges: usize,

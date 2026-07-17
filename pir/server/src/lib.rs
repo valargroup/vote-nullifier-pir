@@ -612,6 +612,19 @@ pub const TIER2_PRECOMPUTE_FILE: &str = "tier2.precompute";
 pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState> {
     let t_total = Instant::now();
 
+    let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
+        pir_data_dir.join("pir_root.json"),
+    )?)?;
+    anyhow::ensure!(
+        pir_types::is_current_dataset(&metadata.nullifier_pool, metadata.dataset_version),
+        "unsupported nullifier dataset {:?} version {}; expected {:?} version {}",
+        metadata.nullifier_pool,
+        metadata.dataset_version,
+        pir_types::NULLIFIER_POOL,
+        pir_types::DATASET_VERSION
+    );
+    info!(num_ranges = metadata.num_ranges, "Metadata loaded");
+
     let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
     info!(bytes = tier0_data.len(), "Tier 0 loaded");
 
@@ -647,11 +660,6 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
         TIER2_ROWS * TIER2_ROW_BYTES
     );
 
-    let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
-        pir_data_dir.join("pir_root.json"),
-    )?)?;
-    info!(num_ranges = metadata.num_ranges, "Metadata loaded");
-
     info!("Initializing YPIR servers");
     let tier1_scenario = tier1_scenario();
     let tier1_cache_path = pir_data_dir.join(TIER1_PRECOMPUTE_FILE);
@@ -680,4 +688,40 @@ pub fn load_serving_state(pir_data_dir: &std::path::Path) -> Result<ServingState
         tier2_scenario,
         metadata,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_wrong_dataset_before_loading_tiers() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = PirMetadata {
+            nullifier_pool: "orchard".to_owned(),
+            dataset_version: pir_types::DATASET_VERSION,
+            root25: "00".to_owned(),
+            root29: "00".to_owned(),
+            num_ranges: 0,
+            pir_depth: 25,
+            tier0_bytes: 0,
+            tier1_rows: 0,
+            tier1_row_bytes: 0,
+            tier2_rows: 0,
+            tier2_row_bytes: 0,
+            height: Some(1),
+        };
+        std::fs::write(
+            dir.path().join("pir_root.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        let err = match load_serving_state(dir.path()) {
+            Ok(_) => panic!("wrong dataset must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("orchard"), "{err}");
+        assert!(!err.contains("tier0.bin"), "{err}");
+    }
 }
