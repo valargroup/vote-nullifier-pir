@@ -112,13 +112,12 @@ fn sha256_hex(b: &[u8]) -> String {
 /// `<base>/snapshots/<network>/<height>/...` paths. Returns the byte payloads
 /// keyed by file name so tests can assert against installed contents.
 fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>> {
-    stage_snapshot_with_networks(bucket, TEST_NETWORK, TEST_NETWORK, TEST_NETWORK, height)
+    stage_snapshot_with_network(bucket, TEST_NETWORK, TEST_NETWORK, height)
 }
 
-fn stage_snapshot_with_networks(
+fn stage_snapshot_with_network(
     bucket: &MockBucket,
     path_network: pir_types::ZcashNetwork,
-    manifest_network: pir_types::ZcashNetwork,
     root_network: pir_types::ZcashNetwork,
     height: u64,
 ) -> BTreeMap<String, Vec<u8>> {
@@ -154,8 +153,7 @@ fn stage_snapshot_with_networks(
         );
     }
     let manifest = json!({
-        "schema_version": 3,
-        "zcash_network": manifest_network,
+        "schema_version": 2,
         "nullifier_pool": pir_types::NULLIFIER_POOL,
         "dataset_version": pir_types::DATASET_VERSION,
         "height": height,
@@ -218,17 +216,8 @@ fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_heig
 }
 
 fn stage_pir_config(bucket: &MockBucket, snapshot_height: u64) {
-    stage_pir_config_with_network(bucket, TEST_NETWORK, snapshot_height);
-}
-
-fn stage_pir_config_with_network(
-    bucket: &MockBucket,
-    zcash_network: pir_types::ZcashNetwork,
-    snapshot_height: u64,
-) {
     let body = json!({
-        "schema_version": 2,
-        "zcash_network": zcash_network,
+        "schema_version": 1,
         "snapshot_height": snapshot_height,
     });
     bucket.put(
@@ -308,49 +297,11 @@ async fn full_bootstrap_installs_all_files() {
 }
 
 #[tokio::test]
-async fn wrong_network_snapshot_falls_through_without_installing() {
-    let bucket = MockBucket::default();
-    let h = TEST_HEIGHT + 10;
-    stage_snapshot_with_networks(
-        &bucket,
-        TEST_NETWORK,
-        pir_types::ZcashNetwork::Main,
-        pir_types::ZcashNetwork::Main,
-        h,
-    );
-    stage_pir_config(&bucket, h);
-    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        zcash_network: TEST_NETWORK,
-        pir_config_url: Some(format!("{base}/pir.json")),
-        voting_config_url: String::new(),
-        precomputed_base_url: base,
-        force_snapshot_height: None,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-    };
-
-    let outcome = bootstrap::run(&cfg).await.unwrap();
-    match outcome {
-        Outcome::FellThrough { reason } => assert!(
-            reason.contains("manifest Zcash network is main; expected test"),
-            "unexpected reason: {reason}"
-        ),
-        other => panic!("expected FellThrough, got {other:?}"),
-    }
-    assert!(!tmp.path().join("pir_root.json").exists());
-    assert!(!tmp.path().join("tier0.bin").exists());
-}
-
-#[tokio::test]
 async fn wrong_network_root_falls_through_without_installing() {
     let bucket = MockBucket::default();
     let h = TEST_HEIGHT + 20;
-    stage_snapshot_with_networks(
+    stage_snapshot_with_network(
         &bucket,
-        TEST_NETWORK,
         TEST_NETWORK,
         pir_types::ZcashNetwork::Main,
         h,
@@ -377,34 +328,6 @@ async fn wrong_network_root_falls_through_without_installing() {
         ),
         other => panic!("expected FellThrough, got {other:?}"),
     }
-    assert!(!tmp.path().join("pir_root.json").exists());
-    assert!(!tmp.path().join("tier0.bin").exists());
-}
-
-#[tokio::test]
-async fn wrong_network_pir_config_fails_without_installing() {
-    let bucket = MockBucket::default();
-    let h = TEST_HEIGHT + 30;
-    stage_snapshot(&bucket, h);
-    stage_pir_config_with_network(&bucket, pir_types::ZcashNetwork::Main, h);
-    let (base, _shutdown) = spawn_mock(bucket).await;
-
-    let tmp = TempDir::new().unwrap();
-    let cfg = Config {
-        zcash_network: TEST_NETWORK,
-        pir_config_url: Some(format!("{base}/pir.json")),
-        voting_config_url: String::new(),
-        precomputed_base_url: base,
-        force_snapshot_height: None,
-        pir_data_dir: tmp.path().to_path_buf(),
-        http_timeout: Duration::from_secs(5),
-    };
-
-    let err = bootstrap::run(&cfg).await.unwrap_err();
-    assert!(
-        format!("{err:#}").contains("pir config Zcash network is main; expected test"),
-        "unexpected error: {err:#}"
-    );
     assert!(!tmp.path().join("pir_root.json").exists());
     assert!(!tmp.path().join("tier0.bin").exists());
 }
@@ -528,8 +451,7 @@ async fn manifest_height_mismatch_falls_through() {
     // Overwrite the manifest at /snapshots/test/h/manifest.json with one
     // whose embedded height claims h+1.
     let bogus_manifest = serde_json::json!({
-        "schema_version": 3,
-        "zcash_network": TEST_NETWORK,
+        "schema_version": 2,
         "nullifier_pool": pir_types::NULLIFIER_POOL,
         "dataset_version": pir_types::DATASET_VERSION,
         "height": h + 1,

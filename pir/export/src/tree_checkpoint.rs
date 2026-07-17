@@ -1,6 +1,6 @@
 //! Versioned on-disk checkpoint for [`super::PirTree`] (`nullifiers.tree`).
 //!
-//! Layout: fixed header + bincode payload. Files without the `SVOTEPT3` magic
+//! Layout: fixed header + bincode payload. Files without the `SVOTEPT2` magic
 //! are rejected so callers can remove them and rebuild.
 
 use std::fs::{self, File, OpenOptions};
@@ -15,28 +15,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{PirTree, PIR_DEPTH};
 
-/// Magic ASCII tag for the network-bound Ironwood tree format.
-pub const TREE_MAGIC: &[u8; 8] = b"SVOTEPT3";
+/// Magic ASCII tag for the Ironwood `nullifiers.tree` format.
+pub const TREE_MAGIC: &[u8; 8] = b"SVOTEPT2";
 
-/// Header: magic (8) + schema u32 + height u64 + dataset version u32 + network u32.
+/// Header: magic (8) + schema_version u32 LE (4) + height u64 LE (8) + reserved u64 LE (8).
 pub const TREE_HEADER_LEN: usize = 8 + 4 + 8 + 8;
 
-const TREE_SCHEMA_VERSION: u32 = 3;
-
-fn network_code(network: pir_types::ZcashNetwork) -> u32 {
-    match network {
-        pir_types::ZcashNetwork::Main => 1,
-        pir_types::ZcashNetwork::Test => 2,
-    }
-}
-
-fn decode_network(code: u32) -> Result<pir_types::ZcashNetwork> {
-    match code {
-        1 => Ok(pir_types::ZcashNetwork::Main),
-        2 => Ok(pir_types::ZcashNetwork::Test),
-        _ => bail!("unsupported Zcash network code {code} in nullifiers.tree"),
-    }
-}
+const TREE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct PirTreeWire {
@@ -111,9 +96,7 @@ fn decode_tree(bytes: &[u8]) -> Result<PirTree> {
 }
 
 /// Read header fields. Returns `None` if file is missing. Errors if corrupt or unknown format.
-pub fn read_tree_checkpoint_header(
-    path: &Path,
-) -> Result<Option<(u32, u64, pir_types::ZcashNetwork)>> {
+pub fn read_tree_checkpoint_header(path: &Path) -> Result<Option<(u32, u64)>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -123,28 +106,23 @@ pub fn read_tree_checkpoint_header(
         .with_context(|| format!("read header {}", path.display()))?;
     if &hdr[0..8] != TREE_MAGIC.as_slice() {
         bail!(
-            "nullifiers.tree at {} is not a network-bound Ironwood tree checkpoint (missing magic SVOTEPT3); \
+            "nullifiers.tree at {} is not an Ironwood tree checkpoint (missing magic SVOTEPT2); \
              remove it and re-run sync",
             path.display()
         );
     }
     let schema = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
     let height = u64::from_le_bytes(hdr[12..20].try_into().unwrap());
-    let dataset_version = u32::from_le_bytes(hdr[20..24].try_into().unwrap());
+    let dataset_version = u64::from_le_bytes(hdr[20..28].try_into().unwrap());
     anyhow::ensure!(
-        schema == TREE_SCHEMA_VERSION && dataset_version == pir_types::DATASET_VERSION,
+        schema == TREE_SCHEMA_VERSION && dataset_version == u64::from(pir_types::DATASET_VERSION),
         "unsupported nullifiers.tree schema or dataset version; remove it and re-run sync"
     );
-    let network = decode_network(u32::from_le_bytes(hdr[24..28].try_into().unwrap()))?;
-    Ok(Some((schema, height, network)))
+    Ok(Some((schema, height)))
 }
 
 /// Load a tree checkpoint. Returns `None` if the file does not exist.
-pub fn load_tree_checkpoint(
-    path: &Path,
-    expected_network: pir_types::ZcashNetwork,
-    expected_height: u64,
-) -> Result<Option<PirTree>> {
+pub fn load_tree_checkpoint(path: &Path, expected_height: u64) -> Result<Option<PirTree>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -174,19 +152,12 @@ pub fn load_tree_checkpoint(
             expected_height
         );
     }
-    let dataset_version = u32::from_le_bytes(hdr[20..24].try_into().unwrap());
+    let dataset_version = u64::from_le_bytes(hdr[20..28].try_into().unwrap());
     anyhow::ensure!(
-        dataset_version == pir_types::DATASET_VERSION,
+        dataset_version == u64::from(pir_types::DATASET_VERSION),
         "nullifiers.tree dataset version {} does not match expected {}; remove it and re-run sync",
         dataset_version,
         pir_types::DATASET_VERSION
-    );
-    let network = decode_network(u32::from_le_bytes(hdr[24..28].try_into().unwrap()))?;
-    anyhow::ensure!(
-        network == expected_network,
-        "nullifiers.tree Zcash network {} does not match expected {}; remove it and re-run sync",
-        network,
-        expected_network
     );
     let mut payload = Vec::new();
     f.read_to_end(&mut payload)
@@ -203,12 +174,7 @@ pub fn load_tree_checkpoint(
 }
 
 /// Atomically write `nullifiers.tree` (temp + fsync + rename).
-pub fn save_tree_checkpoint(
-    path: &Path,
-    tree: &PirTree,
-    network: pir_types::ZcashNetwork,
-    chain_height: u64,
-) -> Result<()> {
+pub fn save_tree_checkpoint(path: &Path, tree: &PirTree, chain_height: u64) -> Result<()> {
     let tmp = path.with_extension("tree.tmp");
     if tmp.exists() {
         let _ = fs::remove_file(&tmp);
@@ -225,14 +191,12 @@ pub fn save_tree_checkpoint(
     hdr[0..8].copy_from_slice(TREE_MAGIC.as_slice());
     hdr[8..12].copy_from_slice(&TREE_SCHEMA_VERSION.to_le_bytes());
     hdr[12..20].copy_from_slice(&chain_height.to_le_bytes());
-    hdr[20..24].copy_from_slice(&pir_types::DATASET_VERSION.to_le_bytes());
-    hdr[24..28].copy_from_slice(&network_code(network).to_le_bytes());
+    hdr[20..28].copy_from_slice(&u64::from(pir_types::DATASET_VERSION).to_le_bytes());
     f.write_all(&hdr)?;
     f.write_all(&payload)?;
     f.sync_all().context("fsync tree checkpoint tmp")?;
     drop(f);
-    fs::rename(&tmp, path)
-        .with_context(|| format!("rename tree checkpoint to {}", path.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("rename tree checkpoint to {}", path.display()))?;
     Ok(())
 }
 
@@ -267,10 +231,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nullifiers.tree");
         let tree = tiny_tree();
-        save_tree_checkpoint(&path, &tree, pir_types::ZcashNetwork::Main, 1_700_000).unwrap();
-        let loaded = load_tree_checkpoint(&path, pir_types::ZcashNetwork::Main, 1_700_000)
-            .unwrap()
-            .unwrap();
+        save_tree_checkpoint(&path, &tree, 1_700_000).unwrap();
+        let loaded = load_tree_checkpoint(&path, 1_700_000).unwrap().unwrap();
         assert_eq!(loaded.root25, tree.root25);
         assert_eq!(loaded.ranges.len(), tree.ranges.len());
     }
@@ -279,16 +241,8 @@ mod tests {
     fn wrong_height_fails() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nullifiers.tree");
-        save_tree_checkpoint(&path, &tiny_tree(), pir_types::ZcashNetwork::Main, 1).unwrap();
-        assert!(load_tree_checkpoint(&path, pir_types::ZcashNetwork::Main, 2).is_err());
-    }
-
-    #[test]
-    fn wrong_network_fails() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("nullifiers.tree");
-        save_tree_checkpoint(&path, &tiny_tree(), pir_types::ZcashNetwork::Test, 1).unwrap();
-        assert!(load_tree_checkpoint(&path, pir_types::ZcashNetwork::Main, 1).is_err());
+        save_tree_checkpoint(&path, &tiny_tree(), 1).unwrap();
+        assert!(load_tree_checkpoint(&path, 2).is_err());
     }
 
     #[test]
@@ -296,7 +250,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nullifiers.tree");
         let mut header = [0u8; TREE_HEADER_LEN];
-        header[..8].copy_from_slice(b"SVOTEPT2");
+        header[..8].copy_from_slice(b"SVOTEPT1");
         std::fs::write(&path, header).unwrap();
 
         let err = read_tree_checkpoint_header(&path).unwrap_err().to_string();

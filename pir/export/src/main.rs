@@ -18,10 +18,7 @@ use nf_ingest::file_store;
 
 /// CLI arguments for the export command.
 #[derive(Parser)]
-#[command(
-    name = "pir-export",
-    about = "Build PIR tier databases from nullifier data"
-)]
+#[command(name = "pir-export", about = "Build PIR tier databases from nullifier data")]
 struct Args {
     /// Path to an Ironwood nullifiers.bin with an adjacent dataset marker.
     #[arg(long)]
@@ -51,11 +48,7 @@ fn main() -> Result<()> {
     let t0 = Instant::now();
     let data = std::fs::read(&args.nullifiers).context("read nullifiers file")?;
     let nfs = file_store::parse_nullifier_bytes(&data)?;
-    eprintln!(
-        "  Loaded {} nullifiers in {:.1}s",
-        nfs.len(),
-        t0.elapsed().as_secs_f64()
-    );
+    eprintln!("  Loaded {} nullifiers in {:.1}s", nfs.len(), t0.elapsed().as_secs_f64());
 
     let height = match &args.checkpoint {
         Some(cp_path) => {
@@ -77,9 +70,6 @@ fn main() -> Result<()> {
 
     pir_export::build_and_export(nfs, &args.output_dir, network, height)?;
 
-    eprintln!(
-        "\nDone! Total time: {:.1}s",
-        t_total.elapsed().as_secs_f64()
-    );
+    eprintln!("\nDone! Total time: {:.1}s", t_total.elapsed().as_secs_f64());
     Ok(())
 }

@@ -55,11 +55,7 @@ pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 1,024
 pub const YPIR_MIN_ROWS: usize = 2048;
 
 /// Number of rows in the Tier 1 YPIR database (padded to YPIR minimum).
-pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS {
-    TIER1_ROWS
-} else {
-    YPIR_MIN_ROWS
-}; // 2,048
+pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS { TIER1_ROWS } else { YPIR_MIN_ROWS }; // 2,048
 
 /// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
 /// `[nf_lo, nf_mid, nf_hi]`.
@@ -83,7 +79,7 @@ pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
 pub const NULLIFIER_POOL: &str = "ironwood";
 
 /// Version of the nullifier dataset contract.
-pub const DATASET_VERSION: u32 = 2;
+pub const DATASET_VERSION: u32 = 1;
 
 /// Zcash network represented by a PIR dataset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

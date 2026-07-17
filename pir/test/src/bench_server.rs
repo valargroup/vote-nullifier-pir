@@ -58,7 +58,6 @@ impl BenchMode {
 }
 
 pub struct BenchConfig {
-    pub zcash_network: pir_types::ZcashNetwork,
     pub url: String,
     pub nullifiers_path: PathBuf,
     pub iterations: usize,
@@ -361,7 +360,7 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
 
     eprintln!("  Connecting to PIR server...");
     let connect_start = Instant::now();
-    let client = Arc::new(connect_client(cfg.mode, &cfg.url, cfg.zcash_network).await?);
+    let client = Arc::new(connect_client(cfg.mode, &cfg.url).await?);
     eprintln!(
         "  Connected in {:.2}s\n",
         connect_start.elapsed().as_secs_f64()
@@ -503,16 +502,12 @@ async fn run_iteration(
 
 /// Build a [`PirClient`] for `mode`. [`BenchMode::SingleTls`] forces HTTP/1.1
 /// so each query avoids HTTP/2 stream multiplexing.
-async fn connect_client(
-    mode: BenchMode,
-    url: &str,
-    network: pir_types::ZcashNetwork,
-) -> Result<PirClient> {
+async fn connect_client(mode: BenchMode, url: &str) -> Result<PirClient> {
     let transport = match mode {
         BenchMode::SingleTls => HyperTransport::http1_only(),
         _ => HyperTransport::new(),
     };
-    PirClient::with_transport(url, network, Arc::new(transport)).await
+    PirClient::with_transport(url, Arc::new(transport)).await
 }
 
 fn pick_values<R: Rng + ?Sized>(ranges: &[[Fp; 3]], k: usize, rng: &mut R) -> Vec<Fp> {

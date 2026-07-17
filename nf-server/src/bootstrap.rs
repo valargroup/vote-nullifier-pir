@@ -102,9 +102,8 @@ struct ManifestFile {
 /// Wire format of `manifest.json` published by `publish-snapshot.yml`.
 #[derive(Debug, Deserialize)]
 struct PublishedManifest {
-    /// `3` for network-bound Ironwood snapshots.
+    /// `2` for snapshots with required Ironwood dataset identity.
     schema_version: u32,
-    zcash_network: pir_types::ZcashNetwork,
     nullifier_pool: String,
     dataset_version: u32,
     /// Block height the snapshot was built at; must equal the height
@@ -452,17 +451,10 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         .await
         .with_context(|| format!("decode {manifest_url}"))?;
 
-    if manifest.schema_version != 3 {
+    if manifest.schema_version != 2 {
         bail!(
-            "manifest schema_version = {} (only 3 is supported); publish a network-bound Ironwood snapshot",
+            "manifest schema_version = {} (only 2 is supported); publish an Ironwood snapshot",
             manifest.schema_version
-        );
-    }
-    if manifest.zcash_network != cfg.zcash_network {
-        bail!(
-            "manifest Zcash network is {}; expected {}",
-            manifest.zcash_network,
-            cfg.zcash_network
         );
     }
     if !pir_types::is_current_dataset(&manifest.nullifier_pool, manifest.dataset_version) {
@@ -892,8 +884,7 @@ mod tests {
     #[test]
     fn manifest_decodes_canonical_payload() {
         let raw = serde_json::json!({
-            "schema_version": 3,
-            "zcash_network": TEST_NETWORK,
+            "schema_version": 2,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
             "height": TEST_HEIGHT,
@@ -908,9 +899,8 @@ mod tests {
             }
         });
         let m: PublishedManifest = serde_json::from_value(raw).unwrap();
-        assert_eq!(m.schema_version, 3);
-        assert_eq!(m.zcash_network, TEST_NETWORK);
-        assert_eq!(m.dataset_version, 2);
+        assert_eq!(m.schema_version, 2);
+        assert_eq!(m.dataset_version, pir_types::DATASET_VERSION);
         assert_eq!(m.height, TEST_HEIGHT);
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
@@ -923,8 +913,7 @@ mod tests {
     #[test]
     fn manifest_decodes_with_optional_nullifier_artifacts() {
         let raw = serde_json::json!({
-            "schema_version": 3,
-            "zcash_network": TEST_NETWORK,
+            "schema_version": 2,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
             "height": TEST_HEIGHT,

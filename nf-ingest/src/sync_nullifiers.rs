@@ -24,7 +24,9 @@ const BLOCK_ALIGNMENT: u64 = 10;
 /// of the chain tip as reported by the server.
 pub async fn fetch_chain_tip(lwd_url: &str) -> Result<u64> {
     let mut client = connect_lwd(lwd_url).await?;
-    let latest = client.get_latest_block(Request::new(ChainSpec {})).await?;
+    let latest = client
+        .get_latest_block(Request::new(ChainSpec {}))
+        .await?;
     Ok(latest.into_inner().height)
 }
 
@@ -88,7 +90,7 @@ fn validate_ironwood_tree_state(
     );
     anyhow::ensure!(
         !state.ironwood_tree.is_empty(),
-        "lightwalletd {url} omitted the Ironwood tree at height {expected_height}; use an Ironwood-capable endpoint"
+        "lightwalletd {url} omitted the Ironwood tree at height {expected_height}; use a post-NU6.3 endpoint"
     );
     Ok(())
 }
@@ -224,11 +226,7 @@ pub async fn sync(
     if let Some(h) = max_height {
         info!(max_height = h, chain_tip, "max height set");
     }
-    info!(
-        target,
-        blocks_remaining = target.saturating_sub(start),
-        "sync target"
-    );
+    info!(target, blocks_remaining = target.saturating_sub(start), "sync target");
 
     if start >= target {
         return Ok(SyncResult {
@@ -313,7 +311,8 @@ mod tests {
     fn resume_height_discards_uncheckpointed_first_batch() {
         let dir = temp_dir("fresh_partial");
         file_store::ensure_ironwood_dataset(&dir, ZcashNetwork::Main).unwrap();
-        file_store::append_nullifiers(&dir, &[(MAINNET_ACTIVATION, vec![1u8; 32])]).unwrap();
+        file_store::append_nullifiers(&dir, &[(MAINNET_ACTIVATION, vec![1u8; 32])])
+            .unwrap();
 
         assert_eq!(
             resume_height(&dir, ZcashNetwork::Main).unwrap(),

@@ -269,16 +269,8 @@ pub fn offset_for_height(dir: &Path, target_height: u64) -> Result<Option<(u64, 
     // so we can binary search.
     let entry = |i: usize| -> (u64, u64) {
         let off = i * INDEX_ENTRY_SIZE;
-        let h = u64::from_le_bytes(
-            data[off..off + 8]
-                .try_into()
-                .expect("index entry height slice"),
-        );
-        let o = u64::from_le_bytes(
-            data[off + 8..off + 16]
-                .try_into()
-                .expect("index entry offset slice"),
-        );
+        let h = u64::from_le_bytes(data[off..off + 8].try_into().expect("index entry height slice"));
+        let o = u64::from_le_bytes(data[off + 8..off + 16].try_into().expect("index entry offset slice"));
         (h, o)
     };
 
@@ -452,8 +444,9 @@ pub fn parse_nullifier_bytes(data: &[u8]) -> Result<Vec<Fp>> {
         .map(|(i, chunk)| {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(chunk);
-            Option::from(Fp::from_repr(arr))
-                .ok_or_else(|| anyhow::anyhow!("non-canonical nullifier encoding at index {}", i))
+            Option::from(Fp::from_repr(arr)).ok_or_else(|| {
+                anyhow::anyhow!("non-canonical nullifier encoding at index {}", i)
+            })
         })
         .collect()
 }
@@ -514,7 +507,7 @@ mod tests {
         let dir = temp_dir("dataset_wrong");
         fs::write(
             dataset_marker_path(&dir),
-            br#"{"zcash_network":"main","nullifier_pool":"orchard","dataset_version":2}"#,
+            br#"{"zcash_network":"main","nullifier_pool":"orchard","dataset_version":1}"#,
         )
         .unwrap();
 
@@ -531,7 +524,7 @@ mod tests {
         let dir = temp_dir("dataset_wrong_network");
         fs::write(
             dataset_marker_path(&dir),
-            br#"{"zcash_network":"test","nullifier_pool":"ironwood","dataset_version":2}"#,
+            br#"{"zcash_network":"test","nullifier_pool":"ironwood","dataset_version":1}"#,
         )
         .unwrap();
 

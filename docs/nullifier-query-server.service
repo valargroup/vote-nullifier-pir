@@ -10,8 +10,8 @@ WorkingDirectory=/opt/nf-ingest
 # SVOTE_ZCASH_NETWORK, SVOTE_PIR_DATA_DIR, and bootstrap URL pins),
 # while the deploy workflow owns /opt/nf-ingest/.env (SENTRY_DSN,
 # SENTRY_ENVIRONMENT, and SENTRY_RELEASE). The
-# leading `-` makes both optional so the unit still starts on hosts
-# that haven't been provisioned with one or the other.
+# leading `-` lets systemd load the unit before provisioning. The
+# server still requires SVOTE_ZCASH_NETWORK from /etc/default/nf-server.
 EnvironmentFile=-/etc/default/nf-server
 EnvironmentFile=-/opt/nf-ingest/.env
 ExecStart=/opt/nf-ingest/nf-server serve --port 3000

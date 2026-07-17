@@ -100,7 +100,7 @@ fi
 
 if [ "${EUID:-0}" -ne 0 ]; then
   echo "This updater must run as root (it writes under /opt, /etc, and /usr/local/bin)." >&2
-  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash" >&2
+  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash" >&2
   exit 1
 fi
 
@@ -137,47 +137,6 @@ case "$ZCASH_NETWORK" in
     ;;
 esac
 PIR_DATA_DIR="${INSTALL_DIR}/pir-data/${ZCASH_NETWORK}"
-
-PIR_CONFIG_OVERRIDE=false
-if [ "${SVOTE_PIR_CONFIG_URL+x}" = x ]; then
-  PIR_CONFIG_URL="$SVOTE_PIR_CONFIG_URL"
-  PIR_CONFIG_OVERRIDE=true
-elif grep -q '^SVOTE_PIR_CONFIG_URL=' "$DEFAULTS_PATH"; then
-  PIR_CONFIG_URL="$(read_default SVOTE_PIR_CONFIG_URL)"
-else
-  PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
-fi
-VOTING_CONFIG_OVERRIDE=false
-if [ "${SVOTE_PIR_VOTING_CONFIG_URL+x}" = x ]; then
-  VOTING_CONFIG_URL="$SVOTE_PIR_VOTING_CONFIG_URL"
-  VOTING_CONFIG_OVERRIDE=true
-elif grep -q '^SVOTE_PIR_VOTING_CONFIG_URL=' "$DEFAULTS_PATH"; then
-  VOTING_CONFIG_URL="$(read_default SVOTE_PIR_VOTING_CONFIG_URL)"
-else
-  VOTING_CONFIG_URL="https://voting.valargroup.org/prod/static-voting-config.json"
-fi
-if [ "$ZCASH_NETWORK" = "test" ]; then
-  if [ "$PIR_CONFIG_OVERRIDE" = false ]; then
-    PIR_CONFIG_URL="${PIR_CONFIG_URL/\/prod\//\/stage\/}"
-  fi
-  if [ "$VOTING_CONFIG_OVERRIDE" = false ]; then
-    VOTING_CONFIG_URL="${VOTING_CONFIG_URL/\/prod\//\/stage\/}"
-  fi
-else
-  if [ "$PIR_CONFIG_OVERRIDE" = false ]; then
-    PIR_CONFIG_URL="${PIR_CONFIG_URL/\/stage\//\/prod\/}"
-  fi
-  if [ "$VOTING_CONFIG_OVERRIDE" = false ]; then
-    VOTING_CONFIG_URL="${VOTING_CONFIG_URL/\/stage\//\/prod\/}"
-  fi
-fi
-if [ "${SVOTE_PIR_PRECOMPUTED_BASE_URL+x}" = x ]; then
-  PRECOMPUTED_BASE_URL="$SVOTE_PIR_PRECOMPUTED_BASE_URL"
-elif grep -q '^SVOTE_PIR_PRECOMPUTED_BASE_URL=' "$DEFAULTS_PATH"; then
-  PRECOMPUTED_BASE_URL="$(read_default SVOTE_PIR_PRECOMPUTED_BASE_URL)"
-else
-  PRECOMPUTED_BASE_URL='https://shielded-vote.nyc3.digitaloceanspaces.com'
-fi
 
 if [ "$REFRESH_UNIT" = false ]; then
   if [ ! -f "$SERVICE_PATH" ]; then
@@ -294,9 +253,6 @@ if [ -x "${INSTALL_DIR}/${BINARY_NAME}" ] && [ "$FORCE" = false ]; then
     CONFIG_CURRENT=false
     if grep -Fxq "SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}" "$DEFAULTS_PATH" \
       && grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH" \
-      && grep -Fxq "SVOTE_PIR_CONFIG_URL=${PIR_CONFIG_URL}" "$DEFAULTS_PATH" \
-      && grep -Fxq "SVOTE_PIR_VOTING_CONFIG_URL=${VOTING_CONFIG_URL}" "$DEFAULTS_PATH" \
-      && grep -Fxq "SVOTE_PIR_PRECOMPUTED_BASE_URL=${PRECOMPUTED_BASE_URL}" "$DEFAULTS_PATH" \
       && [ -d "$PIR_DATA_DIR" ]; then
       CONFIG_CURRENT=true
     fi
@@ -338,21 +294,13 @@ if [ "$REFRESH_UNIT" = true ]; then
 fi
 
 if ! grep -Fxq "SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}" "$DEFAULTS_PATH" \
-  || ! grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH" \
-  || ! grep -Fxq "SVOTE_PIR_CONFIG_URL=${PIR_CONFIG_URL}" "$DEFAULTS_PATH" \
-  || ! grep -Fxq "SVOTE_PIR_VOTING_CONFIG_URL=${VOTING_CONFIG_URL}" "$DEFAULTS_PATH" \
-  || ! grep -Fxq "SVOTE_PIR_PRECOMPUTED_BASE_URL=${PRECOMPUTED_BASE_URL}" "$DEFAULTS_PATH"; then
+  || ! grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH"; then
   DEFAULTS_TMP="${tmp}/nf-server.defaults"
-  awk '$0 !~ /^SVOTE_ZCASH_NETWORK=/ && $0 !~ /^SVOTE_PIR_DATA_DIR=/ \
-    && $0 !~ /^SVOTE_PIR_CONFIG_URL=/ && $0 !~ /^SVOTE_PIR_VOTING_CONFIG_URL=/ \
-    && $0 !~ /^SVOTE_PIR_PRECOMPUTED_BASE_URL=/' \
+  awk '$0 !~ /^SVOTE_ZCASH_NETWORK=/ && $0 !~ /^SVOTE_PIR_DATA_DIR=/' \
     "$DEFAULTS_PATH" > "$DEFAULTS_TMP"
   {
     printf 'SVOTE_ZCASH_NETWORK=%s\n' "$ZCASH_NETWORK"
     printf 'SVOTE_PIR_DATA_DIR=%s\n' "$PIR_DATA_DIR"
-    printf 'SVOTE_PIR_CONFIG_URL=%s\n' "$PIR_CONFIG_URL"
-    printf 'SVOTE_PIR_VOTING_CONFIG_URL=%s\n' "$VOTING_CONFIG_URL"
-    printf 'SVOTE_PIR_PRECOMPUTED_BASE_URL=%s\n' "$PRECOMPUTED_BASE_URL"
   } >> "$DEFAULTS_TMP"
   install -m 0644 "$DEFAULTS_TMP" "$DEFAULTS_PATH"
 fi

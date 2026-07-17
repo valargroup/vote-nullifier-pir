@@ -12,7 +12,6 @@ readonly START_BINARY_BASE_URL='__BINARY_BASE_URL__'
 readonly START_PIR_CONFIG_URL='__PIR_CONFIG_URL__'
 readonly START_VOTING_CONFIG_URL='__VOTING_CONFIG_URL__'
 readonly START_PRECOMPUTED_BASE_URL='__PRECOMPUTED_BASE_URL__'
-readonly INSTALL_DIR='/opt/nf-ingest'
 
 log() {
   printf '==> %s\n' "$*"
@@ -26,7 +25,7 @@ fi
 
 if [ "${EUID:-0}" -ne 0 ]; then
   echo "This installer must run as root (it writes under /opt and /etc)." >&2
-  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/start_pir.sh | sudo bash" >&2
+  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/start_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash" >&2
   exit 1
 fi
 
@@ -46,23 +45,22 @@ fi
 
 ZCASH_NETWORK="${SVOTE_ZCASH_NETWORK:-}"
 case "$ZCASH_NETWORK" in
-  main|test) ;;
+  main)
+    PIR_CONFIG_URL="${SVOTE_PIR_CONFIG_URL-$START_PIR_CONFIG_URL}"
+    VOTING_CONFIG_URL="${SVOTE_PIR_VOTING_CONFIG_URL-$START_VOTING_CONFIG_URL}"
+    ;;
+  test)
+    PIR_CONFIG_URL="${SVOTE_PIR_CONFIG_URL-https://voting.valargroup.org/stage/pir.json}"
+    VOTING_CONFIG_URL="${SVOTE_PIR_VOTING_CONFIG_URL-https://voting.valargroup.org/stage/static-voting-config.json}"
+    ;;
   *)
     echo "SVOTE_ZCASH_NETWORK must be set to main or test." >&2
     echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/start_pir.sh | sudo env SVOTE_ZCASH_NETWORK=test bash" >&2
     exit 1
     ;;
 esac
-PIR_DATA_DIR="${INSTALL_DIR}/pir-data/${ZCASH_NETWORK}"
+PIR_DATA_DIR="/opt/nf-ingest/pir-data/${ZCASH_NETWORK}"
 
-DEFAULT_PIR_CONFIG_URL="$START_PIR_CONFIG_URL"
-DEFAULT_VOTING_CONFIG_URL="$START_VOTING_CONFIG_URL"
-if [ "$ZCASH_NETWORK" = "test" ]; then
-  DEFAULT_PIR_CONFIG_URL="${DEFAULT_PIR_CONFIG_URL/\/prod\//\/stage\/}"
-  DEFAULT_VOTING_CONFIG_URL="${DEFAULT_VOTING_CONFIG_URL/\/prod\//\/stage\/}"
-fi
-PIR_CONFIG_URL="${SVOTE_PIR_CONFIG_URL-$DEFAULT_PIR_CONFIG_URL}"
-VOTING_CONFIG_URL="${SVOTE_PIR_VOTING_CONFIG_URL-$DEFAULT_VOTING_CONFIG_URL}"
 PRECOMPUTED_BASE_URL="${SVOTE_PIR_PRECOMPUTED_BASE_URL-$START_PRECOMPUTED_BASE_URL}"
 
 # Minimal cloud images often omit curl; HTTPS needs a CA bundle on Debian/Ubuntu.
@@ -144,13 +142,13 @@ SERVICE_PATH="${tmp}/nullifier-query-server.service"
 log "Downloading systemd service"
 curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_PATH" "$SERVICE_URL"
 
-log "Installing nf-server under ${INSTALL_DIR}"
-install -d -m 0755 "$PIR_DATA_DIR"
-install -m 755 "$BINARY_PATH" "${INSTALL_DIR}/nf-server"
+log "Installing nf-server under /opt/nf-ingest"
+mkdir -p "$PIR_DATA_DIR"
+install -m 755 "$BINARY_PATH" /opt/nf-ingest/nf-server
 install -m 644 "$SERVICE_PATH" /etc/systemd/system/nullifier-query-server.service
 
 # Expose nf-server on PATH so `nf-server doctor` etc. work in the same shell.
-ln -sf "${INSTALL_DIR}/nf-server" /usr/local/bin/nf-server
+ln -sf /opt/nf-ingest/nf-server /usr/local/bin/nf-server
 
 umask 022
 cat >/etc/default/nf-server <<EOF
@@ -166,8 +164,8 @@ if [ -n "${SENTRY_DSN:-}" ]; then
   log "Writing Sentry configuration"
   umask 077
   # Single %s so a DSN containing "%" is not interpreted by printf.
-  printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" >"${INSTALL_DIR}/.env"
-  chmod 600 "${INSTALL_DIR}/.env"
+  printf '%s\n' "SENTRY_DSN=$SENTRY_DSN" >/opt/nf-ingest/.env
+  chmod 600 /opt/nf-ingest/.env
 fi
 
 log "Starting nullifier-query-server"
@@ -182,7 +180,7 @@ echo
 echo "Environment data:"
 echo "  Version:               ${START_RELEASE_TAG}"
 echo "  Platform:              ${PLATFORM}"
-echo "  Install directory:     ${INSTALL_DIR}"
+echo "  Install directory:     /opt/nf-ingest"
 echo "  Zcash network:         ${ZCASH_NETWORK}"
 echo "  PIR data directory:    ${PIR_DATA_DIR}"
 echo "  Service:               nullifier-query-server (systemd)"

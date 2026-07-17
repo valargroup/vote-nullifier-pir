@@ -16,7 +16,6 @@ use crate::transport::HyperTransport;
 // ── Config ───────────────────────────────────────────────────────────────────
 
 pub struct LoadConfig {
-    pub zcash_network: pir_types::ZcashNetwork,
     pub url: String,
     pub nullifiers_path: PathBuf,
     pub concurrency: usize,
@@ -238,10 +237,8 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
 
     // Connect
     eprintln!("  Connecting to PIR server...");
-    let client = Arc::new(
-        PirClient::with_transport(&cfg.url, cfg.zcash_network, Arc::new(HyperTransport::new()))
-            .await?,
-    );
+    let client =
+        Arc::new(PirClient::with_transport(&cfg.url, Arc::new(HyperTransport::new())).await?);
     eprintln!("  Connected.\n");
 
     // Warmup: a single proof to verify connectivity

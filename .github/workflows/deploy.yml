@@ -108,10 +108,9 @@ jobs:
           curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
 
           if ! jq -e \
-            --arg network "$SVOTE_ZCASH_NETWORK" \
-            '.schema_version == 3 and .zcash_network == $network and .nullifier_pool == "ironwood" and .dataset_version == 2' \
+            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
             manifest.json >/dev/null; then
-            echo "manifest is not $SVOTE_ZCASH_NETWORK Ironwood dataset version 2 with schema version 3" >&2
+            echo "manifest has the wrong schema or dataset identity" >&2
             exit 1
           fi
 
@@ -128,6 +127,12 @@ jobs:
             fi
             curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/$f" >/dev/null
           done
+
+          curl -fsSL --retry 3 "$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/pir_root.json" -o pir_root.json
+          if ! jq -e --arg network "$SVOTE_ZCASH_NETWORK" '.zcash_network == $network' pir_root.json >/dev/null; then
+            echo "pir_root.json is not for Zcash network $SVOTE_ZCASH_NETWORK" >&2
+            exit 1
+          fi
 
           echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
           echo "$SVOTE_ZCASH_NETWORK snapshot $HEIGHT is published and has all required tier files."
@@ -152,8 +157,7 @@ jobs:
           chmod +x nf-server
           DATASET_INFO=$(./nf-server dataset-info)
           printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"'
-          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])'
-          printf '%s\n' "$DATASET_INFO" | grep -Fq "\"$SVOTE_ZCASH_NETWORK\""
+          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -175,9 +179,8 @@ jobs:
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Fq "\"$SVOTE_ZCASH_NETWORK\""; then
-              echo "FAIL: staged nf-server does not support $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+              echo "FAIL: staged nf-server does not support Ironwood dataset version 1."
               exit 1
             fi
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
@@ -195,17 +198,13 @@ jobs:
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             DEFAULTS_FILE=/etc/default/nf-server
             case "$TARGET_ENVIRONMENT" in
-              production) PIR_ENV=prod; EXPECTED_NETWORK=main ;;
-              staging) PIR_ENV=stage; EXPECTED_NETWORK=test ;;
+              production) PIR_ENV=prod ;;
+              staging) PIR_ENV=stage ;;
               *)
                 echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
                 exit 1
                 ;;
             esac
-            if [ "$SVOTE_ZCASH_NETWORK" != "$EXPECTED_NETWORK" ]; then
-              echo "target_environment requires $EXPECTED_NETWORK, got $SVOTE_ZCASH_NETWORK" >&2
-              exit 1
-            fi
             PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
             PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
             VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
@@ -293,9 +292,9 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])' || \
                ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
-              echo "FAIL: backup is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
+              echo "FAIL: backup is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 1."
               exit 1
             fi
 
@@ -348,8 +347,7 @@ jobs:
           chmod +x nf-server
           DATASET_INFO=$(./nf-server dataset-info)
           printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"'
-          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])'
-          printf '%s\n' "$DATASET_INFO" | grep -Fq "\"$SVOTE_ZCASH_NETWORK\""
+          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -371,9 +369,8 @@ jobs:
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Fq "\"$SVOTE_ZCASH_NETWORK\""; then
-              echo "FAIL: staged nf-server does not support $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+              echo "FAIL: staged nf-server does not support Ironwood dataset version 1."
               exit 1
             fi
             DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
@@ -391,17 +388,13 @@ jobs:
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             DEFAULTS_FILE=/etc/default/nf-server
             case "$TARGET_ENVIRONMENT" in
-              production) PIR_ENV=prod; EXPECTED_NETWORK=main ;;
-              staging) PIR_ENV=stage; EXPECTED_NETWORK=test ;;
+              production) PIR_ENV=prod ;;
+              staging) PIR_ENV=stage ;;
               *)
                 echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
                 exit 1
                 ;;
             esac
-            if [ "$SVOTE_ZCASH_NETWORK" != "$EXPECTED_NETWORK" ]; then
-              echo "target_environment requires $EXPECTED_NETWORK, got $SVOTE_ZCASH_NETWORK" >&2
-              exit 1
-            fi
             PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
             PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
             VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
@@ -483,9 +476,9 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])' || \
                ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
-              echo "FAIL: primary is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
+              echo "FAIL: primary is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 1."
               exit 1
             fi
 

@@ -15,19 +15,16 @@ pub fn export_tree_and_tiers_from_nullifiers(
     progress: impl Fn(&str, u8) + Send,
 ) -> Result<()> {
     let tree_path = data_dir.join("nullifiers.tree");
-    if let Ok(Some((_, hh, checkpoint_network))) =
-        pir_export::read_tree_checkpoint_header(&tree_path)
-    {
-        if hh != chain_height || checkpoint_network != network {
+    if let Ok(Some((_, hh))) = pir_export::read_tree_checkpoint_header(&tree_path) {
+        if hh != chain_height {
             let _ = std::fs::remove_file(&tree_path);
         }
     }
-    let tree = match pir_export::load_tree_checkpoint(&tree_path, network, chain_height)? {
+    let tree = match pir_export::load_tree_checkpoint(&tree_path, chain_height)? {
         Some(t) => t,
         None => pir_export::materialize_tree_checkpoint_with_progress(
             nfs,
             &tree_path,
-            network,
             chain_height,
             progress,
         )?,

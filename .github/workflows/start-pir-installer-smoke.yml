@@ -10,6 +10,7 @@ on:
       - "scripts/update_pir.sh.template"
       - "scripts/ci_smoke_start_pir.sh"
       - "scripts/ci_smoke_start_pir_inner.sh"
+      - "docs/nullifier-query-server.service"
       - ".github/workflows/release.yml"
       - ".github/workflows/start-pir-installer-smoke.yml"
   workflow_dispatch:

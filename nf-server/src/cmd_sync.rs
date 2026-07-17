@@ -294,8 +294,8 @@ pub async fn run(args: Args) -> Result<()> {
         }
 
         let tree_path = data_dir.join("nullifiers.tree");
-        if let Ok(Some((_, hh, network))) = pir_export::read_tree_checkpoint_header(&tree_path) {
-            if hh != export_target || network != args.zcash_network {
+        if let Ok(Some((_, hh))) = pir_export::read_tree_checkpoint_header(&tree_path) {
+            if hh != export_target {
                 eprintln!(
                     "Removing stale nullifiers.tree (on-disk checkpoint height {}, tree header {}, export target {})",
                     ch, hh, export_target

@@ -23,10 +23,10 @@ On Linux, we recommend using this one-CLI command to get started:
 
 ```bash
 curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/start_pir.sh \
-  | sudo env SVOTE_ZCASH_NETWORK=test bash
+  | sudo env SVOTE_ZCASH_NETWORK=main bash
 ```
 
-Use `test` for staging and `main` for production. The installer keeps their data in separate directories.
+Use `main` for production and `test` for staging.
 
 What it does:
 - Downloads the latest binaries and verifies `nf-server` against `SHA256SUMS` for the pinned release.
@@ -92,15 +92,18 @@ The server needs the following network access:
 
 Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and `nullifier-query-server.service` to **DigitalOcean Spaces** (primary) with **GitHub Releases** as a fallback. `start_pir.sh` tries Spaces first, then GitHub. The release workflow derives the public Spaces origin from `DO_BUCKET` + `DO_REGION` unless `DO_PUBLIC_BASE_URL` is set. The workflow default is `https://shielded-vote.nyc3.digitaloceanspaces.com`; override `DO_BUCKET`, `DO_REGION`, or `DO_PUBLIC_BASE_URL` only when publishing to a different bucket. Exact URL patterns are in the curl commands in [Manual install](#manual-install-no-start_pirsh).
 
-`start_pir.sh` itself is served at two paths under the configured Spaces origin:
+`start_pir.sh` is served at these paths under the configured Spaces origin:
 
-- `<spaces-origin>/start_pir.sh` — always the **latest** release.
-- `<spaces-origin>/scripts/start_pir/<snapshot_height>/start_pir.sh` — pinned to the release that matches a given voting `snapshot_height`. Use this for reproducible installs.
+- `<spaces-origin>/scripts/start_pir/<tag>/start_pir.sh` — pinned to any release tag, including an RC.
+- `<spaces-origin>/start_pir.sh` — the latest stable release.
+- `<spaces-origin>/scripts/start_pir/<snapshot_height>/start_pir.sh` — the stable release matching a voting `snapshot_height`.
 
 `update_pir.sh` is served alongside it for existing `start_pir.sh` hosts:
 
-- `<spaces-origin>/update_pir.sh` — updates to the **latest** published release while preserving `/etc/default/nf-server`, `/opt/nf-ingest/.env`, and `pir-data`.
+- `<spaces-origin>/update_pir.sh` — updates to the latest stable release while preserving existing config and data files.
 - `<spaces-origin>/scripts/update_pir/<tag>/update_pir.sh` — pinned to a specific release tag for rollback or reproducible testing.
+
+Prereleases publish only the tag-scoped paths and do not change the stable aliases.
 
 ### Manual install (no `start_pir.sh`)
 
@@ -192,7 +195,7 @@ curl -fsS http://127.0.0.1:3000/root   | jq '{zcash_network, nullifier_pool, dat
 
 `GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
-Confirm `/root` reports the configured `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 2`.
+Confirm `/root` reports the configured network, `nullifier_pool: "ironwood"`, and `dataset_version: 1`.
 Its `height` should match `snapshot_height` from the environment's published
 `pir.json` while bootstrap is enabled.
 
@@ -238,9 +241,9 @@ Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, boot
 
 **On startup**, `serve` fetches the environment's PIR snapshot config
 (`SVOTE_PIR_CONFIG_URL`, for example `https://voting.valargroup.org/prod/pir.json`),
-reads its schema 2 `zcash_network` and `snapshot_height`, compares that identity
-to local `pir_root.json`, and downloads matching snapshot tiers from
-`SVOTE_PIR_PRECOMPUTED_BASE_URL` if they don't match. For zero-touch migration, hosts that only have the legacy
+reads its `snapshot_height`, compares that height and the Ironwood dataset
+identity to local `pir_root.json`, and downloads matching snapshot tiers from
+`SVOTE_PIR_PRECOMPUTED_BASE_URL/snapshots/<network>/<height>` if they don't match. For zero-touch migration, hosts that only have the legacy
 `SVOTE_PIR_VOTING_CONFIG_URL` derive `prod/pir.json` or `stage/pir.json` when
 that URL clearly identifies an environment; ambiguous legacy URLs fall back to
 the old active-round discovery path. With default workflow settings, existing
@@ -290,7 +293,7 @@ sudo env SVOTE_ZCASH_NETWORK=main LWD_URLS="$LWD_URLS" \
 systemctl start nullifier-query-server
 ```
 
-Set `LWD_URLS` to endpoints for `SVOTE_ZCASH_NETWORK`. Staging uses public testnet endpoints; production uses mainnet endpoints after NU6.3 activation.
+Set `LWD_URLS` to post-NU6.3 endpoints for `SVOTE_ZCASH_NETWORK`. Staging uses public testnet endpoints; production uses mainnet endpoints.
 
 Useful flags:
 
@@ -300,7 +303,7 @@ Useful flags:
 
 `nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped when the dataset identity matches.
 
-Dataset v1, another network's data, and legacy Orchard data cannot be resumed. Use a separate network directory and set `SVOTE_PIR_SYNC_RESET=1` for the first dataset v2 sync.
+Unlabeled, wrong-network, and legacy Orchard data cannot be resumed. Use a separate data directory for each network and set `SVOTE_PIR_SYNC_RESET=1` when rebuilding incompatible data.
 
 **Sync time** is governed by lightwalletd nullifier streaming, not local CPU, and grows with chain length from Ironwood activation.
 
@@ -324,7 +327,7 @@ The release ships `nullifier-query-server.service` and `start_pir.sh` installs i
 - has `WorkingDirectory=/opt/nf-ingest`;
 - `ExecStart=/opt/nf-ingest/nf-server serve --port 3000`;
 - pulls environment from two files (both optional, `EnvironmentFile=-…`):
-- `/etc/default/nf-server` — operator owned. Holds the required `SVOTE_ZCASH_NETWORK`, network-specific `SVOTE_PIR_DATA_DIR`, and bootstrap URLs.
+- `/etc/default/nf-server` — operator / cloud-init owned. Holds required `SVOTE_ZCASH_NETWORK`, network-specific `SVOTE_PIR_DATA_DIR`, and bootstrap URLs.
   - `/opt/nf-ingest/.env` — deploy-workflow owned. Holds `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, and `SENTRY_RELEASE`. Mode `0600`.
 
 To change settings, edit the appropriate env file and:
@@ -375,19 +378,20 @@ For synced hosts, back up `nullifiers.bin`, `nullifiers.dataset.json`, `nullifie
 For hosts already installed by `start_pir.sh`, use the latest-release updater when you only want to refresh the release-managed artifacts and preserve local configuration:
 
 ```bash
-curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh \
+  | sudo env SVOTE_ZCASH_NETWORK=main bash
 ```
 
-The updater downloads the release binary and `SHA256SUMS`, verifies the platform binary, atomically replaces `/opt/nf-ingest/nf-server`, refreshes `nullifier-query-server.service`, keeps `/etc/default/nf-server`, `/opt/nf-ingest/.env`, and `pir-data` unchanged, restarts `nullifier-query-server`, then waits for `/ready`.
+Use `test` on staging. The updater preserves existing URL and Sentry settings, adds the network-specific data directory, refreshes the binary and unit, then waits for `/ready`.
 
 Useful options:
 
 ```bash
 # Reinstall and restart even when the installed binary already matches.
-curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash -s -- --force
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash -s -- --force
 
 # Install a specific release tag.
-curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash -s -- --tag v0.x.y
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash -s -- --tag v0.x.y
 ```
 
 For a full reconfiguration back to the published defaults, re-run `start_pir.sh`; it is idempotent but rewrites `/etc/default/nf-server`. For custom layouts, repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG` (re-download the binary, re-check `SHA256SUMS`, reinstall to `/opt/nf-ingest/nf-server`, run `doctor`), then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart.
@@ -445,8 +449,8 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 | `SVOTE_ZCASH_NETWORK` | Required Zcash network: `main` or `test`. |
 | `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`). |
 | `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`). |
-| `LWD_URLS` | Comma-separated lightwalletd gRPC URLs for `SVOTE_ZCASH_NETWORK`. Overrides `--lwd-url` when set. |
-| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete the selected network's dataset marker, nullifiers, tree, and tiers before the run. |
+| `LWD_URLS` | Comma-separated post-NU6.3 lightwalletd gRPC URLs. Overrides `--lwd-url` when set. |
+| `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete the dataset marker, nullifiers, tree, and tiers before the run. Required once when migrating legacy Orchard data. |
 | `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above the active round `snapshot_height`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `vote_servers` that expose an active round with `snapshot_height`. |
 
@@ -454,20 +458,20 @@ See [Synced mode](#synced-mode) for the common ad-hoc flags (`--non-interactive`
 
 ## Files under `SVOTE_PIR_DATA_DIR`
 
-Everything on disk under `SVOTE_PIR_DATA_DIR` (`/opt/nf-ingest/pir-data/<network>` on fleet hosts) belongs to exactly one network.
+Everything under `SVOTE_PIR_DATA_DIR` belongs to exactly one Zcash network. Fleet hosts use `/opt/nf-ingest/pir-data/<network>`.
 
 | File | Stage / source | Purpose |
 |------|----------------|---------|
 | `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Ironwood nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
-| `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 2`. |
+| `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 1`. |
 | `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`; half-written batches are discarded on startup. |
 | `nullifiers.index` | Stage 1 — sync | Per-batch height index; lets `sync` and `POST /snapshot/prepare` export a snapshot at a past height. Auto-rebuilt if missing. |
 | `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
-| `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database. Identical to `<precomputed-base>/snapshots/<network>/<height>/tier*.bin`. |
+| `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries. Identical to `<precomputed-base>/snapshots/<network>/<height>/tier*.bin`. |
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: dataset identity, tree roots, tier byte sizes, and `height`. Installed **last** so a half-applied bootstrap retries cleanly next start. |
 | `tier1.precompute`, `tier2.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Skips the ~50–120 s YPIR offline precomputation on subsequent boots. Auto-invalidated by content hash when the corresponding `tier{N}.bin` changes; safe to delete (next boot recomputes). Sizes: tier 1 ≈ 720 MB, tier 2 ≈ 13 GB on the production scenario. **Not** distributed via the CDN; each host writes its own. |
 
-When in doubt, reset only the selected network directory. For example: `rm -rf /opt/nf-ingest/pir-data/test/* && systemctl restart nullifier-query-server`.
+When in doubt, reset only the selected network directory. For example, `rm -rf /opt/nf-ingest/pir-data/test/* && systemctl restart nullifier-query-server` re-bootstraps testnet from the CDN.
 
 `nf-server doctor` reports cache presence and size per tier; use it for warm-start regression triage ("did the cache disappear?").
 
@@ -480,7 +484,7 @@ When in doubt, reset only the selected network directory. For example: `rm -rf /
 | `GET /tier0` | Client | Download tier-0 of the PIR tree in plaintext (small, public). |
 | `GET /params/tier1`, `GET /params/tier2` | Client | YPIR scenario parameters needed to build a query. |
 | `POST /tier1/query`, `POST /tier2/query` | Client | Submit an encrypted PIR query, get an encrypted response. |
-| `GET /root` | Client | Dataset identity, current tree roots, depth, `num_ranges`, and serving `height`. |
+| `GET /root` | Client | Zcash network, dataset identity, tree roots, depth, `num_ranges`, and serving `height`. |
 | `GET /health` | Ops | JSON: `status` (`starting` / `ok` / `rebuilding` / `error`) plus tier row metadata. Always 200. |
 | `GET /ready` | Ops / load balancer | 200 only when the internal phase is `Serving`; **503** with a JSON `phase` body while still starting or on error. |
 | `GET /metrics` | Ops | Prometheus exposition. |

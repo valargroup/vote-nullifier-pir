@@ -381,8 +381,9 @@ impl OwnedTierState {
         }
 
         // Slow path: read tier data, run YPIR setup, write cache.
-        let tier_data = std::fs::read(tier_path)
-            .with_context(|| format!("read tier file {}", tier_path.display()))?;
+        let tier_data = std::fs::read(tier_path).with_context(|| {
+            format!("read tier file {}", tier_path.display())
+        })?;
 
         // Hash the EXACT buffer we're about to feed YPIR. write_cache takes
         // this hash as a parameter rather than re-reading tier_path, which

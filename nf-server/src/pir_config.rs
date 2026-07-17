@@ -30,7 +30,6 @@ pub enum Source {
 #[derive(Debug, Deserialize)]
 struct PirSnapshotConfig {
     schema_version: u32,
-    zcash_network: ZcashNetwork,
     snapshot_height: JsonU64,
 }
 
@@ -111,17 +110,10 @@ pub async fn fetch_required_snapshot_height(
         .await
         .with_context(|| format!("decode {url} as PIR snapshot config"))?;
 
-    if cfg.schema_version != 2 {
+    if cfg.schema_version != 1 {
         bail!(
-            "pir config schema_version = {} (only 2 is supported)",
+            "pir config schema_version = {} (only 1 is supported)",
             cfg.schema_version
-        );
-    }
-    if cfg.zcash_network != expected_network {
-        bail!(
-            "pir config Zcash network is {}; expected {}",
-            cfg.zcash_network,
-            expected_network
         );
     }
     let height = cfg.snapshot_height.parse()?;
