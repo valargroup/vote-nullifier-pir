@@ -152,12 +152,15 @@ jobs:
           set -euo pipefail
           cp docs/nullifier-query-server.service .
           rm -rf nf-server/
-          curl -fL --retry 5 -o nf-server \
+          rm -f nf-server-linux-amd64 SHA256SUMS
+          curl -fL --retry 5 -o nf-server-linux-amd64 \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+          curl -fL --retry 5 -o SHA256SUMS \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/SHA256SUMS"
+          # The fleet binary targets x86-64-v4, so hosted runners only verify its checksum.
+          grep ' nf-server-linux-amd64$' SHA256SUMS | sha256sum --check -
+          mv nf-server-linux-amd64 nf-server
           chmod +x nf-server
-          DATASET_INFO=$(./nf-server dataset-info)
-          printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"'
-          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -342,12 +345,15 @@ jobs:
           set -euo pipefail
           cp docs/nullifier-query-server.service .
           rm -rf nf-server/
-          curl -fL --retry 5 -o nf-server \
+          rm -f nf-server-linux-amd64 SHA256SUMS
+          curl -fL --retry 5 -o nf-server-linux-amd64 \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+          curl -fL --retry 5 -o SHA256SUMS \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/SHA256SUMS"
+          # The fleet binary targets x86-64-v4, so hosted runners only verify its checksum.
+          grep ' nf-server-linux-amd64$' SHA256SUMS | sha256sum --check -
+          mv nf-server-linux-amd64 nf-server
           chmod +x nf-server
-          DATASET_INFO=$(./nf-server dataset-info)
-          printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"'
-          printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
