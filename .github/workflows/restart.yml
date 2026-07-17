@@ -71,6 +71,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
+
 jobs:
   validate_height:
     name: Validate forced snapshot height
@@ -111,14 +114,15 @@ jobs:
             exit 1
           fi
 
-          MANIFEST_URL="$SNAPSHOTS_BASE_URL/$HEIGHT/manifest.json"
+          MANIFEST_URL="$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/manifest.json"
           echo "==> Fetching $MANIFEST_URL"
           curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
 
           if ! jq -e \
-            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            --arg network "$SVOTE_ZCASH_NETWORK" \
+            '.schema_version == 3 and .zcash_network == $network and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             manifest.json >/dev/null; then
-            echo "manifest is not Ironwood dataset version 1 with schema version 2" >&2
+            echo "manifest is not $SVOTE_ZCASH_NETWORK Ironwood dataset version 2 with schema version 3" >&2
             exit 1
           fi
 
@@ -133,11 +137,11 @@ jobs:
               echo "manifest is missing required file entry: $f" >&2
               exit 1
             fi
-            curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$HEIGHT/$f" >/dev/null
+            curl -fsSI --retry 3 "$SNAPSHOTS_BASE_URL/$SVOTE_ZCASH_NETWORK/$HEIGHT/$f" >/dev/null
           done
 
           echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
-          echo "Snapshot $HEIGHT is published and has all required tier files."
+          echo "$SVOTE_ZCASH_NETWORK snapshot $HEIGHT is published and has all required tier files."
 
   restart_backup:
     name: Restart backup
@@ -152,7 +156,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
           # Cold-start budget: snapshot self-bootstrap (~30s for the
           # ~6 GB CDN download in-region) + load_serving_state (mmaps
           # and parses ~6 GB of tier files into memory, 60-90s on the
@@ -164,8 +168,9 @@ jobs:
 
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
-              echo "FAIL: installed nf-server does not support Ironwood dataset version 1."
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$DATASET_INFO" | grep -Fq "\"$SVOTE_ZCASH_NETWORK\""; then
+              echo "FAIL: installed nf-server does not support $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
               exit 1
             fi
 
@@ -174,28 +179,36 @@ jobs:
             DEFAULTS_FILE=/etc/default/nf-server
 
             case "$TARGET_ENVIRONMENT" in
-              production) PIR_ENV=prod ;;
-              staging) PIR_ENV=stage ;;
+              production) PIR_ENV=prod; EXPECTED_NETWORK=main ;;
+              staging) PIR_ENV=stage; EXPECTED_NETWORK=test ;;
               *)
                 echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
                 exit 1
                 ;;
             esac
+            if [ "$SVOTE_ZCASH_NETWORK" != "$EXPECTED_NETWORK" ]; then
+              echo "target_environment requires $EXPECTED_NETWORK, got $SVOTE_ZCASH_NETWORK" >&2
+              exit 1
+            fi
+            PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
             PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
             VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
             PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
+              echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
               echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
             } >> "$tmp"
             sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
             rm -f "$tmp"
+            sudo install -d -m 0755 "$PIR_DATA_DIR"
 
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
@@ -249,8 +262,9 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
-              echo "FAIL: backup is not serving Ironwood dataset version 1."
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
+              echo "FAIL: backup is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
               exit 1
             fi
 
@@ -274,14 +288,14 @@ jobs:
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
                 echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
-                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                echo "Hint: ensure snapshots/${SVOTE_ZCASH_NETWORK}/${FORCED_HEIGHT}/ is published and inspect bootstrap outcomes above."
                 exit 1
               fi
               echo "OK: backup is serving forced snapshot height $SERVED"
             elif [ "$VERIFY_HEIGHT" = "true" ]; then
               if [ "$EXPECTED" -gt 0 ] && [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
-                echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
+                echo "Hint: ensure snapshots/${SVOTE_ZCASH_NETWORK}/${EXPECTED}/ is published, then re-run this workflow."
                 exit 1
               elif [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
                 echo "FAIL: expected height is zero and no served snapshot was reported."
@@ -332,15 +346,16 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
           command_timeout: 11m
           script: |
             set -eu
 
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
-              echo "FAIL: installed nf-server does not support Ironwood dataset version 1."
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$DATASET_INFO" | grep -Fq "\"$SVOTE_ZCASH_NETWORK\""; then
+              echo "FAIL: installed nf-server does not support $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
               exit 1
             fi
 
@@ -349,28 +364,36 @@ jobs:
             DEFAULTS_FILE=/etc/default/nf-server
 
             case "$TARGET_ENVIRONMENT" in
-              production) PIR_ENV=prod ;;
-              staging) PIR_ENV=stage ;;
+              production) PIR_ENV=prod; EXPECTED_NETWORK=main ;;
+              staging) PIR_ENV=stage; EXPECTED_NETWORK=test ;;
               *)
                 echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
                 exit 1
                 ;;
             esac
+            if [ "$SVOTE_ZCASH_NETWORK" != "$EXPECTED_NETWORK" ]; then
+              echo "target_environment requires $EXPECTED_NETWORK, got $SVOTE_ZCASH_NETWORK" >&2
+              exit 1
+            fi
+            PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
             PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
             VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
             PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
+              echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
               echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
             } >> "$tmp"
             sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
             rm -f "$tmp"
+            sudo install -d -m 0755 "$PIR_DATA_DIR"
 
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
@@ -420,8 +443,9 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
-              echo "FAIL: primary is not serving Ironwood dataset version 1."
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
+              echo "FAIL: primary is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
               exit 1
             fi
 
@@ -445,14 +469,14 @@ jobs:
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
                 echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
-                echo "Hint: ensure snapshots/${FORCED_HEIGHT}/ is published to Spaces and inspect bootstrap outcomes above."
+                echo "Hint: ensure snapshots/${SVOTE_ZCASH_NETWORK}/${FORCED_HEIGHT}/ is published and inspect bootstrap outcomes above."
                 exit 1
               fi
               echo "OK: primary is serving forced snapshot height $SERVED"
             elif [ "$VERIFY_HEIGHT" = "true" ]; then
               if [ "$EXPECTED" -gt 0 ] && [ "$SERVED" -lt "$EXPECTED" ]; then
                 echo "FAIL: served ($SERVED) < expected ($EXPECTED). Replica didn't converge on the new snapshot."
-                echo "Hint: voting-config expects height $EXPECTED; ensure snapshots/${EXPECTED}/ is published to Spaces, then re-run this workflow (do not restart before publish completes)."
+                echo "Hint: ensure snapshots/${SVOTE_ZCASH_NETWORK}/${EXPECTED}/ is published, then re-run this workflow."
                 exit 1
               elif [ "$EXPECTED" -eq 0 ] && [ "$SERVED" -le 0 ]; then
                 echo "FAIL: expected height is zero and no served snapshot was reported."

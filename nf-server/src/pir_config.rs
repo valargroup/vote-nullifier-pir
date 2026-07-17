@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use pir_types::ZcashNetwork;
 use serde::Deserialize;
 
 pub const DEFAULT_PROD_PIR_CONFIG_URL: &str = "https://voting.valargroup.org/prod/pir.json";
@@ -29,6 +30,7 @@ pub enum Source {
 #[derive(Debug, Deserialize)]
 struct PirSnapshotConfig {
     schema_version: u32,
+    zcash_network: ZcashNetwork,
     snapshot_height: JsonU64,
 }
 
@@ -88,7 +90,11 @@ pub fn resolve_source(
     })
 }
 
-pub async fn fetch_required_snapshot_height(url: &str, timeout: Duration) -> Result<u64> {
+pub async fn fetch_required_snapshot_height(
+    url: &str,
+    expected_network: ZcashNetwork,
+    timeout: Duration,
+) -> Result<u64> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .build()
@@ -105,25 +111,22 @@ pub async fn fetch_required_snapshot_height(url: &str, timeout: Duration) -> Res
         .await
         .with_context(|| format!("decode {url} as PIR snapshot config"))?;
 
-    if cfg.schema_version != 1 {
+    if cfg.schema_version != 2 {
         bail!(
-            "pir config schema_version = {} (only 1 is supported)",
+            "pir config schema_version = {} (only 2 is supported)",
             cfg.schema_version
         );
     }
+    if cfg.zcash_network != expected_network {
+        bail!(
+            "pir config Zcash network is {}; expected {}",
+            cfg.zcash_network,
+            expected_network
+        );
+    }
     let height = cfg.snapshot_height.parse()?;
-    validate_snapshot_height(height)?;
+    nf_ingest::config::validate_export_height(height, expected_network)?;
     Ok(height)
-}
-
-fn validate_snapshot_height(height: u64) -> Result<()> {
-    if height == 0 {
-        bail!("pir config snapshot_height must be greater than zero");
-    }
-    if height % 10 != 0 {
-        bail!("pir config snapshot_height must be a multiple of 10, got {height}");
-    }
-    Ok(())
 }
 
 fn trim_url(url: &str) -> &str {
@@ -224,9 +227,9 @@ mod tests {
     }
 
     #[test]
-    fn validates_height_shape() {
-        assert!(validate_snapshot_height(100).is_ok());
-        assert!(validate_snapshot_height(0).is_err());
-        assert!(validate_snapshot_height(101).is_err());
+    fn validates_network_specific_height_shape() {
+        assert!(nf_ingest::config::validate_export_height(3_428_150, ZcashNetwork::Main).is_ok());
+        assert!(nf_ingest::config::validate_export_height(3_428_150, ZcashNetwork::Test).is_err());
+        assert!(nf_ingest::config::validate_export_height(4_134_000, ZcashNetwork::Test).is_ok());
     }
 }

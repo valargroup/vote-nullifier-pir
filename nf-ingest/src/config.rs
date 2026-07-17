@@ -1,5 +1,21 @@
 //! Shared configuration constants and helpers for the nullifier pipeline.
 
+use pir_types::ZcashNetwork;
+
+/// NU6.3 activation height on Zcash Mainnet.
+pub const NU6_3_MAINNET_ACTIVATION_HEIGHT: u64 = 3_428_143;
+
+/// NU6.3 activation height on Zcash Testnet.
+pub const NU6_3_TESTNET_ACTIVATION_HEIGHT: u64 = 4_134_000;
+
+/// NU6.3 activation height for `network`.
+pub const fn nu6_3_activation_height(network: ZcashNetwork) -> u64 {
+    match network {
+        ZcashNetwork::Main => NU6_3_MAINNET_ACTIVATION_HEIGHT,
+        ZcashNetwork::Test => NU6_3_TESTNET_ACTIVATION_HEIGHT,
+    }
+}
+
 /// Default lightwalletd gRPC endpoints used when no override is provided.
 pub const DEFAULT_LWD_URLS: &[&str] = &[
     "https://us.zec.stardust.rest:443",
@@ -14,26 +30,22 @@ const DEFAULT_SINGLE_LWD_URL: &str = "https://us.zec.stardust.rest:443";
 
 /// Tree checkpoint files under the nullifier root to remove when forcing a rebuild
 /// after new blocks were synced from lightwalletd (`--invalidate-after-blocks`).
-pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] =
-    &["nullifiers.tree", "nullifiers.tree.tmp"];
+pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] = &["nullifiers.tree", "nullifiers.tree.tmp"];
 
 /// PIR tier files under the tier output directory for the same invalidation pass.
-pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] = &[
-    "tier0.bin",
-    "tier1.bin",
-    "tier2.bin",
-    "pir_root.json",
-];
+pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] =
+    &["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"];
 
 /// Validate that `height` is a legal export target: at or above NU6.3 activation
 /// and a multiple of 10 (the ingestion block-alignment granularity).
-pub fn validate_export_height(height: u64) -> anyhow::Result<()> {
-    use crate::sync_nullifiers::NU6_3_ACTIVATION_HEIGHT;
+pub fn validate_export_height(height: u64, network: ZcashNetwork) -> anyhow::Result<()> {
+    let activation_height = nu6_3_activation_height(network);
     anyhow::ensure!(
-        height >= NU6_3_ACTIVATION_HEIGHT,
-        "height {} is below NU6.3 activation ({})",
+        height >= activation_height,
+        "height {} is below NU6.3 activation on {} ({})",
         height,
-        NU6_3_ACTIVATION_HEIGHT
+        network,
+        activation_height
     );
     anyhow::ensure!(
         height.is_multiple_of(10),
@@ -120,5 +132,12 @@ mod tests {
             resolve_lwd_urls_with_override("https://custom.example:443", Some(" , ")),
             vec!["https://custom.example:443"]
         );
+    }
+
+    #[test]
+    fn validates_network_specific_activation_heights() {
+        assert!(validate_export_height(3_428_150, ZcashNetwork::Main).is_ok());
+        assert!(validate_export_height(3_428_150, ZcashNetwork::Test).is_err());
+        assert!(validate_export_height(4_134_000, ZcashNetwork::Test).is_ok());
     }
 }

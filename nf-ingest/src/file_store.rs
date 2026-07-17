@@ -81,6 +81,7 @@ const RAW_DATASET_ARTIFACTS: &[&str] = &[
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct DatasetMarker {
+    zcash_network: pir_types::ZcashNetwork,
     nullifier_pool: String,
     dataset_version: u32,
 }
@@ -94,7 +95,10 @@ pub fn dataset_marker_path(dir: &Path) -> PathBuf {
 ///
 /// A missing marker is created only when no raw or tree artifacts exist. This
 /// prevents legacy Orchard bytes from being reused as an Ironwood dataset.
-pub fn ensure_ironwood_dataset(dir: &Path) -> Result<()> {
+pub fn ensure_ironwood_dataset(
+    dir: &Path,
+    expected_network: pir_types::ZcashNetwork,
+) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let marker_path = dataset_marker_path(dir);
 
@@ -102,7 +106,12 @@ pub fn ensure_ironwood_dataset(dir: &Path) -> Result<()> {
         let marker: DatasetMarker = serde_json::from_slice(
             &fs::read(&marker_path).with_context(|| format!("read {}", marker_path.display()))?,
         )
-        .with_context(|| format!("decode {}", marker_path.display()))?;
+        .with_context(|| {
+            format!(
+                "decode {}; set SVOTE_PIR_SYNC_RESET=1 to rebuild",
+                marker_path.display()
+            )
+        })?;
         anyhow::ensure!(
             pir_types::is_current_dataset(&marker.nullifier_pool, marker.dataset_version),
             "{} identifies pool {:?} dataset version {}; expected {:?} version {}. Set SVOTE_PIR_SYNC_RESET=1 to rebuild",
@@ -111,6 +120,13 @@ pub fn ensure_ironwood_dataset(dir: &Path) -> Result<()> {
             marker.dataset_version,
             pir_types::NULLIFIER_POOL,
             pir_types::DATASET_VERSION,
+        );
+        anyhow::ensure!(
+            marker.zcash_network == expected_network,
+            "{} identifies Zcash network {}; expected {}. Set SVOTE_PIR_SYNC_RESET=1 to rebuild",
+            marker_path.display(),
+            marker.zcash_network,
+            expected_network,
         );
         return Ok(());
     }
@@ -127,6 +143,7 @@ pub fn ensure_ironwood_dataset(dir: &Path) -> Result<()> {
     }
 
     let marker = DatasetMarker {
+        zcash_network: expected_network,
         nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
         dataset_version: pir_types::DATASET_VERSION,
     };
@@ -143,6 +160,30 @@ pub fn ensure_ironwood_dataset(dir: &Path) -> Result<()> {
     fs::rename(&tmp_path, &marker_path)
         .with_context(|| format!("rename {}", marker_path.display()))?;
     Ok(())
+}
+
+/// Read the Zcash network from an existing dataset marker.
+pub fn dataset_network(dir: &Path) -> Result<pir_types::ZcashNetwork> {
+    let marker_path = dataset_marker_path(dir);
+    let marker: DatasetMarker = serde_json::from_slice(
+        &fs::read(&marker_path).with_context(|| format!("read {}", marker_path.display()))?,
+    )
+    .with_context(|| {
+        format!(
+            "decode {}; set SVOTE_PIR_SYNC_RESET=1 to rebuild",
+            marker_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        pir_types::is_current_dataset(&marker.nullifier_pool, marker.dataset_version),
+        "{} identifies pool {:?} dataset version {}; expected {:?} version {}",
+        marker_path.display(),
+        marker.nullifier_pool,
+        marker.dataset_version,
+        pir_types::NULLIFIER_POOL,
+        pir_types::DATASET_VERSION,
+    );
+    Ok(marker.zcash_network)
 }
 
 /// Path to the raw nullifier data file within `dir`.
@@ -228,8 +269,16 @@ pub fn offset_for_height(dir: &Path, target_height: u64) -> Result<Option<(u64, 
     // so we can binary search.
     let entry = |i: usize| -> (u64, u64) {
         let off = i * INDEX_ENTRY_SIZE;
-        let h = u64::from_le_bytes(data[off..off + 8].try_into().expect("index entry height slice"));
-        let o = u64::from_le_bytes(data[off + 8..off + 16].try_into().expect("index entry offset slice"));
+        let h = u64::from_le_bytes(
+            data[off..off + 8]
+                .try_into()
+                .expect("index entry height slice"),
+        );
+        let o = u64::from_le_bytes(
+            data[off + 8..off + 16]
+                .try_into()
+                .expect("index entry offset slice"),
+        );
         (h, o)
     };
 
@@ -403,9 +452,8 @@ pub fn parse_nullifier_bytes(data: &[u8]) -> Result<Vec<Fp>> {
         .map(|(i, chunk)| {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(chunk);
-            Option::from(Fp::from_repr(arr)).ok_or_else(|| {
-                anyhow::anyhow!("non-canonical nullifier encoding at index {}", i)
-            })
+            Option::from(Fp::from_repr(arr))
+                .ok_or_else(|| anyhow::anyhow!("non-canonical nullifier encoding at index {}", i))
         })
         .collect()
 }
@@ -431,13 +479,18 @@ mod tests {
     fn initializes_and_reuses_ironwood_dataset_marker() {
         let dir = temp_dir("dataset_current");
 
-        ensure_ironwood_dataset(&dir).unwrap();
-        ensure_ironwood_dataset(&dir).unwrap();
+        ensure_ironwood_dataset(&dir, pir_types::ZcashNetwork::Main).unwrap();
+        ensure_ironwood_dataset(&dir, pir_types::ZcashNetwork::Main).unwrap();
 
         let marker: serde_json::Value =
             serde_json::from_slice(&fs::read(dataset_marker_path(&dir)).unwrap()).unwrap();
         assert_eq!(marker["nullifier_pool"], pir_types::NULLIFIER_POOL);
         assert_eq!(marker["dataset_version"], pir_types::DATASET_VERSION);
+        assert_eq!(marker["zcash_network"], "main");
+        assert_eq!(
+            dataset_network(&dir).unwrap(),
+            pir_types::ZcashNetwork::Main
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -447,7 +500,9 @@ mod tests {
         let dir = temp_dir("dataset_legacy");
         fs::write(nullifiers_path(&dir), [0u8; 32]).unwrap();
 
-        let err = ensure_ironwood_dataset(&dir).unwrap_err().to_string();
+        let err = ensure_ironwood_dataset(&dir, pir_types::ZcashNetwork::Main)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("SVOTE_PIR_SYNC_RESET=1"), "{err}");
         assert!(!dataset_marker_path(&dir).exists());
 
@@ -459,12 +514,48 @@ mod tests {
         let dir = temp_dir("dataset_wrong");
         fs::write(
             dataset_marker_path(&dir),
-            br#"{"nullifier_pool":"orchard","dataset_version":1}"#,
+            br#"{"zcash_network":"main","nullifier_pool":"orchard","dataset_version":2}"#,
         )
         .unwrap();
 
-        let err = ensure_ironwood_dataset(&dir).unwrap_err().to_string();
+        let err = ensure_ironwood_dataset(&dir, pir_types::ZcashNetwork::Main)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("orchard"), "{err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_wrong_network_marker() {
+        let dir = temp_dir("dataset_wrong_network");
+        fs::write(
+            dataset_marker_path(&dir),
+            br#"{"zcash_network":"test","nullifier_pool":"ironwood","dataset_version":2}"#,
+        )
+        .unwrap();
+
+        let err = ensure_ironwood_dataset(&dir, pir_types::ZcashNetwork::Main)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("network test; expected main"), "{err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_marker_without_network_with_reset_guidance() {
+        let dir = temp_dir("dataset_missing_network");
+        fs::write(
+            dataset_marker_path(&dir),
+            br#"{"nullifier_pool":"ironwood","dataset_version":1}"#,
+        )
+        .unwrap();
+
+        let err = ensure_ironwood_dataset(&dir, pir_types::ZcashNetwork::Main)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("SVOTE_PIR_SYNC_RESET=1"), "{err}");
 
         let _ = fs::remove_dir_all(&dir);
     }

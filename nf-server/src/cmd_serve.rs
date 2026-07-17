@@ -26,6 +26,10 @@ use crate::serve::watchdog;
 
 #[derive(ClapArgs)]
 pub struct Args {
+    /// Zcash network this server may ingest and serve.
+    #[arg(long, env = "SVOTE_ZCASH_NETWORK")]
+    zcash_network: pir_types::ZcashNetwork,
+
     /// Listen port.
     #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
@@ -70,7 +74,7 @@ pub struct Args {
 
     /// Bucket origin for pre-computed PIR snapshots (matches the
     /// admin UI). The bootstrap fetches
-    /// `<base>/snapshots/<height>/{manifest.json,tier0.bin,...}`.
+    /// `<base>/snapshots/<network>/<height>/{manifest.json,tier0.bin,...}`.
     /// Trailing slashes are trimmed. Empty disables the download
     /// portion of the bootstrap (operators relying on out-of-band
     /// staging can keep the configured-height check enabled).
@@ -130,6 +134,7 @@ pub async fn run(args: Args) -> Result<()> {
         serving: RwLock::new(None),
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         pir_data_dir: args.pir_data_dir.clone(),
+        zcash_network: args.zcash_network,
         lwd_urls,
         chain_url,
         next_req_id: AtomicU64::new(0),
@@ -175,6 +180,7 @@ pub async fn run(args: Args) -> Result<()> {
     // from scratch; on an existing host this is a no-op when the local
     // pir_root.json already matches the configured snapshot height.
     let warm_bootstrap_cfg = bootstrap::Config {
+        zcash_network: args.zcash_network,
         pir_config_url: args
             .pir_config_url
             .as_ref()
@@ -261,9 +267,11 @@ pub async fn run(args: Args) -> Result<()> {
             };
         }
         let pir_dir_for_load = warm_pir_dir.clone();
-        let load =
-            tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pir_dir_for_load))
-                .await;
+        let load_network = warm_state.zcash_network;
+        let load = tokio::task::spawn_blocking(move || {
+            pir_server::load_serving_state(&pir_dir_for_load, load_network)
+        })
+        .await;
         match load {
             Ok(Ok(serving)) => {
                 if let Some(h) = serving.metadata.height {

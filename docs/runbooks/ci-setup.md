@@ -20,33 +20,35 @@ This path is for contributors and operators who want to build from source with C
 
 ### Moving cached data to the deploy directory
 
-The service uses flat binary files under a single on-disk root (`SVOTE_PIR_DATA_DIR`, default `/opt/nf-ingest/pir-data` in the shipped unit). To move them into the deploy directory:
+The service uses one data root per network. Only move dataset v2 files whose `zcash_network` matches the destination:
 
 ```bash
-sudo mkdir -p /opt/nf-ingest/pir-data
+NETWORK=test # main for production
+PIR_DATA_DIR="/opt/nf-ingest/pir-data/${NETWORK}"
+sudo mkdir -p "$PIR_DATA_DIR"
 
 # Stop the service first if it is running
 sudo systemctl stop nullifier-query-server || true
 
 # Move data files (nullifiers + optional tree live next to tier files)
-sudo mv /path/to/nullifiers.bin        /opt/nf-ingest/pir-data/
-sudo mv /path/to/nullifiers.dataset.json /opt/nf-ingest/pir-data/
-sudo mv /path/to/nullifiers.checkpoint /opt/nf-ingest/pir-data/
-sudo mv /path/to/nullifiers.index      /opt/nf-ingest/pir-data/ 2>/dev/null || true
-sudo mv /path/to/nullifiers.tree       /opt/nf-ingest/pir-data/ 2>/dev/null || true
+sudo mv /path/to/nullifiers.bin "$PIR_DATA_DIR/"
+sudo mv /path/to/nullifiers.dataset.json "$PIR_DATA_DIR/"
+sudo mv /path/to/nullifiers.checkpoint "$PIR_DATA_DIR/"
+sudo mv /path/to/nullifiers.index "$PIR_DATA_DIR/" 2>/dev/null || true
+sudo mv /path/to/nullifiers.tree "$PIR_DATA_DIR/" 2>/dev/null || true
 
 # If upgrading from a layout with nullifiers in /opt/nf-ingest and tiers in pir-data/,
 # consolidate any stragglers from the parent directory:
-# sudo mv /opt/nf-ingest/nullifiers.bin /opt/nf-ingest/pir-data/ 2>/dev/null || true
+# sudo mv /opt/nf-ingest/nullifiers.bin "$PIR_DATA_DIR"/ 2>/dev/null || true
 # (repeat for checkpoint / index / tree as needed)
 
 # Ensure the deploy user can write (if deploy runs as a different user)
 # sudo chown -R DEPLOY_USER:DEPLOY_USER /opt/nf-ingest
 ```
 
-Move `nullifiers.dataset.json` with the raw data. Legacy Orchard data has no compatible marker and must be rebuilt with `SVOTE_PIR_SYNC_RESET=1`.
+Move `nullifiers.dataset.json` with the raw data. Dataset v1, another network's data, and Orchard data must be rebuilt.
 
-The unit file in `docs/nullifier-query-server.service` uses `/opt/nf-ingest/pir-data` as `SVOTE_PIR_DATA_DIR` by default.
+Deploy and restart workflows set `SVOTE_PIR_DATA_DIR=/opt/nf-ingest/pir-data/<network>`.
 
 ### GitHub Environment secrets
 
@@ -72,24 +74,32 @@ them explicitly avoids accidental drift if the defaults change later:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DO_BUCKET` | `shielded-vote` | Spaces bucket for release artifacts and `snapshots/<height>/` uploads. |
+| `DO_BUCKET` | `shielded-vote` | Spaces bucket for release artifacts and `snapshots/<network>/<height>/` uploads. |
 | `DO_REGION` | `nyc3` | Spaces region. Used for both s3cmd and default public URL derivation. |
 | `DO_PUBLIC_BASE_URL` | `https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com` | Public bucket origin used by release installer URLs and publish verification. |
 | `DO_PRECOMPUTED_BASE_URL` | `DO_PUBLIC_BASE_URL` | Value rendered into `start_pir.sh` as `SVOTE_PIR_PRECOMPUTED_BASE_URL`. Override only if snapshot downloads should use a different public origin. |
-| `LWD_URLS` | None (required) | Comma-separated post-NU6.3 lightwalletd gRPC URLs used by `publish-snapshot.yml`. Every configured endpoint must expose post-NU6.3 tree state. |
 
 Set these GitHub Environment variables in both environments:
 
 | Variable | Staging | Production | Description |
 |----------|---------|------------|-------------|
+| `LWD_URLS` | Public testnet lightwalletd URLs | Mainnet lightwalletd URLs | Required by snapshot publishing. Ingestion verifies the returned tree state matches the derived network. |
 | `PIR_CONFIG_URL` | `https://voting.valargroup.org/stage/pir.json` | `https://voting.valargroup.org/prod/pir.json` | Optional override written by deploy/restart workflows as `SVOTE_PIR_CONFIG_URL`. If unset, workflows derive the same URL from `target_environment`. |
 | `VOTING_CONFIG_URL` | `https://voting.valargroup.org/stage/static-voting-config.json` | `https://voting.valargroup.org/prod/static-voting-config.json` | Optional legacy fallback URL written by deploy/restart workflows as `SVOTE_PIR_VOTING_CONFIG_URL`. |
 | `PRECOMPUTED_BASE_URL` | `https://shielded-vote.nyc3.digitaloceanspaces.com` | `https://shielded-vote.nyc3.digitaloceanspaces.com` | Base URL used when forcing a deploy to a published snapshot height. |
 | `SNAPSHOTS_BASE_URL` | `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots` | `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots` | Base URL used to validate forced snapshot heights. |
 
-`release.yml` and `publish-snapshot.yml` use repository-level DigitalOcean
-secrets and repository variables because release artifacts and PIR snapshots are
-global by tag/height, not fleet-environment specific. If the repository
+Each `pir.json` uses schema 2 and includes the same network as its environment:
+
+```json
+{"schema_version":2,"zcash_network":"test","snapshot_height":4134000}
+```
+
+Production uses `"zcash_network":"main"` and a published mainnet height.
+
+`release.yml` uses repository-level DigitalOcean settings for global release
+artifacts. Snapshot publishing uses the selected environment's network and
+`LWD_URLS`, and stores data under a network prefix. If the repository
 variables are absent, both workflows fall back to the production `shielded-vote`
 bucket in `nyc3`. Release artifact mirroring still requires the DigitalOcean
 access key and secret so `start_pir.sh`, `update_pir.sh`, binaries, and
@@ -100,8 +110,8 @@ checksums are published as part of the release.
 - Create the deploy directory. Default in the workflow is `DEPLOY_PATH: /opt/nf-ingest`.
 - Ensure the SSH user can write to that directory.
 - Run an initial `nf-server sync` on the publisher host if you are building snapshots from chain (see `publish-snapshot.yml`).
-- Configure `PIR_SNAPSHOT_PUBLISHER_HOST` as a repository secret. Snapshot publishing is global, not environment-targeted, and writes to `s3://${DO_BUCKET:-shielded-vote}/snapshots/<height>/`.
-- Configure `LWD_URLS` as a repository variable with the post-NU6.3 lightwalletd endpoints used by the publisher.
+- Configure `PIR_SNAPSHOT_PUBLISHER_HOST` in both environments.
+- Configure staging `LWD_URLS` with testnet endpoints and production `LWD_URLS` with mainnet endpoints.
 
 For the host-side install itself (binary, systemd unit, env files), use
 [`server-setup.md`](server-setup.md) — the CI pipeline
@@ -162,16 +172,16 @@ was removed from `vote-infrastructure/cloud-init/pir.yaml`; use
 [`host-sync.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/host-sync.yml)
 if you need `nf-server sync` + restart on one machine outside the publish path.
 
-For the one-time Orchard-to-Ironwood migration:
+For the one-time network-bound dataset v2 migration:
 
-1. Configure the repository variable `LWD_URLS` with the post-NU6.3 lightwalletd endpoints.
+1. Configure environment-specific `LWD_URLS`.
 2. Install the new `nf-server` on the publisher host.
 3. Publish with `reset_dataset=true` and record the resulting height.
 4. Deploy the same release at that forced height, backup first and then primary.
 5. Verify both `/root` responses, then update the environment `pir.json`.
 
-Leave `reset_dataset` false for later bumps. Published manifests use schema 2
-and identify `nullifier_pool: "ironwood"` with `dataset_version: 1`.
+Leave `reset_dataset` false for later bumps. Published manifests use schema 3
+and identify `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 2`.
 
 ### Changing deploy path or restart command
 
@@ -190,10 +200,10 @@ From the workspace root:
 
 ```bash
 # Start the server (auto-bootstrap from data in the cloud by-default)
-make serve
+SVOTE_ZCASH_NETWORK=test make serve
 
 # Nullifiers from chain + tree checkpoint + tier export (`nf-server sync`)
-make sync
+SVOTE_ZCASH_NETWORK=test LWD_URLS=<testnet-urls> make sync
 ```
 
 Then check `http://localhost:3000/health` and `http://localhost:3000/root`.
@@ -287,7 +297,7 @@ flowchart LR
     tag["git tag v*"] --> release["release.yml\nbuild + GitHub Release\n+ DO Spaces"]
     manual["workflow_dispatch"] -.-> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
     deploy --> health["health check\nlocalhost:3000/health"]
-    publish["publish-snapshot.yml\nnf-server sync + upload\nto DO Spaces"] -.-> bucket["snapshots/<height>/"]
+    publish["publish-snapshot.yml\nnf-server sync + upload\nto DO Spaces"] -.-> bucket["snapshots/<network>/<height>/"]
     restart["restart.yml\nbackup → primary\nrolling restart"] -.-> pirHosts["PIR hosts\n(self-bootstrap from bucket)"]
     bucket -.-> pirHosts
 ```
@@ -296,9 +306,9 @@ flowchart LR
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, and mirrors release artifacts to DO Spaces. It does **not** deploy to any fleet; operators run `deploy.yml` explicitly. |
 | [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, writes environment-aware `/etc/default/nf-server` PIR config defaults, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Optional `height` validates a published PIR snapshot, forces bootstrap to that height during deploy, verifies `nf_snapshot_served_height == height`, then clears the temporary override. Hosts are rolled backup-then-primary so the readiness gate on one host completes before the next is touched. |
-| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, `include_nullifier_artifacts`, `reset_dataset`) | Requires the repository variable `LWD_URLS`, syncs the canonical publisher, emits a schema 2 Ironwood manifest, uploads tiers, and verifies the public manifest and root. `include_nullifier_artifacts` also uploads `nullifiers.bin`, its checkpoint, tree, and `nullifiers.dataset.json`. Use `reset_dataset` only for the one-time migration. After publishing, update `<env>/pir.json` and restart the fleet. |
+| [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` | Derives `test` from staging and `main` from production, uses that environment's `LWD_URLS`, publishes a schema 3 dataset v2 manifest under `snapshots/<network>/<height>/`, and verifies the uploaded identity. |
 | [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`, optional `height`) | Rolling restart of the PIR fleet. Writes environment-specific `/etc/default/nf-server` PIR config defaults, restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies either the forced `height` or `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
-| [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads `nullifiers.bin` from **`snapshots/<snapshot_height>/`** (input height, verified against that prefix’s `manifest.json`), resolves the target PIR endpoint through the static/dynamic voting config, and runs `pir-test load` with configurable concurrency, RPS, and duration. Uploads a JSON summary as a build artifact. Requires the snapshot to have been published with **`include_nullifier_artifacts`** at least once for that height. |
+| [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Downloads and verifies `snapshots/<network>/<height>/nullifiers.bin`, requires the target server to report the same network and dataset v2, then runs `pir-test load`. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
 
 ## Infrastructure

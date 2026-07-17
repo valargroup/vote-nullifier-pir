@@ -8,6 +8,8 @@
 //! feature to get tier-data parsers ([`tier0::Tier0Data`], [`tier1::Tier1Row`],
 //! [`tier2::Tier2Row`]) and Fp serialization helpers ([`fp_utils`]).
 
+use std::{fmt, str::FromStr};
+
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "reader")]
@@ -53,7 +55,11 @@ pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 1,024
 pub const YPIR_MIN_ROWS: usize = 2048;
 
 /// Number of rows in the Tier 1 YPIR database (padded to YPIR minimum).
-pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS { TIER1_ROWS } else { YPIR_MIN_ROWS }; // 2,048
+pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS {
+    TIER1_ROWS
+} else {
+    YPIR_MIN_ROWS
+}; // 2,048
 
 /// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
 /// `[nf_lo, nf_mid, nf_hi]`.
@@ -77,7 +83,47 @@ pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
 pub const NULLIFIER_POOL: &str = "ironwood";
 
 /// Version of the nullifier dataset contract.
-pub const DATASET_VERSION: u32 = 1;
+pub const DATASET_VERSION: u32 = 2;
+
+/// Zcash network represented by a PIR dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZcashNetwork {
+    /// Zcash Mainnet.
+    Main,
+    /// Zcash public Testnet.
+    Test,
+}
+
+impl ZcashNetwork {
+    /// Return the canonical wire value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Test => "test",
+        }
+    }
+}
+
+impl fmt::Display for ZcashNetwork {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ZcashNetwork {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "main" => Ok(Self::Main),
+            "test" => Ok(Self::Test),
+            _ => Err(format!(
+                "unsupported Zcash network {value:?}; expected main or test"
+            )),
+        }
+    }
+}
 
 /// Returns whether a pool and version identify the current PIR dataset.
 pub fn is_current_dataset(nullifier_pool: &str, dataset_version: u32) -> bool {
@@ -87,6 +133,8 @@ pub fn is_current_dataset(nullifier_pool: &str, dataset_version: u32) -> bool {
 /// Metadata written to `pir_root.json` alongside the tier files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PirMetadata {
+    /// Zcash network whose nullifiers populate this dataset.
+    pub zcash_network: ZcashNetwork,
     /// Shielded pool whose nullifiers populate this dataset.
     pub nullifier_pool: String,
     /// Version of the nullifier dataset contract.
@@ -128,6 +176,8 @@ pub struct YpirScenario {
 /// Root hash and metadata returned by `GET /root`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootInfo {
+    /// Zcash network whose nullifiers populate this dataset.
+    pub zcash_network: ZcashNetwork,
     /// Shielded pool whose nullifiers populate this dataset.
     pub nullifier_pool: String,
     /// Version of the nullifier dataset contract.
@@ -176,6 +226,21 @@ mod tests {
         let result = serialize_ypir_query(&[], &[]);
         assert_eq!(result.len(), U64_BYTES);
         assert_eq!(u64::from_le_bytes(result[..8].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn zcash_network_wire_values() {
+        assert_eq!(
+            serde_json::to_string(&ZcashNetwork::Main).unwrap(),
+            "\"main\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ZcashNetwork::Test).unwrap(),
+            "\"test\""
+        );
+        assert_eq!("main".parse(), Ok(ZcashNetwork::Main));
+        assert_eq!("test".parse(), Ok(ZcashNetwork::Test));
+        assert!("regtest".parse::<ZcashNetwork>().is_err());
     }
 
     #[test]

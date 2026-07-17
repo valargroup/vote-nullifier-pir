@@ -14,6 +14,7 @@ use pasta_curves::Fp;
 // Re-exported so downstream crates (e.g. zcash_voting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
 pub use imt_tree::ImtProofData;
+pub use pir_types::ZcashNetwork;
 
 mod transport;
 pub use transport::{Transport, TransportFuture, TransportResponse};
@@ -92,6 +93,7 @@ pub struct PirClient {
     num_ranges: usize,
     empty_hashes: [Fp; TREE_DEPTH],
     root29: Fp,
+    network: ZcashNetwork,
 }
 
 /// Return the number of populated leaves in a Tier 2 row, clamped to
@@ -177,7 +179,11 @@ fn process_tier2_and_build(
 
 impl PirClient {
     /// Connect using a caller-provided HTTP transport.
-    pub async fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
+    pub async fn with_transport(
+        server_url: &str,
+        expected_network: ZcashNetwork,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
         // Download Tier 0 data, YPIR params, and root concurrently
@@ -212,6 +218,12 @@ impl PirClient {
         let root_info: RootInfo =
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
                 .context("parse /root response")?;
+        anyhow::ensure!(
+            root_info.zcash_network == expected_network,
+            "server Zcash network is {}; expected {}",
+            root_info.zcash_network,
+            expected_network
+        );
         anyhow::ensure!(
             pir_types::is_current_dataset(&root_info.nullifier_pool, root_info.dataset_version),
             "server nullifier dataset {:?} version {} is unsupported; expected {:?} version {}",
@@ -248,7 +260,13 @@ impl PirClient {
             num_ranges: root_info.num_ranges,
             empty_hashes,
             root29,
+            network: root_info.zcash_network,
         })
+    }
+
+    /// Zcash network validated during connection.
+    pub fn network(&self) -> ZcashNetwork {
+        self.network
     }
 
     /// Perform private Merkle path retrieval for a nullifier.
@@ -664,9 +682,17 @@ pub struct PirClientBlocking {
 
 impl PirClientBlocking {
     /// Connect to a PIR server with a caller-provided HTTP transport.
-    pub fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
+    pub fn with_transport(
+        server_url: &str,
+        expected_network: ZcashNetwork,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Self> {
         let rt = tokio::runtime::Runtime::new()?;
-        let inner = rt.block_on(PirClient::with_transport(server_url, transport))?;
+        let inner = rt.block_on(PirClient::with_transport(
+            server_url,
+            expected_network,
+            transport,
+        ))?;
         Ok(Self { inner, rt })
     }
 
@@ -683,6 +709,11 @@ impl PirClientBlocking {
     /// The depth-29 root (PIR depth 25 padded to tree depth 29).
     pub fn root29(&self) -> Fp {
         self.inner.root29
+    }
+
+    /// Zcash network validated during connection.
+    pub fn network(&self) -> ZcashNetwork {
+        self.inner.network()
     }
 }
 
@@ -1014,6 +1045,7 @@ mod tests {
                 &tree.empty_hashes,
             );
             let root_info = pir_types::RootInfo {
+                zcash_network: ZcashNetwork::Main,
                 nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
                 dataset_version: pir_types::DATASET_VERSION,
                 root29: hex::encode(tree.root29.to_repr()),
@@ -1124,9 +1156,10 @@ mod tests {
         let ranges = build_ranges_with_sentinels(&raw_nfs);
         let tree = pir_export::build_pir_tree(ranges).unwrap();
         let transport = std::sync::Arc::new(MockTransport::new(&tree));
-        let client = PirClient::with_transport("https://pir.example", transport.clone())
-            .await
-            .unwrap();
+        let client =
+            PirClient::with_transport("https://pir.example", ZcashNetwork::Main, transport.clone())
+                .await
+                .unwrap();
         (client, transport, tree)
     }
 
@@ -1185,10 +1218,60 @@ mod tests {
             .gets
             .insert("/root", response(serde_json::to_vec(&root).unwrap()));
 
-        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await {
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            ZcashNetwork::Main,
+            Arc::new(transport),
+        )
+        .await
+        {
             Ok(_) => panic!("wrong pool must be rejected"),
             Err(err) => err.to_string(),
         };
         assert!(err.contains("orchard"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_zcash_network() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let transport = MockTransport::new(&tree);
+
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            ZcashNetwork::Test,
+            Arc::new(transport),
+        )
+        .await
+        {
+            Ok(_) => panic!("wrong network must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("expected test"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_root_without_zcash_network() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&transport.gets.get("/root").unwrap().body).unwrap();
+        root.as_object_mut().unwrap().remove("zcash_network");
+        transport
+            .gets
+            .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            ZcashNetwork::Main,
+            Arc::new(transport),
+        )
+        .await
+        {
+            Ok(_) => panic!("missing network must be rejected"),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(err.contains("zcash_network"), "{err}");
     }
 }

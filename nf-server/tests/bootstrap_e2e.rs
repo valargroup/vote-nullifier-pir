@@ -53,6 +53,9 @@ mod voting_config;
 
 use bootstrap::{Config, Outcome};
 
+const TEST_NETWORK: pir_types::ZcashNetwork = pir_types::ZcashNetwork::Test;
+const TEST_HEIGHT: u64 = nf_ingest::config::NU6_3_TESTNET_ACTIVATION_HEIGHT;
+
 /// Per-route response: content-type plus body. Aliased so clippy's
 /// `type_complexity` lint stays quiet on the `MockBucket` struct.
 type RouteTable = BTreeMap<String, (String, Vec<u8>)>;
@@ -106,9 +109,18 @@ fn sha256_hex(b: &[u8]) -> String {
 }
 
 /// Stage a published snapshot in the mock bucket at the canonical
-/// `<base>/snapshots/<height>/...` paths. Returns the byte payloads
+/// `<base>/snapshots/<network>/<height>/...` paths. Returns the byte payloads
 /// keyed by file name so tests can assert against installed contents.
 fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>> {
+    stage_snapshot_with_network(bucket, TEST_NETWORK, TEST_NETWORK, height)
+}
+
+fn stage_snapshot_with_network(
+    bucket: &MockBucket,
+    path_network: pir_types::ZcashNetwork,
+    snapshot_network: pir_types::ZcashNetwork,
+    height: u64,
+) -> BTreeMap<String, Vec<u8>> {
     let mut blobs = BTreeMap::new();
     blobs.insert("tier0.bin".to_string(), b"tier0-payload".to_vec());
     blobs.insert("tier1.bin".to_string(), b"tier1-payload".to_vec());
@@ -116,6 +128,7 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
     blobs.insert(
         "pir_root.json".to_string(),
         serde_json::to_vec(&json!({
+            "zcash_network": snapshot_network,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
             "root25": "00",
@@ -140,7 +153,8 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
         );
     }
     let manifest = json!({
-        "schema_version": 2,
+        "schema_version": 3,
+        "zcash_network": snapshot_network,
         "nullifier_pool": pir_types::NULLIFIER_POOL,
         "dataset_version": pir_types::DATASET_VERSION,
         "height": height,
@@ -150,7 +164,7 @@ fn stage_snapshot(bucket: &MockBucket, height: u64) -> BTreeMap<String, Vec<u8>>
         "files": files_json,
     });
 
-    let prefix = format!("/snapshots/{height}");
+    let prefix = format!("/snapshots/{path_network}/{height}");
     for (name, body) in &blobs {
         bucket.put(
             &format!("{prefix}/{name}"),
@@ -204,7 +218,8 @@ fn stage_voting_config(bucket: &MockBucket, vote_server_url: &str, snapshot_heig
 
 fn stage_pir_config(bucket: &MockBucket, snapshot_height: u64) {
     let body = json!({
-        "schema_version": 1,
+        "schema_version": 2,
+        "zcash_network": TEST_NETWORK,
         "snapshot_height": snapshot_height,
     });
     bucket.put(
@@ -231,6 +246,7 @@ fn write_local_pir_root(dir: &std::path::Path, height: u64) {
     std::fs::write(
         dir.join("pir_root.json"),
         serde_json::to_vec(&json!({
+            "zcash_network": TEST_NETWORK,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
             "root25": "00",
@@ -252,7 +268,7 @@ fn write_local_pir_root(dir: &std::path::Path, height: u64) {
 #[tokio::test]
 async fn full_bootstrap_installs_all_files() {
     let bucket = MockBucket::default();
-    let h = 100u64;
+    let h = TEST_HEIGHT;
     let blobs = stage_snapshot(&bucket, h);
     stage_pir_config(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
@@ -260,6 +276,7 @@ async fn full_bootstrap_installs_all_files() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: Some(format!("{base}/pir.json")),
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base.clone(),
@@ -282,10 +299,41 @@ async fn full_bootstrap_installs_all_files() {
 }
 
 #[tokio::test]
+async fn wrong_network_snapshot_falls_through_without_installing() {
+    let bucket = MockBucket::default();
+    let h = TEST_HEIGHT + 10;
+    stage_snapshot_with_network(&bucket, TEST_NETWORK, pir_types::ZcashNetwork::Main, h);
+    stage_pir_config(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = Config {
+        zcash_network: TEST_NETWORK,
+        pir_config_url: Some(format!("{base}/pir.json")),
+        voting_config_url: String::new(),
+        precomputed_base_url: base,
+        force_snapshot_height: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    match outcome {
+        Outcome::FellThrough { reason } => assert!(
+            reason.contains("manifest Zcash network is main; expected test"),
+            "unexpected reason: {reason}"
+        ),
+        other => panic!("expected FellThrough, got {other:?}"),
+    }
+    assert!(!tmp.path().join("pir_root.json").exists());
+    assert!(!tmp.path().join("tier0.bin").exists());
+}
+
+#[tokio::test]
 async fn force_height_bootstraps_requested_snapshot_over_active_round() {
     let bucket = MockBucket::default();
-    let active_h = 500u64;
-    let forced_h = 510u64;
+    let active_h = TEST_HEIGHT + 100;
+    let forced_h = active_h + 10;
     stage_snapshot(&bucket, active_h);
     let blobs = stage_snapshot(&bucket, forced_h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
@@ -293,6 +341,7 @@ async fn force_height_bootstraps_requested_snapshot_over_active_round() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -312,12 +361,12 @@ async fn force_height_bootstraps_requested_snapshot_over_active_round() {
 #[tokio::test]
 async fn sha256_mismatch_falls_through_and_removes_partial() {
     let bucket = MockBucket::default();
-    let h = 200u64;
+    let h = TEST_HEIGHT + 200;
     stage_snapshot(&bucket, h);
     // Corrupt tier1.bin: serve different bytes than the manifest hash
     // covers. The manifest still claims the original sha.
     bucket.put(
-        &format!("/snapshots/{h}/tier1.bin"),
+        &format!("/snapshots/{TEST_NETWORK}/{h}/tier1.bin"),
         "application/octet-stream",
         b"corrupted-payload-different-length".to_vec(),
     );
@@ -326,6 +375,7 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -356,15 +406,16 @@ async fn sha256_mismatch_falls_through_and_removes_partial() {
 #[tokio::test]
 async fn missing_remote_snapshot_falls_through() {
     let bucket = MockBucket::default();
-    let h = 300u64;
+    let h = TEST_HEIGHT + 300;
     stage_snapshot(&bucket, h);
     // The active round asks for h+10, but only h is published — the
-    // bootstrap will hit a 404 on `/snapshots/{h+10}/manifest.json`.
+    // bootstrap will hit a 404 on `/snapshots/test/{h+10}/manifest.json`.
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, Some(h + 10));
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -389,15 +440,16 @@ async fn manifest_height_mismatch_falls_through() {
     // the manifest-vs-URL guard in `fetch_and_install` catches before
     // we touch the local snapshot.
     let bucket = MockBucket::default();
-    let h = 350u64;
+    let h = TEST_HEIGHT + 400;
     stage_snapshot(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, Some(h));
 
-    // Overwrite the manifest at /snapshots/h/manifest.json with one
+    // Overwrite the manifest at /snapshots/test/h/manifest.json with one
     // whose embedded height claims h+1.
     let bogus_manifest = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
+        "zcash_network": TEST_NETWORK,
         "nullifier_pool": pir_types::NULLIFIER_POOL,
         "dataset_version": pir_types::DATASET_VERSION,
         "height": h + 1,
@@ -410,12 +462,13 @@ async fn manifest_height_mismatch_falls_through() {
         }
     });
     bucket.put(
-        &format!("/snapshots/{h}/manifest.json"),
+        &format!("/snapshots/{TEST_NETWORK}/{h}/manifest.json"),
         "application/json",
         serde_json::to_vec(&bogus_manifest).unwrap(),
     );
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -440,7 +493,7 @@ async fn manifest_height_mismatch_falls_through() {
 #[tokio::test]
 async fn already_at_height_is_a_no_op() {
     let bucket = MockBucket::default();
-    let h = 400u64;
+    let h = TEST_HEIGHT + 500;
     stage_snapshot(&bucket, h); // available but should not be downloaded
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, Some(h));
@@ -450,6 +503,7 @@ async fn already_at_height_is_a_no_op() {
     write_local_pir_root(tmp.path(), h);
 
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -467,7 +521,7 @@ async fn already_at_height_is_a_no_op() {
 #[tokio::test]
 async fn legacy_local_root_is_replaced_at_the_same_height() {
     let bucket = MockBucket::default();
-    let h = 405u64;
+    let h = TEST_HEIGHT + 510;
     let blobs = stage_snapshot(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, Some(h));
@@ -479,6 +533,7 @@ async fn legacy_local_root_is_replaced_at_the_same_height() {
     )
     .unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -500,13 +555,14 @@ async fn legacy_local_root_is_replaced_at_the_same_height() {
 #[tokio::test]
 async fn no_active_round_uses_local_snapshot_when_present() {
     let bucket = MockBucket::default();
-    let local_height = 410u64;
+    let local_height = TEST_HEIGHT + 520;
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, None);
 
     let tmp = TempDir::new().unwrap();
     write_local_pir_root(tmp.path(), local_height);
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -522,13 +578,14 @@ async fn no_active_round_uses_local_snapshot_when_present() {
 #[tokio::test]
 async fn force_height_bootstraps_when_no_active_round_or_local_snapshot() {
     let bucket = MockBucket::default();
-    let h = 420u64;
+    let h = TEST_HEIGHT + 530;
     let blobs = stage_snapshot(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, None);
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -548,7 +605,7 @@ async fn force_height_bootstraps_when_no_active_round_or_local_snapshot() {
 #[tokio::test]
 async fn no_active_round_ignores_rounds_list_without_explicit_override() {
     let bucket = MockBucket::default();
-    let h = 430u64;
+    let h = TEST_HEIGHT + 540;
     stage_snapshot(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
     stage_voting_config(&bucket, &base, None);
@@ -556,6 +613,7 @@ async fn no_active_round_ignores_rounds_list_without_explicit_override() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -584,6 +642,7 @@ async fn no_active_round_without_local_or_override_errors() {
 
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         pir_config_url: None,
         voting_config_url: format!("{base}/voting-config.json"),
         precomputed_base_url: base,
@@ -604,6 +663,7 @@ async fn no_active_round_without_local_or_override_errors() {
 async fn unreachable_voting_config_errors() {
     let tmp = TempDir::new().unwrap();
     let cfg = Config {
+        zcash_network: TEST_NETWORK,
         // Localhost on a port we don't bind: connection refused.
         pir_config_url: None,
         voting_config_url: "http://127.0.0.1:1/voting-config.json".to_string(),

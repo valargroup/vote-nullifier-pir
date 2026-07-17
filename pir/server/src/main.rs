@@ -47,9 +47,13 @@ async fn main() -> Result<()> {
         Some(s) => s.parse().context("invalid port number")?,
         None => DEFAULT_PORT,
     };
+    let network: pir_types::ZcashNetwork = std::env::var("SVOTE_ZCASH_NETWORK")
+        .context("SVOTE_ZCASH_NETWORK must be set to main or test")?
+        .parse()
+        .map_err(anyhow::Error::msg)?;
 
     info!(dir = ?data_dir, "Loading tier files");
-    let serving = pir_server::load_serving_state(&data_dir)?;
+    let serving = pir_server::load_serving_state(&data_dir, network)?;
 
     let state = Arc::new(AppState {
         serving,
@@ -158,6 +162,7 @@ fn get_tier_row_inner(
 
 async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let info = RootInfo {
+        zcash_network: state.serving.metadata.zcash_network,
         nullifier_pool: state.serving.metadata.nullifier_pool.clone(),
         dataset_version: state.serving.metadata.dataset_version,
         root29: state.serving.metadata.root29.clone(),

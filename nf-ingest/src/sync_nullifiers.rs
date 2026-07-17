@@ -5,15 +5,12 @@ use tonic::transport::Channel;
 use tonic::Request;
 use tracing::info;
 
+use pir_types::ZcashNetwork;
+
 use crate::download::connect_lwd;
 use crate::file_store;
 use crate::rpc::compact_tx_streamer_client::CompactTxStreamerClient;
 use crate::rpc::{BlockId, BlockRange, ChainSpec, CompactBlock, TreeState};
-
-/// Proposed NU6.3 activation height on Zcash mainnet.
-pub const NU6_3_ACTIVATION_HEIGHT: u64 = 3_428_143;
-
-const INITIAL_SYNC_HEIGHT: u64 = NU6_3_ACTIVATION_HEIGHT - 1;
 
 /// How many blocks to request per gRPC streaming call.
 const BATCH_SIZE: u64 = 10_000;
@@ -27,9 +24,7 @@ const BLOCK_ALIGNMENT: u64 = 10;
 /// of the chain tip as reported by the server.
 pub async fn fetch_chain_tip(lwd_url: &str) -> Result<u64> {
     let mut client = connect_lwd(lwd_url).await?;
-    let latest = client
-        .get_latest_block(Request::new(ChainSpec {}))
-        .await?;
+    let latest = client.get_latest_block(Request::new(ChainSpec {})).await?;
     Ok(latest.into_inner().height)
 }
 
@@ -39,10 +34,11 @@ pub async fn fetch_chain_tip(lwd_url: &str) -> Result<u64> {
 /// the data file, then returns the last fully-committed height.
 /// If no checkpoint exists, returns the block before NU6.3 activation so the
 /// first request includes the activation block.
-pub fn resume_height(dir: &Path) -> Result<u64> {
-    file_store::ensure_ironwood_dataset(dir)?;
+pub fn resume_height(dir: &Path, network: ZcashNetwork) -> Result<u64> {
+    let activation_height = crate::config::nu6_3_activation_height(network);
+    file_store::ensure_ironwood_dataset(dir, network)?;
     match file_store::load_checkpoint(dir)? {
-        Some((h, offset)) if h >= NU6_3_ACTIVATION_HEIGHT => {
+        Some((h, offset)) if h >= activation_height => {
             file_store::truncate_to_checkpoint(dir, offset)?;
             Ok(h)
         }
@@ -51,7 +47,7 @@ pub fn resume_height(dir: &Path) -> Result<u64> {
         ),
         None => {
             file_store::truncate_to_checkpoint(dir, 0)?;
-            Ok(INITIAL_SYNC_HEIGHT)
+            Ok(activation_height - 1)
         }
     }
 }
@@ -72,11 +68,17 @@ fn extract_ironwood_nullifiers(block: CompactBlock) -> Result<Vec<(u64, Vec<u8>)
     Ok(nullifiers)
 }
 
-fn validate_ironwood_tree_state(url: &str, expected_height: u64, state: &TreeState) -> Result<()> {
+fn validate_ironwood_tree_state(
+    url: &str,
+    expected_network: ZcashNetwork,
+    expected_height: u64,
+    state: &TreeState,
+) -> Result<()> {
     anyhow::ensure!(
-        state.network == "main",
-        "lightwalletd {url} returned network {:?}; expected main",
-        state.network
+        state.network == expected_network.as_str(),
+        "lightwalletd {url} returned network {:?}; expected {}",
+        state.network,
+        expected_network
     );
     anyhow::ensure!(
         state.height == expected_height,
@@ -94,6 +96,7 @@ fn validate_ironwood_tree_state(url: &str, expected_height: u64, state: &TreeSta
 async fn require_ironwood_tree_state(
     client: &mut CompactTxStreamerClient<Channel>,
     url: &str,
+    network: ZcashNetwork,
     height: u64,
 ) -> Result<()> {
     let state = client
@@ -104,7 +107,7 @@ async fn require_ironwood_tree_state(
         .await
         .with_context(|| format!("get Ironwood tree state from {url} at height {height}"))?
         .into_inner();
-    validate_ironwood_tree_state(url, height, &state)
+    validate_ironwood_tree_state(url, network, height, &state)
 }
 
 /// Stream blocks `[start, end]` from a single server and return collected
@@ -180,6 +183,7 @@ fn build_batch_ranges(current: u64, target: u64, n: usize) -> Vec<(u64, u64)> {
 pub async fn sync(
     dir: &Path,
     lwd_urls: &[String],
+    network: ZcashNetwork,
     max_height: Option<u64>,
     progress: impl Fn(u64, u64, u64, u64),
 ) -> Result<SyncResult> {
@@ -187,7 +191,7 @@ pub async fn sync(
         !lwd_urls.is_empty(),
         "at least one lightwalletd URL is required"
     );
-    file_store::ensure_ironwood_dataset(dir)?;
+    file_store::ensure_ironwood_dataset(dir, network)?;
 
     let mut clients = Vec::with_capacity(lwd_urls.len());
     for url in lwd_urls {
@@ -200,26 +204,31 @@ pub async fn sync(
         .await?;
     let chain_tip = latest.into_inner().height;
 
-    let start = resume_height(dir)?;
+    let activation_height = crate::config::nu6_3_activation_height(network);
+    let start = resume_height(dir, network)?;
     let existing = file_store::nullifier_count(dir)?;
     let target = resolve_target(start, max_height, chain_tip);
 
     for (url, client) in lwd_urls.iter().zip(clients.iter_mut()) {
-        require_ironwood_tree_state(client, url, target).await?;
+        require_ironwood_tree_state(client, url, network, target).await?;
     }
 
-    if start >= NU6_3_ACTIVATION_HEIGHT {
+    if start >= activation_height {
         info!(height = start, existing, "resuming from checkpoint");
     } else {
         info!(
-            height = NU6_3_ACTIVATION_HEIGHT,
+            height = activation_height,
             "starting fresh from NU6.3 activation"
         );
     }
     if let Some(h) = max_height {
         info!(max_height = h, chain_tip, "max height set");
     }
-    info!(target, blocks_remaining = target.saturating_sub(start), "sync target");
+    info!(
+        target,
+        blocks_remaining = target.saturating_sub(start),
+        "sync target"
+    );
 
     if start >= target {
         return Ok(SyncResult {
@@ -284,6 +293,8 @@ pub struct SyncResult {
 mod tests {
     use super::*;
 
+    const MAINNET_ACTIVATION: u64 = crate::config::NU6_3_MAINNET_ACTIVATION_HEIGHT;
+
     fn temp_dir(name: &str) -> std::path::PathBuf {
         crate::test_helpers::temp_dir("sync", name)
     }
@@ -291,21 +302,23 @@ mod tests {
     #[test]
     fn resume_height_fresh() {
         let dir = temp_dir("fresh");
-        assert_eq!(resume_height(&dir).unwrap(), NU6_3_ACTIVATION_HEIGHT - 1);
+        assert_eq!(
+            resume_height(&dir, ZcashNetwork::Main).unwrap(),
+            MAINNET_ACTIVATION - 1
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn resume_height_discards_uncheckpointed_first_batch() {
         let dir = temp_dir("fresh_partial");
-        file_store::ensure_ironwood_dataset(&dir).unwrap();
-        file_store::append_nullifiers(
-            &dir,
-            &[(NU6_3_ACTIVATION_HEIGHT, vec![1u8; 32])],
-        )
-        .unwrap();
+        file_store::ensure_ironwood_dataset(&dir, ZcashNetwork::Main).unwrap();
+        file_store::append_nullifiers(&dir, &[(MAINNET_ACTIVATION, vec![1u8; 32])]).unwrap();
 
-        assert_eq!(resume_height(&dir).unwrap(), NU6_3_ACTIVATION_HEIGHT - 1);
+        assert_eq!(
+            resume_height(&dir, ZcashNetwork::Main).unwrap(),
+            MAINNET_ACTIVATION - 1
+        );
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -336,13 +349,13 @@ mod tests {
             ..Default::default()
         });
         let mut block = CompactBlock {
-            height: NU6_3_ACTIVATION_HEIGHT,
+            height: MAINNET_ACTIVATION,
             ..Default::default()
         };
         block.vtx.push(tx);
 
         let nullifiers = extract_ironwood_nullifiers(block).unwrap();
-        assert_eq!(nullifiers, vec![(NU6_3_ACTIVATION_HEIGHT, vec![2u8; 32])]);
+        assert_eq!(nullifiers, vec![(MAINNET_ACTIVATION, vec![2u8; 32])]);
     }
 
     #[test]
@@ -353,7 +366,7 @@ mod tests {
             ..Default::default()
         });
         let mut block = CompactBlock {
-            height: NU6_3_ACTIVATION_HEIGHT,
+            height: MAINNET_ACTIVATION,
             ..Default::default()
         };
         block.vtx.push(tx);
@@ -374,18 +387,24 @@ mod tests {
     fn validates_ironwood_tree_state() {
         let state = TreeState {
             network: "main".to_owned(),
-            height: NU6_3_ACTIVATION_HEIGHT,
+            height: MAINNET_ACTIVATION,
             ironwood_tree: "00".to_owned(),
             ..Default::default()
         };
-        validate_ironwood_tree_state("https://lwd.example", NU6_3_ACTIVATION_HEIGHT, &state)
-            .unwrap();
+        validate_ironwood_tree_state(
+            "https://lwd.example",
+            ZcashNetwork::Main,
+            MAINNET_ACTIVATION,
+            &state,
+        )
+        .unwrap();
 
         let mut legacy = state.clone();
         legacy.ironwood_tree.clear();
         let err = validate_ironwood_tree_state(
             "https://legacy.example",
-            NU6_3_ACTIVATION_HEIGHT,
+            ZcashNetwork::Main,
+            MAINNET_ACTIVATION,
             &legacy,
         )
         .unwrap_err()
@@ -397,7 +416,8 @@ mod tests {
         wrong_network.network = "test".to_owned();
         let err = validate_ironwood_tree_state(
             "https://testnet.example",
-            NU6_3_ACTIVATION_HEIGHT,
+            ZcashNetwork::Main,
+            MAINNET_ACTIVATION,
             &wrong_network,
         )
         .unwrap_err()
@@ -408,18 +428,33 @@ mod tests {
         wrong_height.height += 1;
         let err = validate_ironwood_tree_state(
             "https://lagging.example",
-            NU6_3_ACTIVATION_HEIGHT,
+            ZcashNetwork::Main,
+            MAINNET_ACTIVATION,
             &wrong_height,
         )
         .unwrap_err()
         .to_string();
         assert!(err.contains("expected 3428143"), "{err}");
+
+        let testnet_state = TreeState {
+            network: "test".to_owned(),
+            height: crate::config::NU6_3_TESTNET_ACTIVATION_HEIGHT,
+            ironwood_tree: "00".to_owned(),
+            ..Default::default()
+        };
+        validate_ironwood_tree_state(
+            "https://testnet.example",
+            ZcashNetwork::Test,
+            crate::config::NU6_3_TESTNET_ACTIVATION_HEIGHT,
+            &testnet_state,
+        )
+        .unwrap();
     }
 
     #[test]
     fn resume_height_from_checkpoint() {
         let dir = temp_dir("resume");
-        file_store::ensure_ironwood_dataset(&dir).unwrap();
+        file_store::ensure_ironwood_dataset(&dir, ZcashNetwork::Main).unwrap();
 
         // Write some nullifiers and commit a checkpoint
         let nfs = vec![
@@ -430,7 +465,7 @@ mod tests {
         let offset = file_store::append_nullifiers(&dir, &nfs).unwrap();
         file_store::save_checkpoint(&dir, 3_500_001, offset).unwrap();
 
-        let h = resume_height(&dir).unwrap();
+        let h = resume_height(&dir, ZcashNetwork::Main).unwrap();
         assert_eq!(h, 3_500_001);
 
         // All 3 nullifiers should still be present (checkpoint was exact)
@@ -442,7 +477,7 @@ mod tests {
     #[test]
     fn resume_height_truncates_uncommitted() {
         let dir = temp_dir("trunc");
-        file_store::ensure_ironwood_dataset(&dir).unwrap();
+        file_store::ensure_ironwood_dataset(&dir, ZcashNetwork::Main).unwrap();
 
         // Committed batch
         let batch1 = vec![(3_500_000u64, vec![1u8; 32]), (3_500_000, vec![2u8; 32])];
@@ -455,7 +490,7 @@ mod tests {
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 3);
 
         // resume_height should truncate back to the committed state
-        let h = resume_height(&dir).unwrap();
+        let h = resume_height(&dir, ZcashNetwork::Main).unwrap();
         assert_eq!(h, 3_500_000);
         assert_eq!(file_store::nullifier_count(&dir).unwrap(), 2);
 

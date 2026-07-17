@@ -25,11 +25,13 @@ fi
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 inner="${repo_root}/scripts/ci_smoke_start_pir_inner.sh"
+service="${repo_root}/docs/nullifier-query-server.service"
 
 docker_args=(
   --rm
   -v "${installer}:/start_pir.sh:ro"
   -v "${inner}:/inner.sh:ro"
+  -v "${service}:/release-service:ro"
 )
 if [ -n "$updater" ]; then
   docker_args+=(-v "${updater}:/update_pir.sh:ro")

@@ -123,6 +123,74 @@ if [ ! -f "$DEFAULTS_PATH" ]; then
   exit 1
 fi
 
+read_default() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); value=$0 } END { print value }' "$DEFAULTS_PATH"
+}
+
+ZCASH_NETWORK="${SVOTE_ZCASH_NETWORK:-$(read_default SVOTE_ZCASH_NETWORK)}"
+case "$ZCASH_NETWORK" in
+  main|test) ;;
+  *)
+    echo "SVOTE_ZCASH_NETWORK must be set to main or test, or present in ${DEFAULTS_PATH}." >&2
+    exit 1
+    ;;
+esac
+PIR_DATA_DIR="${INSTALL_DIR}/pir-data/${ZCASH_NETWORK}"
+
+PIR_CONFIG_OVERRIDE=false
+if [ "${SVOTE_PIR_CONFIG_URL+x}" = x ]; then
+  PIR_CONFIG_URL="$SVOTE_PIR_CONFIG_URL"
+  PIR_CONFIG_OVERRIDE=true
+elif grep -q '^SVOTE_PIR_CONFIG_URL=' "$DEFAULTS_PATH"; then
+  PIR_CONFIG_URL="$(read_default SVOTE_PIR_CONFIG_URL)"
+else
+  PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
+fi
+VOTING_CONFIG_OVERRIDE=false
+if [ "${SVOTE_PIR_VOTING_CONFIG_URL+x}" = x ]; then
+  VOTING_CONFIG_URL="$SVOTE_PIR_VOTING_CONFIG_URL"
+  VOTING_CONFIG_OVERRIDE=true
+elif grep -q '^SVOTE_PIR_VOTING_CONFIG_URL=' "$DEFAULTS_PATH"; then
+  VOTING_CONFIG_URL="$(read_default SVOTE_PIR_VOTING_CONFIG_URL)"
+else
+  VOTING_CONFIG_URL="https://voting.valargroup.org/prod/static-voting-config.json"
+fi
+if [ "$ZCASH_NETWORK" = "test" ]; then
+  if [ "$PIR_CONFIG_OVERRIDE" = false ]; then
+    PIR_CONFIG_URL="${PIR_CONFIG_URL/\/prod\//\/stage\/}"
+  fi
+  if [ "$VOTING_CONFIG_OVERRIDE" = false ]; then
+    VOTING_CONFIG_URL="${VOTING_CONFIG_URL/\/prod\//\/stage\/}"
+  fi
+else
+  if [ "$PIR_CONFIG_OVERRIDE" = false ]; then
+    PIR_CONFIG_URL="${PIR_CONFIG_URL/\/stage\//\/prod\/}"
+  fi
+  if [ "$VOTING_CONFIG_OVERRIDE" = false ]; then
+    VOTING_CONFIG_URL="${VOTING_CONFIG_URL/\/stage\//\/prod\/}"
+  fi
+fi
+if [ "${SVOTE_PIR_PRECOMPUTED_BASE_URL+x}" = x ]; then
+  PRECOMPUTED_BASE_URL="$SVOTE_PIR_PRECOMPUTED_BASE_URL"
+elif grep -q '^SVOTE_PIR_PRECOMPUTED_BASE_URL=' "$DEFAULTS_PATH"; then
+  PRECOMPUTED_BASE_URL="$(read_default SVOTE_PIR_PRECOMPUTED_BASE_URL)"
+else
+  PRECOMPUTED_BASE_URL='https://shielded-vote.nyc3.digitaloceanspaces.com'
+fi
+
+if [ "$REFRESH_UNIT" = false ]; then
+  if [ ! -f "$SERVICE_PATH" ]; then
+    echo "${SERVICE_PATH} was not found; remove --no-unit so the release unit is installed." >&2
+    exit 1
+  fi
+  if grep -q -- '--pir-data-dir' "$SERVICE_PATH" \
+    && ! grep -Fq -- "--pir-data-dir ${PIR_DATA_DIR}" "$SERVICE_PATH"; then
+    echo "${SERVICE_PATH} overrides the network data directory; remove --no-unit to refresh it." >&2
+    exit 1
+  fi
+fi
+
 ensure_curl_and_ca_certificates() {
   local need=false
 
@@ -214,11 +282,33 @@ if [ -z "$EXPECTED" ]; then
   exit 1
 fi
 
+if [ "$REFRESH_UNIT" = true ]; then
+  log "Downloading systemd service"
+  curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_TMP" \
+    "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${SERVICE_NAME}"
+fi
+
 if [ -x "${INSTALL_DIR}/${BINARY_NAME}" ] && [ "$FORCE" = false ]; then
   CURRENT="$(sha256sum "${INSTALL_DIR}/${BINARY_NAME}" | awk '{ print $1 }')"
   if [ "$CURRENT" = "$EXPECTED" ]; then
-    log "nf-server ${RELEASE_TAG} for ${PLATFORM} is already installed; no restart needed"
-    exit 0
+    CONFIG_CURRENT=false
+    if grep -Fxq "SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}" "$DEFAULTS_PATH" \
+      && grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH" \
+      && grep -Fxq "SVOTE_PIR_CONFIG_URL=${PIR_CONFIG_URL}" "$DEFAULTS_PATH" \
+      && grep -Fxq "SVOTE_PIR_VOTING_CONFIG_URL=${VOTING_CONFIG_URL}" "$DEFAULTS_PATH" \
+      && grep -Fxq "SVOTE_PIR_PRECOMPUTED_BASE_URL=${PRECOMPUTED_BASE_URL}" "$DEFAULTS_PATH" \
+      && [ -d "$PIR_DATA_DIR" ]; then
+      CONFIG_CURRENT=true
+    fi
+    UNIT_CURRENT=true
+    if [ "$REFRESH_UNIT" = true ] && ! cmp -s "$SERVICE_TMP" "$SERVICE_PATH"; then
+      UNIT_CURRENT=false
+    fi
+    if [ "$CONFIG_CURRENT" = true ] && [ "$UNIT_CURRENT" = true ]; then
+      log "nf-server ${RELEASE_TAG} for ${PLATFORM} is already installed; no restart needed"
+      exit 0
+    fi
+    log "nf-server binary is current; refreshing runtime configuration"
   fi
 fi
 
@@ -237,20 +327,34 @@ if [ "$EXPECTED" != "$ACTUAL" ]; then
   exit 1
 fi
 
-if [ "$REFRESH_UNIT" = true ]; then
-  log "Downloading systemd service"
-  curl -fsSL --retry 3 --retry-delay 2 -o "$SERVICE_TMP" \
-    "https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${SERVICE_NAME}"
-fi
-
 log "Installing nf-server under ${INSTALL_DIR}"
-install -d -m 0755 "${INSTALL_DIR}/pir-data"
+install -d -m 0755 "$PIR_DATA_DIR"
 install -m 0755 "$BINARY_PATH" "${INSTALL_DIR}/${BINARY_NAME}.new"
 mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
 ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "$SYMLINK_PATH"
 
 if [ "$REFRESH_UNIT" = true ]; then
   install -m 0644 "$SERVICE_TMP" "$SERVICE_PATH"
+fi
+
+if ! grep -Fxq "SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}" "$DEFAULTS_PATH" \
+  || ! grep -Fxq "SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}" "$DEFAULTS_PATH" \
+  || ! grep -Fxq "SVOTE_PIR_CONFIG_URL=${PIR_CONFIG_URL}" "$DEFAULTS_PATH" \
+  || ! grep -Fxq "SVOTE_PIR_VOTING_CONFIG_URL=${VOTING_CONFIG_URL}" "$DEFAULTS_PATH" \
+  || ! grep -Fxq "SVOTE_PIR_PRECOMPUTED_BASE_URL=${PRECOMPUTED_BASE_URL}" "$DEFAULTS_PATH"; then
+  DEFAULTS_TMP="${tmp}/nf-server.defaults"
+  awk '$0 !~ /^SVOTE_ZCASH_NETWORK=/ && $0 !~ /^SVOTE_PIR_DATA_DIR=/ \
+    && $0 !~ /^SVOTE_PIR_CONFIG_URL=/ && $0 !~ /^SVOTE_PIR_VOTING_CONFIG_URL=/ \
+    && $0 !~ /^SVOTE_PIR_PRECOMPUTED_BASE_URL=/' \
+    "$DEFAULTS_PATH" > "$DEFAULTS_TMP"
+  {
+    printf 'SVOTE_ZCASH_NETWORK=%s\n' "$ZCASH_NETWORK"
+    printf 'SVOTE_PIR_DATA_DIR=%s\n' "$PIR_DATA_DIR"
+    printf 'SVOTE_PIR_CONFIG_URL=%s\n' "$PIR_CONFIG_URL"
+    printf 'SVOTE_PIR_VOTING_CONFIG_URL=%s\n' "$VOTING_CONFIG_URL"
+    printf 'SVOTE_PIR_PRECOMPUTED_BASE_URL=%s\n' "$PRECOMPUTED_BASE_URL"
+  } >> "$DEFAULTS_TMP"
+  install -m 0644 "$DEFAULTS_TMP" "$DEFAULTS_PATH"
 fi
 
 log "Restarting ${SERVICE_NAME}"
@@ -287,6 +391,8 @@ echo "Environment data:"
 echo "  Version:           ${RELEASE_TAG}"
 echo "  Platform:          ${PLATFORM}"
 echo "  Install directory: ${INSTALL_DIR}"
+echo "  Zcash network:     ${ZCASH_NETWORK}"
+echo "  PIR data directory: ${PIR_DATA_DIR}"
 echo "  Service:           nullifier-query-server (systemd)"
 echo
 echo "How to monitor:"

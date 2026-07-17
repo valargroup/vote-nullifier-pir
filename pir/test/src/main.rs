@@ -76,6 +76,10 @@ enum Command {
 
     /// Test against a running pir-server instance.
     Server {
+        /// Zcash network served by the endpoint.
+        #[arg(long, env = "SVOTE_ZCASH_NETWORK")]
+        zcash_network: pir_types::ZcashNetwork,
+
         /// Server URL (e.g., http://localhost:3000).
         #[arg(long)]
         url: String,
@@ -118,6 +122,10 @@ enum Command {
     /// baseline against a running pir-server. Emits a JSON summary intended
     /// to be checked into the repo as a baseline for diff later.
     BenchServer {
+        /// Zcash network served by the endpoint.
+        #[arg(long, env = "SVOTE_ZCASH_NETWORK")]
+        zcash_network: pir_types::ZcashNetwork,
+
         /// Server URL (e.g., https://pir.valargroup.org).
         #[arg(long)]
         url: String,
@@ -157,6 +165,10 @@ enum Command {
 
     /// Drive concurrent PIR traffic against a running server for load testing.
     Load {
+        /// Zcash network served by the endpoint.
+        #[arg(long, env = "SVOTE_ZCASH_NETWORK")]
+        zcash_network: pir_types::ZcashNetwork,
+
         /// Server URL (e.g., http://localhost:3000).
         #[arg(long)]
         url: String,
@@ -225,13 +237,20 @@ fn main() -> Result<()> {
             num_proofs,
         } => run_local(nullifiers, num_proofs),
         Command::Server {
+            zcash_network,
             url,
             nullifiers,
             num_proofs,
             parallel,
         } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_server(url, nullifiers, num_proofs, parallel))
+            rt.block_on(run_server(
+                zcash_network,
+                url,
+                nullifiers,
+                num_proofs,
+                parallel,
+            ))
         }
         Command::VerifyYpir => run_verify_ypir(),
         Command::Bench { num_queries } => run_bench(num_queries),
@@ -240,6 +259,7 @@ fn main() -> Result<()> {
             config,
         } => run_bench_splits(num_queries, config),
         Command::BenchServer {
+            zcash_network,
             url,
             nullifiers,
             iterations,
@@ -252,6 +272,7 @@ fn main() -> Result<()> {
         } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(bench_server::run(bench_server::BenchConfig {
+                zcash_network,
                 url,
                 nullifiers_path: nullifiers,
                 iterations,
@@ -268,6 +289,7 @@ fn main() -> Result<()> {
             }))
         }
         Command::Load {
+            zcash_network,
             url,
             nullifiers,
             concurrency,
@@ -283,6 +305,7 @@ fn main() -> Result<()> {
         } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(load::run(load::LoadConfig {
+                zcash_network,
                 url,
                 nullifiers_path: nullifiers,
                 concurrency,
@@ -441,6 +464,7 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
 // ── Server mode ──────────────────────────────────────────────────────────────
 
 async fn run_server(
+    zcash_network: pir_types::ZcashNetwork,
     url: String,
     nullifiers_path: PathBuf,
     num_proofs: usize,
@@ -454,6 +478,7 @@ async fn run_server(
     // Connect to server
     let client = pir_client::PirClient::with_transport(
         &url,
+        zcash_network,
         std::sync::Arc::new(transport::HyperTransport::new()),
     )
     .await?;

@@ -7,16 +7,14 @@ Type=simple
 User=root
 WorkingDirectory=/opt/nf-ingest
 # Two env files by design: cloud-init owns /etc/default/nf-server (the
-# Phase 3 SVOTE_PIR_VOTING_CONFIG_URL / SVOTE_PIR_PRECOMPUTED_BASE_URL pins),
+# SVOTE_ZCASH_NETWORK, SVOTE_PIR_DATA_DIR, and bootstrap URL pins),
 # while the deploy workflow owns /opt/nf-ingest/.env (SENTRY_DSN,
 # SENTRY_ENVIRONMENT, and SENTRY_RELEASE). The
 # leading `-` makes both optional so the unit still starts on hosts
 # that haven't been provisioned with one or the other.
 EnvironmentFile=-/etc/default/nf-server
 EnvironmentFile=-/opt/nf-ingest/.env
-ExecStart=/opt/nf-ingest/nf-server serve \
-    --pir-data-dir /opt/nf-ingest/pir-data \
-    --port 3000
+ExecStart=/opt/nf-ingest/nf-server serve --port 3000
 Restart=on-failure
 # A failed bootstrap (e.g. transient bucket 5xx) re-runs the full
 # startup including the CDN fetch. 30 s back-off keeps us from

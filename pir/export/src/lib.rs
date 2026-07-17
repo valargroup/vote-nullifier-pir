@@ -41,9 +41,8 @@ use imt_tree::tree::{
 // existing consumers (tier submodules, tests, downstream crates) keep working.
 pub use pir_types::{
     PirMetadata, DATASET_VERSION, NULLIFIER_POOL, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS,
-    TIER1_LAYERS, TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS,
-    TIER2_ITEM_BITS, TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS,
-    TIER2_ROW_BYTES,
+    TIER1_LAYERS, TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS, TIER2_ITEM_BITS,
+    TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS, TIER2_ROW_BYTES,
 };
 
 /// Depth of the full circuit tree (unchanged from existing system).
@@ -74,7 +73,9 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     anyhow::ensure!(
         ranges.len() <= 1 << PIR_DEPTH,
         "too many ranges ({}) for PIR depth {} (max {})",
-        ranges.len(), PIR_DEPTH, 1 << PIR_DEPTH
+        ranges.len(),
+        PIR_DEPTH,
+        1 << PIR_DEPTH
     );
     verify_punctured_range_spans(&ranges)?;
     let t0 = Instant::now();
@@ -207,7 +208,9 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
 
     nfs.sort();
     let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
-    let mut sentinels: Vec<Fp> = (0u64..=SENTINEL_COUNT).map(|k| step * Fp::from(k)).collect();
+    let mut sentinels: Vec<Fp> = (0u64..=SENTINEL_COUNT)
+        .map(|k| step * Fp::from(k))
+        .collect();
     // Close the tail: p-1 ensures the last punctured range extends to the
     // end of the field, so values above the largest real nullifier are covered.
     sentinels.push(Fp::one().neg()); // p - 1
@@ -234,6 +237,7 @@ pub fn build_pir_tree_from_nullifiers(nfs: Vec<Fp>) -> Result<PirTree> {
 pub fn materialize_tree_checkpoint_with_progress(
     nfs: Vec<Fp>,
     tree_path: &Path,
+    network: pir_types::ZcashNetwork,
     chain_height: u64,
     on_progress: impl Fn(&str, u8),
 ) -> Result<PirTree> {
@@ -249,7 +253,11 @@ pub fn materialize_tree_checkpoint_with_progress(
     on_progress("building Merkle tree", 15);
     info!(depth = PIR_DEPTH, "building PIR tree");
     let tree = build_pir_tree(ranges)?;
-    info!(depth = PIR_DEPTH, root = hex::encode(tree.root25.to_repr()), "root-25");
+    info!(
+        depth = PIR_DEPTH,
+        root = hex::encode(tree.root25.to_repr()),
+        "root-25"
+    );
     info!(
         depth = FULL_DEPTH,
         root = hex::encode(tree.root29.to_repr()),
@@ -257,18 +265,27 @@ pub fn materialize_tree_checkpoint_with_progress(
     );
 
     on_progress("writing tree checkpoint", 35);
-    save_tree_checkpoint(tree_path, &tree, chain_height)?;
+    save_tree_checkpoint(tree_path, &tree, network, chain_height)?;
     Ok(tree)
 }
 
 /// Write `tier*.bin` and `pir_root.json` from an in-memory [`PirTree`].
-pub fn export_tiers_from_tree(tree: &PirTree, output_dir: &Path, height: Option<u64>) -> Result<()> {
-    export_all(tree, output_dir, height)
+pub fn export_tiers_from_tree(
+    tree: &PirTree,
+    output_dir: &Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+) -> Result<()> {
+    export_all(tree, output_dir, network, height)
 }
 
 /// Returns `true` when `pir_root.json` lists `expected_height` and tier files
 /// on disk match the expected sizes from layout constants and metadata.
-pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Result<bool> {
+pub fn tiers_complete_for_height(
+    output_dir: &Path,
+    expected_network: pir_types::ZcashNetwork,
+    expected_height: u64,
+) -> Result<bool> {
     let root_path = output_dir.join("pir_root.json");
     if !root_path.exists() {
         return Ok(false);
@@ -278,7 +295,8 @@ pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Res
     ) else {
         return Ok(false);
     };
-    if meta.height != Some(expected_height)
+    if meta.zcash_network != expected_network
+        || meta.height != Some(expected_height)
         || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
     {
         return Ok(false);
@@ -311,9 +329,10 @@ pub fn tiers_complete_for_height(output_dir: &Path, expected_height: u64) -> Res
 pub fn build_and_export(
     nfs: Vec<Fp>,
     output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<PirTree> {
-    build_and_export_with_progress(nfs, output_dir, height, |_, _| {})
+    build_and_export_with_progress(nfs, output_dir, network, height, |_, _| {})
 }
 
 /// Build the PIR tree and export tier files, calling `on_progress(message, pct)`
@@ -321,6 +340,7 @@ pub fn build_and_export(
 pub fn build_and_export_with_progress(
     nfs: Vec<Fp>,
     output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
     height: Option<u64>,
     on_progress: impl Fn(&str, u8),
 ) -> Result<PirTree> {
@@ -334,7 +354,11 @@ pub fn build_and_export_with_progress(
     );
 
     on_progress("building Merkle tree", 15);
-    info!(depth = PIR_DEPTH, root = hex::encode(tree.root25.to_repr()), "root-25");
+    info!(
+        depth = PIR_DEPTH,
+        root = hex::encode(tree.root25.to_repr()),
+        "root-25"
+    );
     info!(
         depth = FULL_DEPTH,
         root = hex::encode(tree.root29.to_repr()),
@@ -343,7 +367,7 @@ pub fn build_and_export_with_progress(
 
     on_progress("writing tier files", 40);
     info!(?output_dir, "exporting tier files");
-    export_tiers_from_tree(&tree, output_dir, height)?;
+    export_tiers_from_tree(&tree, output_dir, network, height)?;
 
     on_progress("tier files written", 55);
     Ok(tree)
@@ -371,7 +395,12 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
 }
 
 /// Export all tier files and metadata to the given directory.
-pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u64>) -> Result<()> {
+pub fn export_all(
+    tree: &PirTree,
+    output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+) -> Result<()> {
     std::fs::create_dir_all(output_dir)?;
 
     // Tier 0
@@ -380,7 +409,11 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
     let tier0_path = output_dir.join("tier0.bin");
     std::fs::write(&tier0_path, &tier0_data)?;
     evict_stale_precompute(&tier0_path);
-    info!(bytes = tier0_data.len(), elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()), "Tier 0 exported");
+    info!(
+        bytes = tier0_data.len(),
+        elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()),
+        "Tier 0 exported"
+    );
 
     // Tier 1
     let t1 = Instant::now();
@@ -390,7 +423,10 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
     f1.flush()?;
     drop(f1);
     evict_stale_precompute(&tier1_path);
-    info!(elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()), "Tier 1 exported");
+    info!(
+        elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
+        "Tier 1 exported"
+    );
 
     // Tier 2
     let t2 = Instant::now();
@@ -400,10 +436,14 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
     f2.flush()?;
     drop(f2);
     evict_stale_precompute(&tier2_path);
-    info!(elapsed_s = format!("{:.1}", t2.elapsed().as_secs_f64()), "Tier 2 exported");
+    info!(
+        elapsed_s = format!("{:.1}", t2.elapsed().as_secs_f64()),
+        "Tier 2 exported"
+    );
 
     // Metadata
     let metadata = PirMetadata {
+        zcash_network: network,
         nullifier_pool: NULLIFIER_POOL.to_owned(),
         dataset_version: DATASET_VERSION,
         root25: hex::encode(tree.root25.to_repr()),
@@ -434,7 +474,9 @@ pub fn export_all(tree: &PirTree, output_dir: &std::path::Path, height: Option<u
 pub fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<PuncturedRange> {
     use ff::Field as _;
     let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
-    let mut all_nfs: Vec<Fp> = (0u64..=SENTINEL_COUNT).map(|k| step * Fp::from(k)).collect();
+    let mut all_nfs: Vec<Fp> = (0u64..=SENTINEL_COUNT)
+        .map(|k| step * Fp::from(k))
+        .collect();
     all_nfs.push(Fp::one().neg()); // p - 1
     all_nfs.extend_from_slice(raw_nfs);
     all_nfs.sort();

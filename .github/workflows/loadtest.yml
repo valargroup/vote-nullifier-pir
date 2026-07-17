@@ -49,6 +49,7 @@ jobs:
     env:
       VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
       SNAPSHOTS_BASE: ${{ vars.SNAPSHOTS_BASE_URL }}
+      SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -94,11 +95,13 @@ jobs:
               exit 1
               ;;
           esac
-          curl -fsSL --retry 3 "$SNAPSHOTS_BASE/$HEIGHT/manifest.json" -o manifest.json
+          SNAPSHOT_BASE="$SNAPSHOTS_BASE/$SVOTE_ZCASH_NETWORK/$HEIGHT"
+          curl -fsSL --retry 3 "$SNAPSHOT_BASE/manifest.json" -o manifest.json
           if ! jq -e \
-            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            --arg network "$SVOTE_ZCASH_NETWORK" \
+            '.schema_version == 3 and .zcash_network == $network and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             manifest.json >/dev/null; then
-            echo "ERROR: snapshot manifest is not Ironwood dataset version 1 with schema version 2"
+            echo "ERROR: snapshot manifest is not $SVOTE_ZCASH_NETWORK Ironwood dataset version 2 with schema version 3"
             exit 1
           fi
 
@@ -117,8 +120,8 @@ jobs:
             local expected_sha expected_size actual_sha actual_size
             expected_sha=$(jq -r --arg f "$f" '.files[$f].sha256' manifest.json)
             expected_size=$(jq -r --arg f "$f" '.files[$f].size' manifest.json)
-            echo "Fetching $SNAPSHOTS_BASE/$HEIGHT/$f"
-            curl -fL --retry 3 -o "$f" "$SNAPSHOTS_BASE/$HEIGHT/$f"
+            echo "Fetching $SNAPSHOT_BASE/$f"
+            curl -fL --retry 3 -o "$f" "$SNAPSHOT_BASE/$f"
             actual_size=$(wc -c < "$f" | tr -d ' ')
             if [ "$actual_size" != "$expected_size" ]; then
               echo "ERROR: $f size mismatch (expected $expected_size, got $actual_size)"
@@ -133,17 +136,18 @@ jobs:
 
           download_and_verify nullifiers.dataset.json
           if ! jq -e \
-            '.nullifier_pool == "ironwood" and .dataset_version == 1' \
+            --arg network "$SVOTE_ZCASH_NETWORK" \
+            '.zcash_network == $network and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             nullifiers.dataset.json >/dev/null; then
             echo "ERROR: nullifiers.dataset.json has the wrong dataset identity"
             exit 1
           fi
           download_and_verify nullifiers.bin
-          echo "Fetched Ironwood nullifiers for height $HEIGHT (verified against manifest)"
+          echo "Fetched $SVOTE_ZCASH_NETWORK Ironwood nullifiers for height $HEIGHT"
 
       - name: Run load test
         run: |
-          ARGS=(--url "$PIR_URL" --nullifiers nullifiers.bin --concurrency "${{ inputs.concurrency }}" --duration "${{ inputs.duration }}" --json-out summary.json)
+          ARGS=(--url "$PIR_URL" --zcash-network "$SVOTE_ZCASH_NETWORK" --nullifiers nullifiers.bin --concurrency "${{ inputs.concurrency }}" --duration "${{ inputs.duration }}" --json-out summary.json)
           if [ -n "${{ inputs.rps }}" ]; then
             ARGS+=(--rps "${{ inputs.rps }}")
           fi

@@ -124,6 +124,7 @@ fn main() -> anyhow::Result<()> {
                     println!(
                         "{}",
                         serde_json::json!({
+                            "zcash_networks": ["main", "test"],
                             "nullifier_pool": pir_types::NULLIFIER_POOL,
                             "dataset_version": pir_types::DATASET_VERSION,
                         })

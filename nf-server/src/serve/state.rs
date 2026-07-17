@@ -32,6 +32,7 @@ pub(crate) struct AppState {
     /// Wrapped in Arc so we can obtain an OwnedMutexGuard that is 'static.
     pub rebuild_lock: Arc<tokio::sync::Mutex<()>>,
     pub pir_data_dir: PathBuf,
+    pub zcash_network: pir_types::ZcashNetwork,
     pub lwd_urls: Vec<String>,
     pub chain_url: Option<String>,
     pub next_req_id: AtomicU64,
