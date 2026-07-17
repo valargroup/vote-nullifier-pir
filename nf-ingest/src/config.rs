@@ -51,13 +51,74 @@ pub fn validate_export_height(height: u64) -> anyhow::Result<()> {
 /// 2. `cli_url` if it differs from the default single URL
 /// 3. `DEFAULT_LWD_URLS` as a fallback
 pub fn resolve_lwd_urls(cli_url: &str) -> Vec<String> {
-    let urls: Vec<String> = std::env::var("LWD_URLS")
-        .map(|s| s.split(',').map(|u| u.trim().to_string()).collect())
-        .unwrap_or_else(|_| vec![cli_url.to_string()]);
+    let env_urls = std::env::var("LWD_URLS").ok();
+    resolve_lwd_urls_with_override(cli_url, env_urls.as_deref())
+}
 
-    if urls.len() == 1 && urls[0] == DEFAULT_SINGLE_LWD_URL {
+fn resolve_lwd_urls_with_override(cli_url: &str, override_urls: Option<&str>) -> Vec<String> {
+    if let Some(override_urls) = override_urls {
+        let urls: Vec<String> = override_urls
+            .split(',')
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !urls.is_empty() {
+            return urls;
+        }
+    }
+
+    if cli_url == DEFAULT_SINGLE_LWD_URL {
         DEFAULT_LWD_URLS.iter().map(|s| s.to_string()).collect()
     } else {
-        urls
+        vec![cli_url.to_string()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_cli_expands_only_without_override() {
+        assert_eq!(
+            resolve_lwd_urls_with_override(DEFAULT_SINGLE_LWD_URL, None),
+            DEFAULT_LWD_URLS
+        );
+    }
+
+    #[test]
+    fn custom_cli_is_used_without_override() {
+        assert_eq!(
+            resolve_lwd_urls_with_override("https://custom.example:443", None),
+            vec!["https://custom.example:443"]
+        );
+    }
+
+    #[test]
+    fn explicit_single_default_url_is_not_expanded() {
+        assert_eq!(
+            resolve_lwd_urls_with_override(DEFAULT_SINGLE_LWD_URL, Some(DEFAULT_SINGLE_LWD_URL)),
+            vec![DEFAULT_SINGLE_LWD_URL]
+        );
+    }
+
+    #[test]
+    fn explicit_urls_are_trimmed_and_empty_entries_are_ignored() {
+        assert_eq!(
+            resolve_lwd_urls_with_override(
+                "unused",
+                Some(" https://one.example:443, ,https://two.example:443 ")
+            ),
+            vec!["https://one.example:443", "https://two.example:443"]
+        );
+    }
+
+    #[test]
+    fn empty_override_uses_cli_fallback() {
+        assert_eq!(
+            resolve_lwd_urls_with_override("https://custom.example:443", Some(" , ")),
+            vec!["https://custom.example:443"]
+        );
     }
 }

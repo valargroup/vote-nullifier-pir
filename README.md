@@ -91,6 +91,7 @@ Override via environment variables or Make arguments:
 |----------|---------|-------------|
 | `PIR_DATA_DIR` | `pir-data` | On-disk root: `nullifiers.bin`, dataset marker, checkpoint, index, `nullifiers.tree`, and tier files (`SVOTE_PIR_DATA_DIR` for `nf-server`) |
 | `LWD_URL` | `https://us.zec.stardust.rest:443` | Lightwalletd gRPC endpoint |
+| `LWD_URLS` | unset | Comma-separated post-NU6.3 lightwalletd endpoints. Overrides `LWD_URL` when set. |
 | `PORT` | `3000` | HTTP server port |
 | `SYNC_HEIGHT` | chain tip | Sync up to this block height (must be a multiple of 10) |
 | `SVOTE_PIR_SYNC_RESET` | unset | Set to `1` to wipe the dataset, tree, and tiers before `sync` |

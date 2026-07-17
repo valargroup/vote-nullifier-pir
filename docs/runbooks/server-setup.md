@@ -281,7 +281,7 @@ sudo /opt/nf-ingest/nf-server sync \
 systemctl start nullifier-query-server
 ```
 
-`--lwd-url` defaults to `https://us.zec.stardust.rest:443`; omit it unless you need a different lightwalletd.
+Set `LWD_URLS` to a comma-separated list of post-NU6.3 lightwalletd endpoints. It overrides `--lwd-url`; every configured endpoint must expose post-NU6.3 tree state.
 
 Useful flags:
 
@@ -434,6 +434,7 @@ Sync is run ad-hoc by the operator (see [Synced mode](#synced-mode)); no systemd
 |-----------------|------|
 | `SVOTE_PIR_DATA_DIR` | Nullifier + tree root (same env as `serve`; default `./pir-data`). |
 | `--output-dir` | Optional; tier export directory (defaults to `--pir-data-dir`). |
+| `LWD_URLS` | Comma-separated post-NU6.3 lightwalletd gRPC URLs. Overrides `--lwd-url` when set. |
 | `SVOTE_PIR_SYNC_RESET` | When `1` or `true`, delete the dataset marker, nullifiers, tree, and tiers before the run. Required once when migrating legacy Orchard data. |
 | `SVOTE_PIR_SYNC_ACK_HEIGHT_MISMATCH` | With `--non-interactive`, must be `RESYNC` when local checkpoint is above the active round `snapshot_height`. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Empty string skips voting-config fetch and height cap; non-empty requires `vote_servers` that expose an active round with `snapshot_height`. |

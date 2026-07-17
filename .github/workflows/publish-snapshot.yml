@@ -9,6 +9,8 @@
 # Requires repository or environment secrets:
 #   PIR_SNAPSHOT_PUBLISHER_HOST, DEPLOY_USER, SSH_KEY,
 #   DO_ACCESS_KEY, DO_SECRET_KEY.
+# Requires a repository variable:
+#   LWD_URLS (comma-separated post-NU6.3 lightwalletd endpoints).
 
 name: Publish nullifier snapshot
 
@@ -73,11 +75,12 @@ jobs:
         env:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
           DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
         with:
           host: ${{ secrets.PIR_SNAPSHOT_PUBLISHER_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: DO_ACCESS_KEY,DO_SECRET_KEY
+          envs: DO_ACCESS_KEY,DO_SECRET_KEY,LWD_URLS
           command_timeout: 90m
           script: |
             set -euo pipefail
@@ -89,6 +92,11 @@ jobs:
             REGION="${{ env.DO_REGION }}"
             PREFIX="${{ env.DO_PREFIX }}"
             PUBLIC_BASE_URL="${{ env.DO_PUBLIC_BASE_URL }}"
+            LWD_URLS="${LWD_URLS:-}"
+            if [ -z "${LWD_URLS//[[:space:],]/}" ]; then
+              echo "LWD_URLS must name at least one post-NU6.3 lightwalletd endpoint." >&2
+              exit 1
+            fi
             if [ -z "$BUCKET" ] || [ -z "$REGION" ] || [ -z "$PREFIX" ]; then
               echo "DO_BUCKET, DO_REGION, and DO_PREFIX must be non-empty." >&2
               exit 1
@@ -144,7 +152,6 @@ jobs:
               ./nf-server sync \
                 --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
-                --lwd-url https://us.zec.stardust.rest:443 \
                 --non-interactive \
                 --invalidate-after-blocks \
                 --max-height "$REQUESTED_H"
@@ -153,7 +160,6 @@ jobs:
               ./nf-server sync \
                 --pir-data-dir "${{ env.DEPLOY_PATH }}/pir-data" \
                 --output-dir "$STAGE" \
-                --lwd-url https://us.zec.stardust.rest:443 \
                 --non-interactive \
                 --invalidate-after-blocks
             fi
