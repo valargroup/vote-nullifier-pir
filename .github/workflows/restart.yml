@@ -76,7 +76,7 @@ env:
 
 jobs:
   validate_height:
-    name: Validate forced snapshot height
+    name: Validate restart inputs
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     outputs:
@@ -84,12 +84,17 @@ jobs:
     env:
       SNAPSHOTS_BASE_URL: ${{ vars.SNAPSHOTS_BASE_URL }}
     steps:
-      - name: Validate optional height
+      - name: Validate inputs
         id: validate
         env:
           REQUESTED_HEIGHT: ${{ inputs.height }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
         run: |
           set -euo pipefail
+          if [ -z "${LWD_URLS//[[:space:],]/}" ]; then
+            echo "LWD_URLS must name at least one lightwalletd endpoint." >&2
+            exit 1
+          fi
           HEIGHT="$REQUESTED_HEIGHT"
           HEIGHT="$(printf '%s' "$HEIGHT" | tr -d '[:space:]')"
 
@@ -161,7 +166,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS
           # Cold-start budget: snapshot self-bootstrap (~30s for the
           # ~6 GB CDN download in-region) + load_serving_state (mmaps
           # and parses ~6 GB of tier files into memory, 60-90s on the
@@ -202,10 +207,11 @@ jobs:
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL|LWD_URLS)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
               echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "LWD_URLS=$LWD_URLS"
               echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
@@ -327,6 +333,7 @@ jobs:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
 
   restart_primary:
     name: Restart primary
@@ -351,7 +358,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK
+          envs: VERIFY_HEIGHT,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS
           command_timeout: 11m
           script: |
             set -eu
@@ -387,10 +394,11 @@ jobs:
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
             if sudo test -f "$DEFAULTS_FILE"; then
-              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL)=/' "$DEFAULTS_FILE" > "$tmp"
+              sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL|LWD_URLS)=/' "$DEFAULTS_FILE" > "$tmp"
             fi
             {
               echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+              echo "LWD_URLS=$LWD_URLS"
               echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
               echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
               echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
@@ -508,6 +516,7 @@ jobs:
           TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
           PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
+          LWD_URLS: ${{ vars.LWD_URLS }}
 
   notify-slack:
     name: Slack Notification

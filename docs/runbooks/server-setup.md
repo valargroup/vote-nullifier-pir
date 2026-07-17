@@ -123,6 +123,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
    PLATFORM=linux-amd64        # or linux-arm64, darwin-arm64, darwin-amd64
    TAG=v0.x.y                  # pin the release tag
    ZCASH_NETWORK=main          # test for staging
+   LWD_URLS=https://example-lightwalletd:443
    case "$ZCASH_NETWORK" in main) CONFIG_ENV=prod ;; test) CONFIG_ENV=stage ;; *) exit 1 ;; esac
    PIR_DATA_DIR="/opt/nf-ingest/pir-data/${ZCASH_NETWORK}"
    PIR_SPACES_BASE="${PIR_SPACES_BASE:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
@@ -163,6 +164,7 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
    PIR_PRECOMPUTED_BASE_URL=https://shielded-vote.nyc3.digitaloceanspaces.com
    sudo tee /etc/default/nf-server >/dev/null <<EOF
 SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}
+LWD_URLS=${LWD_URLS}
 SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}
 SVOTE_PIR_CONFIG_URL=https://voting.valargroup.org/${CONFIG_ENV}/pir.json
 SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/${CONFIG_ENV}/static-voting-config.json
