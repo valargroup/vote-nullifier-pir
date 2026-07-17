@@ -379,19 +379,28 @@ For hosts already installed by `start_pir.sh`, use the latest-release updater wh
 
 ```bash
 curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh \
-  | sudo env SVOTE_ZCASH_NETWORK=main bash
+  | sudo bash
 ```
 
-Use `test` on staging. The updater preserves existing URL and Sentry settings, adds the network-specific data directory, refreshes the binary and unit, then waits for `/ready`.
+The updater reads the installed network from `/etc/default/nf-server` and refuses to change it. It preserves existing URL and Sentry settings, adds the network-specific data directory, refreshes the binary and unit, then waits for `/ready`.
+
+For a legacy installation with no `SVOTE_ZCASH_NETWORK` entry, provide it once during migration:
+
+```bash
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh \
+  | sudo env SVOTE_ZCASH_NETWORK=test bash
+```
+
+Use `test` for staging and `main` for production.
 
 Useful options:
 
 ```bash
 # Reinstall and restart even when the installed binary already matches.
-curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash -s -- --force
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash -s -- --force
 
 # Install a specific release tag.
-curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash -s -- --tag v0.x.y
+curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash -s -- --tag v0.x.y
 ```
 
 For a full reconfiguration back to the published defaults, re-run `start_pir.sh`; it is idempotent but rewrites `/etc/default/nf-server`. For custom layouts, repeat steps 1–2 of [Manual install](#manual-install-no-start_pirsh) with a new `TAG` (re-download the binary, re-check `SHA256SUMS`, reinstall to `/opt/nf-ingest/nf-server`, run `doctor`), then `sudo systemctl restart nullifier-query-server`. If the unit file itself changed in the new release (re-download it in step 3), also run `sudo systemctl daemon-reload` before the restart.

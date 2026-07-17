@@ -171,6 +171,11 @@ jobs:
           script: |
             set -eu
 
+            if ! sudo /opt/nf-ingest/nf-server serve --help 2>&1 | grep -Fq -- '--zcash-network'; then
+              echo "FAIL: installed nf-server lacks --zcash-network; deploy the new release before restarting."
+              exit 1
+            fi
+
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
                ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
@@ -350,6 +355,11 @@ jobs:
           command_timeout: 11m
           script: |
             set -eu
+
+            if ! sudo /opt/nf-ingest/nf-server serve --help 2>&1 | grep -Fq -- '--zcash-network'; then
+              echo "FAIL: installed nf-server lacks --zcash-network; deploy the new release before restarting."
+              exit 1
+            fi
 
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \

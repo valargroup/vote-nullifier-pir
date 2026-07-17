@@ -83,6 +83,22 @@ command -v curl >/dev/null
 if [ -f /update_pir.sh ]; then
   echo 'RUST_LOG=info,nf_server=debug' >> /etc/default/nf-server
   cp /etc/default/nf-server /tmp/nf-server.defaults.before-update
+
+  systemctl_lines_before="$(wc -l < /tmp/systemctl.log)"
+  conflicting_network_output="$(mktemp)"
+  if SVOTE_ZCASH_NETWORK=main bash /update_pir.sh --force >"$conflicting_network_output" 2>&1; then
+    echo "start_pir smoke: updater changed an installed network" >&2
+    exit 1
+  fi
+  grep -Fq 'Refusing to change Zcash network from test to main' "$conflicting_network_output"
+  if grep -Fq '==> Downloading release checksums' "$conflicting_network_output"; then
+    echo "start_pir smoke: updater downloaded artifacts before rejecting a network change" >&2
+    exit 1
+  fi
+  cmp -s /tmp/nf-server.defaults.before-update /etc/default/nf-server
+  test ! -d /opt/nf-ingest/pir-data/main
+  test "$(wc -l < /tmp/systemctl.log)" -eq "$systemctl_lines_before"
+
   unset SVOTE_ZCASH_NETWORK
 
   updater_output="$(mktemp)"

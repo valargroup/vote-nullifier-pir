@@ -100,7 +100,7 @@ fi
 
 if [ "${EUID:-0}" -ne 0 ]; then
   echo "This updater must run as root (it writes under /opt, /etc, and /usr/local/bin)." >&2
-  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo env SVOTE_ZCASH_NETWORK=main bash" >&2
+  echo "Example: curl -fsSL https://shielded-vote.nyc3.digitaloceanspaces.com/update_pir.sh | sudo bash" >&2
   exit 1
 fi
 
@@ -128,11 +128,31 @@ read_default() {
   awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); value=$0 } END { print value }' "$DEFAULTS_PATH"
 }
 
-ZCASH_NETWORK="${SVOTE_ZCASH_NETWORK:-$(read_default SVOTE_ZCASH_NETWORK)}"
+INSTALLED_ZCASH_NETWORK="$(read_default SVOTE_ZCASH_NETWORK)"
+REQUESTED_ZCASH_NETWORK="${SVOTE_ZCASH_NETWORK:-}"
+
+case "$INSTALLED_ZCASH_NETWORK" in
+  main|test)
+    if [ -n "$REQUESTED_ZCASH_NETWORK" ] \
+      && [ "$REQUESTED_ZCASH_NETWORK" != "$INSTALLED_ZCASH_NETWORK" ]; then
+      echo "Refusing to change Zcash network from ${INSTALLED_ZCASH_NETWORK} to ${REQUESTED_ZCASH_NETWORK}; reinstall to switch networks." >&2
+      exit 1
+    fi
+    ZCASH_NETWORK="$INSTALLED_ZCASH_NETWORK"
+    ;;
+  '')
+    ZCASH_NETWORK="$REQUESTED_ZCASH_NETWORK"
+    ;;
+  *)
+    echo "Invalid SVOTE_ZCASH_NETWORK in ${DEFAULTS_PATH}: ${INSTALLED_ZCASH_NETWORK}" >&2
+    exit 1
+    ;;
+esac
+
 case "$ZCASH_NETWORK" in
   main|test) ;;
   *)
-    echo "SVOTE_ZCASH_NETWORK must be set to main or test, or present in ${DEFAULTS_PATH}." >&2
+    echo "SVOTE_ZCASH_NETWORK must be set to main or test when it is absent from ${DEFAULTS_PATH}." >&2
     exit 1
     ;;
 esac
