@@ -11,15 +11,14 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: release-channel
-  cancel-in-progress: false
-
 jobs:
   promote:
     name: Promote ${{ inputs.tag }}
     runs-on: ubuntu-latest
     environment: staging
+    concurrency:
+      group: release-channel
+      cancel-in-progress: false
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_HOLD_TAG: ${{ vars.RELEASE_HOLD_TAG }}
@@ -96,7 +95,14 @@ jobs:
             "${public_base_url}/scripts/update_pir/${RELEASE_TAG}/update_pir.sh" \
             >/dev/null
 
+          service_asset_dir="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" \
+            --pattern nullifier-query-server.service \
+            --dir "$service_asset_dir"
+          [ -s "${service_asset_dir}/nullifier-query-server.service" ]
+
       - name: Publish mutable release pointers
+        id: publish
         run: |
           set -euo pipefail
           public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
@@ -124,31 +130,40 @@ jobs:
             "$RELEASE_TAG" \
             /tmp/do-spaces.s3cfg \
             /tmp/start_pir.sh \
-            /tmp/update_pir.sh
+            /tmp/update_pir.sh \
+            /tmp/published-snapshot-height
 
-      - name: Mark GitHub release latest
-        run: gh release edit "$RELEASE_TAG" --latest --verify-tag
+          printf 'snapshot_height=%s\n' \
+            "$(cat /tmp/published-snapshot-height)" \
+            >> "$GITHUB_OUTPUT"
 
-      - name: Verify promoted release channels
+      - name: Verify mutable release pointers
+        env:
+          SNAPSHOT_HEIGHT: ${{ steps.publish.outputs.snapshot_height }}
         run: |
           set -euo pipefail
           public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
           public_base_url="${public_base_url%/}"
 
-          [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" = "$RELEASE_TAG" ]
           curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/start_pir.sh" \
             | grep -Fq "readonly START_RELEASE_TAG='${RELEASE_TAG}'"
           curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/update_pir.sh" \
             | grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${RELEASE_TAG}'"
 
-          snapshot_height="$(curl -fsSL --retry 3 --retry-delay 2 "$PIR_CONFIG_URL" \
-            | jq -er '.snapshot_height // empty')"
-          case "$snapshot_height" in
-            *[!0-9]*)
-              echo "PIR config snapshot_height must be numeric, got: ${snapshot_height}" >&2
+          case "$SNAPSHOT_HEIGHT" in
+            ""|*[!0-9]*)
+              echo "Published snapshot_height must be numeric, got: ${SNAPSHOT_HEIGHT}" >&2
               exit 1
               ;;
           esac
           curl -fsSL --retry 3 --retry-delay 2 \
-            "${public_base_url}/scripts/start_pir/${snapshot_height}/start_pir.sh" \
+            "${public_base_url}/scripts/start_pir/${SNAPSHOT_HEIGHT}/start_pir.sh" \
             | grep -Fq "readonly START_RELEASE_TAG='${RELEASE_TAG}'"
+
+      - name: Mark GitHub release latest
+        run: gh release edit "$RELEASE_TAG" --latest --verify-tag
+
+      - name: Verify GitHub release channel
+        run: |
+          set -euo pipefail
+          [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" = "$RELEASE_TAG" ]

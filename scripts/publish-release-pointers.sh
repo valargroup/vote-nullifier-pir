@@ -5,6 +5,7 @@ version="${1:-}"
 s3_config="${2:-}"
 start_script="${3:-}"
 update_script="${4:-}"
+height_output="${5:-}"
 bucket="${DO_BUCKET:-shielded-vote}"
 s3cmd_bin="${S3CMD_BIN:-s3cmd}"
 pir_config_url="${PIR_CONFIG_URL:-https://voting.valargroup.org/prod/pir.json}"
@@ -45,6 +46,10 @@ case "$height" in
     exit 1
     ;;
 esac
+
+if [ -n "$height_output" ]; then
+  printf '%s\n' "$height" > "$height_output"
+fi
 
 put "$start_script" "scripts/start_pir/${height}/start_pir.sh"
 
