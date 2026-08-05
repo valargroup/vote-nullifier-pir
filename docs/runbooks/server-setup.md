@@ -103,6 +103,17 @@ Each `v*` release publishes the `nf-server-<platform>` binary, `SHA256SUMS`, and
 - `<spaces-origin>/update_pir.sh` — updates to the latest stable release while preserving existing config and data files.
 - `<spaces-origin>/scripts/update_pir/<tag>/update_pir.sh` — pinned to a specific release tag for rollback or reproducible testing.
 
+For a coordinated release, set the repository variable `RELEASE_HOLD_TAG` to
+the stable tag before pushing it. The release workflow publishes GitHub and
+tag-scoped Spaces artifacts without changing GitHub Latest, the unversioned
+installer aliases, or the snapshot-height installer alias. When the release is
+ready to become the default, run the **Promote release** workflow with that
+exact tag. It verifies the artifacts, updates all mutable aliases, marks the
+GitHub release Latest, verifies the result, and clears the hold.
+
+Promotion changes future installer and updater resolution. It does not install
+or restart `nf-server` on any running host.
+
 Prereleases publish only the tag-scoped paths and do not change the stable aliases.
 
 ### Manual install (no `start_pir.sh`)

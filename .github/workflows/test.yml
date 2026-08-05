@@ -34,6 +34,9 @@ jobs:
       - name: nf-server doctor (smoke)
         run: cargo run -p nf-server -- doctor
 
+      - name: Test release channels
+        run: scripts/test_release_channel.sh
+
       - name: Run unit tests
         run: |
           cargo test --lib -p imt-tree

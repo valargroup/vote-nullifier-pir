@@ -22,9 +22,48 @@ permissions:
   contents: write
 
 jobs:
+  release-metadata:
+    name: Resolve release channel
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.channel.outputs.prerelease }}
+      make_latest: ${{ steps.channel.outputs.make_latest }}
+      publish_mutable_pointers: ${{ steps.channel.outputs.publish_mutable_pointers }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Classify release tag
+        id: channel
+        env:
+          RELEASE_HOLD_TAG: ${{ vars.RELEASE_HOLD_TAG }}
+        run: |
+          channel="$(scripts/release-channel.sh "$GITHUB_REF_NAME")"
+          if [ -n "$RELEASE_HOLD_TAG" ] && [ "$GITHUB_REF_NAME" = "$RELEASE_HOLD_TAG" ]; then
+            echo "Holding coordinated release ${GITHUB_REF_NAME} from mutable release channels."
+            {
+              echo "prerelease=false"
+              echo "make_latest=false"
+              echo "publish_mutable_pointers=false"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "$channel" = "rc" ]; then
+            {
+              echo "prerelease=true"
+              echo "make_latest=false"
+              echo "publish_mutable_pointers=false"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "prerelease=false"
+              echo "make_latest=true"
+              echo "publish_mutable_pointers=true"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build nf-server (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
@@ -94,7 +133,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [release-metadata, build]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -129,8 +168,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ !contains(github.ref_name, '-') }}
+          prerelease: ${{ needs.release-metadata.outputs.prerelease }}
+          make_latest: ${{ needs.release-metadata.outputs.make_latest }}
           files: |
             nf-server-linux-amd64
             nf-server-linux-arm64
@@ -142,7 +181,7 @@ jobs:
   distribute:
     name: Distribute to DigitalOcean Spaces
     runs-on: ubuntu-latest
-    needs: release
+    needs: [release, release-metadata]
     environment: staging
     env:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
@@ -151,7 +190,7 @@ jobs:
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
       DO_PRECOMPUTED_BASE_URL: ${{ vars.DO_PRECOMPUTED_BASE_URL }}
-      IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
+      PUBLISH_MUTABLE_POINTERS: ${{ needs.release-metadata.outputs.publish_mutable_pointers }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -245,34 +284,14 @@ jobs:
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
             "s3://${DO_BUCKET}/scripts/update_pir/${VERSION}/update_pir.sh"
 
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            echo "Prerelease ${VERSION}: leaving latest installer aliases unchanged."
+          if [ "$PUBLISH_MUTABLE_POINTERS" = "true" ]; then
+            scripts/publish-release-pointers.sh \
+              "$VERSION" \
+              /tmp/do-spaces.s3cfg \
+              start_pir.sh \
+              update_pir.sh
           else
-            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-              "s3://${DO_BUCKET}/start_pir.sh"
-            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
-              "s3://${DO_BUCKET}/update_pir.sh"
-
-            PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
-            HEIGHT=""
-            if CONFIG="$(curl -fsSL "$PIR_CONFIG_URL")"; then
-              HEIGHT="$(jq -r '.snapshot_height // empty' <<<"$CONFIG" 2>/dev/null || true)"
-            fi
-
-            if [ -n "$HEIGHT" ]; then
-              case "$HEIGHT" in
-                *[!0-9]*)
-                  echo "PIR config snapshot_height must be numeric when present, got: ${HEIGHT}" >&2
-                  exit 1
-                  ;;
-                *)
-                  s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-                    "s3://${DO_BUCKET}/scripts/start_pir/${HEIGHT}/start_pir.sh"
-                  ;;
-              esac
-            else
-              echo "No PIR config snapshot_height found; skipping per-height start_pir.sh upload."
-            fi
+            echo "Leaving latest installer aliases unchanged for held or prerelease tag ${VERSION}."
           fi
 
   notify-slack:

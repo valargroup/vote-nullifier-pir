@@ -1,5 +1,9 @@
 # Unreleased
 
+- Add held stable releases and a verified manual promotion path so coordinated
+  PIR upgrades can publish tag-scoped artifacts without changing latest
+  installer aliases early.
+
 # pir-types 0.3.0-rc.2 and pir-client 0.4.0-rc.2
 
 - Add Zcash network identity to Ironwood ingestion, snapshot artifacts, and `/root` responses.
