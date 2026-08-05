@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 channel_script="${repo_root}/scripts/release-channel.sh"
+metadata_script="${repo_root}/scripts/release-metadata.sh"
 promotion_script="${repo_root}/scripts/validate-release-promotion.sh"
 pointer_script="${repo_root}/scripts/publish-release-pointers.sh"
 
@@ -19,8 +20,28 @@ for tag in v0.0 v0.0.41-rc v0.0.41-beta.1 v0.0.41.1; do
   fi
 done
 
-[ "$($promotion_script v0.0.41 v0.0.41)" = "v0.0.41" ] \
+expected_rc_metadata=$'prerelease=true\nmake_latest=false\npublish_mutable_pointers=false'
+[ "$($metadata_script v0.0.41-rc.1 v0.0.41-rc.1)" = "$expected_rc_metadata" ] \
+  || fail "held RC was not kept as a prerelease"
+expected_held_metadata=$'prerelease=false\nmake_latest=false\npublish_mutable_pointers=false'
+[ "$($metadata_script v0.0.41 v0.0.41)" = "$expected_held_metadata" ] \
+  || fail "held stable release metadata"
+expected_stable_metadata=$'prerelease=false\nmake_latest=true\npublish_mutable_pointers=true'
+[ "$($metadata_script v0.0.41 v0.0.42)" = "$expected_stable_metadata" ] \
+  || fail "unheld stable release metadata"
+
+[ "$($promotion_script v0.0.41 v0.0.41 v0.0.40)" = "v0.0.41" ] \
   || fail "held stable release promotion validation"
+[ "$($promotion_script v0.0.41 v0.0.41 v0.0.41)" = "v0.0.41" ] \
+  || fail "idempotent promotion validation"
+[ "$($promotion_script v1.0.0 v1.0.0 v0.99.99)" = "v1.0.0" ] \
+  || fail "new major release promotion validation"
+if "$promotion_script" v0.0.41 v0.0.41 v0.0.42 >/dev/null 2>&1; then
+  fail "promotion replaced a newer Latest release"
+fi
+if "$promotion_script" v1.0.0 v1.0.0 v10.0.0 >/dev/null 2>&1; then
+  fail "promotion replaced a newer multi-digit major release"
+fi
 if "$promotion_script" v0.0.41-rc.1 v0.0.41-rc.1 >/dev/null 2>&1; then
   fail "RC release promotion accepted"
 fi
@@ -62,5 +83,21 @@ grep -q 's3://shielded-vote/update_pir.sh' "$S3CMD_LOG" \
   || fail "stable updater pointer missing"
 tail -n 1 "$S3CMD_LOG" | grep -q 's3://shielded-vote/start_pir.sh' \
   || fail "stable installer pointer was not published last"
+
+: > "$S3CMD_LOG"
+export PIR_CONFIG_URL="file://${tmp_dir}/missing.json"
+if "$pointer_script" v0.0.41 "${tmp_dir}/s3cfg" \
+  "${tmp_dir}/start_pir.sh" "${tmp_dir}/update_pir.sh" >/dev/null 2>&1; then
+  fail "stable pointers published without PIR config"
+fi
+[ ! -s "$S3CMD_LOG" ] || fail "pointers changed before PIR config validation"
+
+printf '{}\n' > "${tmp_dir}/pir-without-height.json"
+export PIR_CONFIG_URL="file://${tmp_dir}/pir-without-height.json"
+if "$pointer_script" v0.0.41 "${tmp_dir}/s3cfg" \
+  "${tmp_dir}/start_pir.sh" "${tmp_dir}/update_pir.sh" >/dev/null 2>&1; then
+  fail "stable pointers published without snapshot height"
+fi
+[ ! -s "$S3CMD_LOG" ] || fail "pointers changed before snapshot height validation"
 
 echo "PASS: release channel tests"

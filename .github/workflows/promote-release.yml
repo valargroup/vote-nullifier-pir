@@ -28,6 +28,7 @@ jobs:
       DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
+      PIR_CONFIG_URL: https://voting.valargroup.org/prod/pir.json
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out held release
@@ -38,7 +39,11 @@ jobs:
       - name: Validate held stable release
         run: |
           set -euo pipefail
-          scripts/validate-release-promotion.sh "$RELEASE_TAG" "$RELEASE_HOLD_TAG"
+          latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')"
+          scripts/validate-release-promotion.sh \
+            "$RELEASE_TAG" \
+            "$RELEASE_HOLD_TAG" \
+            "$latest_tag"
           [ "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)" ]
 
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
@@ -110,3 +115,15 @@ jobs:
             | grep -Fq "readonly START_RELEASE_TAG='${RELEASE_TAG}'"
           curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/update_pir.sh" \
             | grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${RELEASE_TAG}'"
+
+          snapshot_height="$(curl -fsSL --retry 3 --retry-delay 2 "$PIR_CONFIG_URL" \
+            | jq -er '.snapshot_height // empty')"
+          case "$snapshot_height" in
+            *[!0-9]*)
+              echo "PIR config snapshot_height must be numeric, got: ${snapshot_height}" >&2
+              exit 1
+              ;;
+          esac
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${snapshot_height}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${RELEASE_TAG}'"

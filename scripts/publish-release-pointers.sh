@@ -31,24 +31,22 @@ put() {
     "$1" "s3://${bucket}/$2"
 }
 
-height=""
-if config="$(curl -fsSL "$pir_config_url")"; then
-  height="$(jq -r '.snapshot_height // empty' <<<"$config" 2>/dev/null || true)"
+if ! config="$(curl -fsSL "$pir_config_url")"; then
+  echo "ERROR: unable to load PIR config from ${pir_config_url}." >&2
+  exit 1
 fi
+if ! height="$(jq -er '.snapshot_height // empty' <<<"$config" 2>/dev/null)"; then
+  echo "ERROR: PIR config does not contain a snapshot_height." >&2
+  exit 1
+fi
+case "$height" in
+  *[!0-9]*)
+    echo "PIR config snapshot_height must be numeric, got: ${height}" >&2
+    exit 1
+    ;;
+esac
 
-if [ -n "$height" ]; then
-  case "$height" in
-    *[!0-9]*)
-      echo "PIR config snapshot_height must be numeric when present, got: ${height}" >&2
-      exit 1
-      ;;
-    *)
-      put "$start_script" "scripts/start_pir/${height}/start_pir.sh"
-      ;;
-  esac
-else
-  echo "No PIR config snapshot_height found; skipping per-height start_pir.sh upload."
-fi
+put "$start_script" "scripts/start_pir/${height}/start_pir.sh"
 
 put "$update_script" "update_pir.sh"
 put "$start_script" "start_pir.sh"

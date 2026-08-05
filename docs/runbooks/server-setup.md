@@ -111,7 +111,9 @@ ready to become the default, run the **Promote release** workflow with that
 exact tag. It verifies the artifacts, updates all mutable aliases, marks the
 GitHub release Latest, and verifies the result. `RELEASE_HOLD_TAG` can remain
 as an audit marker because it affects only that exact tag; replace it before
-the next coordinated release.
+the next coordinated release. Promotion refuses to replace a newer stable
+release that has since become Latest, and it fails unless the current
+snapshot-height installer alias can be published and verified.
 
 Promotion changes future installer and updater resolution. It does not install
 or restart `nf-server` on any running host.
