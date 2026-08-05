@@ -109,7 +109,9 @@ tag-scoped Spaces artifacts without changing GitHub Latest, the unversioned
 installer aliases, or the snapshot-height installer alias. When the release is
 ready to become the default, run the **Promote release** workflow with that
 exact tag. It verifies the artifacts, updates all mutable aliases, marks the
-GitHub release Latest, verifies the result, and clears the hold.
+GitHub release Latest, and verifies the result. `RELEASE_HOLD_TAG` can remain
+as an audit marker because it affects only that exact tag; replace it before
+the next coordinated release.
 
 Promotion changes future installer and updater resolution. It does not install
 or restart `nf-server` on any running host.
