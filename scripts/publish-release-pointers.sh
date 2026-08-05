@@ -41,7 +41,7 @@ if ! height="$(jq -er '.snapshot_height // empty' <<<"$config" 2>/dev/null)"; th
   exit 1
 fi
 case "$height" in
-  *[!0-9]*)
+  ""|*[!0-9]*)
     echo "PIR config snapshot_height must be numeric, got: ${height}" >&2
     exit 1
     ;;

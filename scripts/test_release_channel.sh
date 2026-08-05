@@ -176,4 +176,15 @@ fi
 [ ! -s "$S3CMD_LOG" ] || fail "pointers changed before snapshot height validation"
 [ ! -e "${tmp_dir}/published-height" ] || fail "missing snapshot height was reported as published"
 
+: > "$S3CMD_LOG"
+printf '{"snapshot_height":""}\n' > "${tmp_dir}/pir-with-empty-height.json"
+export PIR_CONFIG_URL="file://${tmp_dir}/pir-with-empty-height.json"
+if "$pointer_script" v0.0.41 "${tmp_dir}/s3cfg" \
+  "${tmp_dir}/start_pir.sh" "${tmp_dir}/update_pir.sh" \
+  "${tmp_dir}/published-height" >/dev/null 2>&1; then
+  fail "stable pointers published with an empty snapshot height"
+fi
+[ ! -s "$S3CMD_LOG" ] || fail "pointers changed before empty snapshot height validation"
+[ ! -e "${tmp_dir}/published-height" ] || fail "empty snapshot height was reported as published"
+
 echo "PASS: release channel tests"
