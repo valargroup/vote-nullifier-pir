@@ -115,6 +115,11 @@ the next coordinated release. Promotion refuses to replace a newer stable
 release that has since become Latest, and it fails unless the current
 snapshot-height installer alias can be published and verified.
 
+For an ordinary stable release, GitHub publishes the release without changing
+Latest, updates and verifies the mutable Spaces aliases, and only then marks the
+release Latest. Rerunning the current Latest tag preserves that status while the
+aliases are republished.
+
 Promotion changes future installer and updater resolution. It does not install
 or restart `nf-server` on any running host.
 

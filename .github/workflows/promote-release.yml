@@ -37,7 +37,6 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
 
       - name: Validate held stable release
-        id: validate
         run: |
           set -euo pipefail
           repo_owner="${GITHUB_REPOSITORY%%/*}"
@@ -74,17 +73,7 @@ jobs:
             echo "Release tag ${RELEASE_TAG} does not resolve to a commit." >&2
             exit 1
           fi
-          printf 'release_sha=%s\n' "$release_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Check out held release commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.validate.outputs.release_sha }}
-
-      - name: Verify held release checkout
-        env:
-          RELEASE_SHA: ${{ steps.validate.outputs.release_sha }}
-        run: '[ "$(git rev-parse HEAD)" = "$RELEASE_SHA" ]'
+          echo "Validated ${RELEASE_TAG} at ${release_sha}."
 
       - name: Verify tag-scoped release artifacts
         run: |

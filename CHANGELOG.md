@@ -3,6 +3,7 @@
 - Add held stable releases and a verified manual promotion path so coordinated
   PIR upgrades can publish tag-scoped artifacts without changing installer
   aliases early, then promote every alias without permitting a stale rollback.
+  Ordinary stable releases become Latest only after those aliases are published.
 
 # pir-types 0.3.0-rc.2 and pir-client 0.4.0-rc.2
 

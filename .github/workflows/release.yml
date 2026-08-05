@@ -32,6 +32,7 @@ jobs:
     outputs:
       prerelease: ${{ steps.channel.outputs.prerelease }}
       make_latest: ${{ steps.channel.outputs.make_latest }}
+      already_latest: ${{ steps.channel.outputs.already_latest }}
       publish_mutable_pointers: ${{ steps.channel.outputs.publish_mutable_pointers }}
     steps:
       - name: Checkout
@@ -171,7 +172,7 @@ jobs:
         with:
           generate_release_notes: true
           prerelease: ${{ needs.release-metadata.outputs.prerelease }}
-          make_latest: ${{ needs.release-metadata.outputs.make_latest }}
+          make_latest: ${{ needs.release-metadata.outputs.already_latest }}
           files: |
             nf-server-linux-amd64
             nf-server-linux-arm64
@@ -192,6 +193,7 @@ jobs:
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
       DO_PRECOMPUTED_BASE_URL: ${{ vars.DO_PRECOMPUTED_BASE_URL }}
+      PIR_CONFIG_URL: https://voting.valargroup.org/prod/pir.json
       PUBLISH_MUTABLE_POINTERS: ${{ needs.release-metadata.outputs.publish_mutable_pointers }}
     steps:
       - name: Checkout
@@ -295,6 +297,39 @@ jobs:
           else
             echo "Leaving latest installer aliases unchanged for held or prerelease tag ${VERSION}."
           fi
+
+      - name: Verify mutable release pointers
+        if: needs.release-metadata.outputs.publish_mutable_pointers == 'true'
+        run: |
+          set -euo pipefail
+          public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          public_base_url="${public_base_url%/}"
+
+          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'"
+          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/update_pir.sh" \
+            | grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${GITHUB_REF_NAME}'"
+
+          snapshot_height="$(curl -fsSL --retry 3 --retry-delay 2 "$PIR_CONFIG_URL" \
+            | jq -er '.snapshot_height // empty')"
+          case "$snapshot_height" in
+            *[!0-9]*)
+              echo "PIR config snapshot_height must be numeric, got: ${snapshot_height}" >&2
+              exit 1
+              ;;
+          esac
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${snapshot_height}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'"
+
+      - name: Mark GitHub release latest
+        if: needs.release-metadata.outputs.make_latest == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "$GITHUB_REF_NAME" --latest --verify-tag
+          [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" = "$GITHUB_REF_NAME" ]
 
   notify-slack:
     name: Slack Notification

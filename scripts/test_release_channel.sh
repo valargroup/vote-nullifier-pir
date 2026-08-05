@@ -6,6 +6,8 @@ channel_script="${repo_root}/scripts/release-channel.sh"
 metadata_script="${repo_root}/scripts/release-metadata.sh"
 promotion_script="${repo_root}/scripts/validate-release-promotion.sh"
 pointer_script="${repo_root}/scripts/publish-release-pointers.sh"
+release_workflow="${repo_root}/.github/workflows/release.yml"
+promotion_workflow="${repo_root}/.github/workflows/promote-release.yml"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -20,17 +22,27 @@ for tag in v0.0 v0.0.41-rc v0.0.41-beta.1 v0.0.41.1; do
   fi
 done
 
-expected_rc_metadata=$'prerelease=true\nmake_latest=false\npublish_mutable_pointers=false'
+expected_rc_metadata=$'prerelease=true\nmake_latest=false\nalready_latest=false\npublish_mutable_pointers=false'
 [ "$($metadata_script v0.0.41-rc.1 v0.0.41-rc.1)" = "$expected_rc_metadata" ] \
   || fail "held RC was not kept as a prerelease"
-expected_held_metadata=$'prerelease=false\nmake_latest=false\npublish_mutable_pointers=false'
+expected_held_metadata=$'prerelease=false\nmake_latest=false\nalready_latest=false\npublish_mutable_pointers=false'
 [ "$($metadata_script v0.0.41 v0.0.41)" = "$expected_held_metadata" ] \
   || fail "held stable release metadata"
-expected_stable_metadata=$'prerelease=false\nmake_latest=true\npublish_mutable_pointers=true'
+expected_stable_metadata=$'prerelease=false\nmake_latest=true\nalready_latest=false\npublish_mutable_pointers=true'
 [ "$($metadata_script v0.0.41 v0.0.42)" = "$expected_stable_metadata" ] \
   || fail "unheld stable release metadata"
-[ "$($metadata_script v0.0.41 v0.0.41 v0.0.41)" = "$expected_stable_metadata" ] \
+expected_current_metadata=$'prerelease=false\nmake_latest=true\nalready_latest=true\npublish_mutable_pointers=true'
+[ "$($metadata_script v0.0.41 v0.0.41 v0.0.41)" = "$expected_current_metadata" ] \
   || fail "already promoted held release metadata"
+
+grep -Fq "make_latest: \${{ needs.release-metadata.outputs.already_latest }}" \
+  "$release_workflow" \
+  || fail "release creation can advance Latest before distribution"
+pointer_line="$(grep -n 'scripts/publish-release-pointers.sh' "$release_workflow" | tail -n 1 | cut -d: -f1)"
+latest_line="$(grep -n -- '- name: Mark GitHub release latest' "$release_workflow" | cut -d: -f1)"
+[ "$pointer_line" -lt "$latest_line" ] || fail "GitHub Latest advances before mutable pointers"
+[ "$(grep -Fc 'uses: actions/checkout@v4' "$promotion_workflow")" -eq 1 ] \
+  || fail "promotion switches away from the trusted checkout"
 
 [ "$($promotion_script v0.0.41 v0.0.41 v0.0.40)" = "v0.0.41" ] \
   || fail "held stable release promotion validation"
