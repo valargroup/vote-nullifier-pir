@@ -1,0 +1,169 @@
+name: Promote release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Held stable release tag to promote (vN.N.N)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: release-channel
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_HOLD_TAG: ${{ vars.RELEASE_HOLD_TAG }}
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+      DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
+      DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
+      DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
+      DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
+      PIR_CONFIG_URL: https://voting.valargroup.org/prod/pir.json
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out trusted promotion logic
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Validate held stable release
+        run: |
+          set -euo pipefail
+          repo_owner="${GITHUB_REPOSITORY%%/*}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          latest_tag="$(
+            gh api graphql \
+              -f owner="$repo_owner" \
+              -f name="$repo_name" \
+              -f query="query(\$owner: String!, \$name: String!) {
+                repository(owner: \$owner, name: \$name) {
+                  latestRelease { tagName }
+                }
+              }" \
+              --jq '.data.repository.latestRelease.tagName // empty'
+          )"
+          scripts/validate-release-promotion.sh \
+            "$RELEASE_TAG" \
+            "$RELEASE_HOLD_TAG" \
+            "$latest_tag"
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          [ "$(jq -r '.draft' <<<"$release_json")" = "false" ]
+          [ "$(jq -r '.prerelease' <<<"$release_json")" = "false" ]
+
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          release_object_type="$(jq -r '.object.type' <<<"$tag_ref")"
+          release_sha="$(jq -r '.object.sha' <<<"$tag_ref")"
+          while [ "$release_object_type" = "tag" ]; do
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${release_sha}")"
+            release_object_type="$(jq -r '.object.type' <<<"$tag_object")"
+            release_sha="$(jq -r '.object.sha' <<<"$tag_object")"
+          done
+          if [ "$release_object_type" != "commit" ]; then
+            echo "Release tag ${RELEASE_TAG} does not resolve to a commit." >&2
+            exit 1
+          fi
+          echo "Validated ${RELEASE_TAG} at ${release_sha}."
+
+      - name: Verify tag-scoped release artifacts
+        run: |
+          set -euo pipefail
+          public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          public_base_url="${public_base_url%/}"
+
+          for platform in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            curl -fsSIL --retry 3 --retry-delay 2 \
+              "${public_base_url}/binaries/vote-pir/nf-server-${RELEASE_TAG}-${platform}" \
+              >/dev/null
+          done
+          curl -fsSIL --retry 3 --retry-delay 2 \
+            "${public_base_url}/binaries/vote-pir/SHA256SUMS-${RELEASE_TAG}" \
+            >/dev/null
+          curl -fsSIL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${RELEASE_TAG}/start_pir.sh" \
+            >/dev/null
+          curl -fsSIL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/update_pir/${RELEASE_TAG}/update_pir.sh" \
+            >/dev/null
+
+          service_asset_dir="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" \
+            --pattern nullifier-query-server.service \
+            --dir "$service_asset_dir"
+          [ -s "${service_asset_dir}/nullifier-query-server.service" ]
+
+      - name: Publish mutable release pointers
+        id: publish
+        run: |
+          set -euo pipefail
+          public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          public_base_url="${public_base_url%/}"
+
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${RELEASE_TAG}/start_pir.sh" \
+            -o /tmp/start_pir.sh
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/update_pir/${RELEASE_TAG}/update_pir.sh" \
+            -o /tmp/update_pir.sh
+
+          pip install --quiet s3cmd
+          cat > /tmp/do-spaces.s3cfg <<EOF
+          [default]
+          access_key = ${DO_ACCESS_KEY}
+          secret_key = ${DO_SECRET_KEY}
+          host_base = ${DO_REGION}.digitaloceanspaces.com
+          host_bucket = %(bucket)s.${DO_REGION}.digitaloceanspaces.com
+          bucket_location = ${DO_REGION}
+          use_https = True
+          EOF
+
+          scripts/publish-release-pointers.sh \
+            "$RELEASE_TAG" \
+            /tmp/do-spaces.s3cfg \
+            /tmp/start_pir.sh \
+            /tmp/update_pir.sh \
+            /tmp/published-snapshot-height
+
+          printf 'snapshot_height=%s\n' \
+            "$(cat /tmp/published-snapshot-height)" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Verify mutable release pointers
+        env:
+          SNAPSHOT_HEIGHT: ${{ steps.publish.outputs.snapshot_height }}
+        run: |
+          set -euo pipefail
+          public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          public_base_url="${public_base_url%/}"
+
+          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${RELEASE_TAG}'"
+          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/update_pir.sh" \
+            | grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${RELEASE_TAG}'"
+
+          case "$SNAPSHOT_HEIGHT" in
+            ""|*[!0-9]*)
+              echo "Published snapshot_height must be numeric, got: ${SNAPSHOT_HEIGHT}" >&2
+              exit 1
+              ;;
+          esac
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${SNAPSHOT_HEIGHT}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${RELEASE_TAG}'"
+
+      - name: Mark GitHub release latest
+        run: gh release edit "$RELEASE_TAG" --latest --verify-tag
+
+      - name: Verify GitHub release channel
+        run: |
+          set -euo pipefail
+          [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" = "$RELEASE_TAG" ]

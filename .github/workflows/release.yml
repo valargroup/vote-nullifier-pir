@@ -22,9 +22,47 @@ permissions:
   contents: write
 
 jobs:
+  release-metadata:
+    name: Resolve release channel
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.channel.outputs.prerelease }}
+      make_latest: ${{ steps.channel.outputs.make_latest }}
+      already_latest: ${{ steps.channel.outputs.already_latest }}
+      publish_mutable_pointers: ${{ steps.channel.outputs.publish_mutable_pointers }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Classify release tag
+        id: channel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_HOLD_TAG: ${{ vars.RELEASE_HOLD_TAG }}
+        run: |
+          repo_owner="${GITHUB_REPOSITORY%%/*}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          latest_tag="$(
+            gh api graphql \
+              -f owner="$repo_owner" \
+              -f name="$repo_name" \
+              -f query="query(\$owner: String!, \$name: String!) {
+                repository(owner: \$owner, name: \$name) {
+                  latestRelease { tagName }
+                }
+              }" \
+              --jq '.data.repository.latestRelease.tagName // empty'
+          )"
+          scripts/release-metadata.sh \
+            "$GITHUB_REF_NAME" \
+            "$RELEASE_HOLD_TAG" \
+            "$latest_tag" \
+            >> "$GITHUB_OUTPUT"
+
   build:
     name: Build nf-server (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
@@ -94,7 +132,7 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [release-metadata, build]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,24 +163,39 @@ jobs:
             nullifier-query-server.service \
             > SHA256SUMS
 
-      - name: Create release with assets
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ !contains(github.ref_name, '-') }}
-          files: |
+      - name: Create or update release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          assets=(
             nf-server-linux-amd64
             nf-server-linux-arm64
             nf-server-darwin-amd64
             nf-server-darwin-arm64
             nullifier-query-server.service
             SHA256SUMS
+          )
+
+          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" 2>/dev/null)"; then
+            [ "$(jq -r '.draft' <<<"$release_json")" = "false" ]
+            [ "$(jq -r '.prerelease' <<<"$release_json")" = "$PRERELEASE" ]
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            release_args=(--generate-notes --latest=false --verify-tag)
+            if [ "$PRERELEASE" = "true" ]; then
+              release_args+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" \
+              "${assets[@]}" \
+              "${release_args[@]}"
+          fi
 
   distribute:
     name: Distribute to DigitalOcean Spaces
     runs-on: ubuntu-latest
-    needs: release
+    needs: [release, release-metadata]
     environment: staging
     env:
       DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
@@ -151,7 +204,6 @@ jobs:
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
       DO_PRECOMPUTED_BASE_URL: ${{ vars.DO_PRECOMPUTED_BASE_URL }}
-      IS_PRERELEASE: ${{ contains(github.ref_name, '-') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -245,40 +297,120 @@ jobs:
           s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
             "s3://${DO_BUCKET}/scripts/update_pir/${VERSION}/update_pir.sh"
 
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            echo "Prerelease ${VERSION}: leaving latest installer aliases unchanged."
-          else
-            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-              "s3://${DO_BUCKET}/start_pir.sh"
-            s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force update_pir.sh \
-              "s3://${DO_BUCKET}/update_pir.sh"
+  publish-release-channel:
+    name: Publish stable release channel
+    if: needs.release-metadata.outputs.publish_mutable_pointers == 'true'
+    runs-on: ubuntu-latest
+    needs: [release-metadata, distribute]
+    environment: staging
+    concurrency:
+      group: release-channel
+      cancel-in-progress: false
+    env:
+      DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
+      DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
+      DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
+      DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
+      DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
+      PIR_CONFIG_URL: https://voting.valargroup.org/prod/pir.json
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            PIR_CONFIG_URL="https://voting.valargroup.org/prod/pir.json"
-            HEIGHT=""
-            if CONFIG="$(curl -fsSL "$PIR_CONFIG_URL")"; then
-              HEIGHT="$(jq -r '.snapshot_height // empty' <<<"$CONFIG" 2>/dev/null || true)"
-            fi
+      - name: Validate stable channel update
+        run: |
+          set -euo pipefail
+          repo_owner="${GITHUB_REPOSITORY%%/*}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          latest_tag="$(
+            gh api graphql \
+              -f owner="$repo_owner" \
+              -f name="$repo_name" \
+              -f query="query(\$owner: String!, \$name: String!) {
+                repository(owner: \$owner, name: \$name) {
+                  latestRelease { tagName }
+                }
+              }" \
+              --jq '.data.repository.latestRelease.tagName // empty'
+          )"
+          scripts/validate-release-channel-update.sh \
+            "$GITHUB_REF_NAME" \
+            "$latest_tag"
 
-            if [ -n "$HEIGHT" ]; then
-              case "$HEIGHT" in
-                *[!0-9]*)
-                  echo "PIR config snapshot_height must be numeric when present, got: ${HEIGHT}" >&2
-                  exit 1
-                  ;;
-                *)
-                  s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force start_pir.sh \
-                    "s3://${DO_BUCKET}/scripts/start_pir/${HEIGHT}/start_pir.sh"
-                  ;;
-              esac
-            else
-              echo "No PIR config snapshot_height found; skipping per-height start_pir.sh upload."
-            fi
-          fi
+      - name: Publish mutable release pointers
+        id: publish
+        run: |
+          set -euo pipefail
+          public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          public_base_url="${public_base_url%/}"
+
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${GITHUB_REF_NAME}/start_pir.sh" \
+            -o /tmp/start_pir.sh
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/update_pir/${GITHUB_REF_NAME}/update_pir.sh" \
+            -o /tmp/update_pir.sh
+
+          pip install --quiet s3cmd
+          cat > /tmp/do-spaces.s3cfg <<EOF
+          [default]
+          access_key = ${DO_ACCESS_KEY}
+          secret_key = ${DO_SECRET_KEY}
+          host_base = ${DO_REGION}.digitaloceanspaces.com
+          host_bucket = %(bucket)s.${DO_REGION}.digitaloceanspaces.com
+          bucket_location = ${DO_REGION}
+          use_https = True
+          EOF
+
+          scripts/publish-release-pointers.sh \
+            "$GITHUB_REF_NAME" \
+            /tmp/do-spaces.s3cfg \
+            /tmp/start_pir.sh \
+            /tmp/update_pir.sh \
+            /tmp/published-snapshot-height
+
+          printf 'snapshot_height=%s\n' \
+            "$(cat /tmp/published-snapshot-height)" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Verify mutable release pointers
+        env:
+          SNAPSHOT_HEIGHT: ${{ steps.publish.outputs.snapshot_height }}
+        run: |
+          set -euo pipefail
+          public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
+          public_base_url="${public_base_url%/}"
+
+          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'"
+          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/update_pir.sh" \
+            | grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${GITHUB_REF_NAME}'"
+
+          case "$SNAPSHOT_HEIGHT" in
+            ""|*[!0-9]*)
+              echo "Published snapshot_height must be numeric, got: ${SNAPSHOT_HEIGHT}" >&2
+              exit 1
+              ;;
+          esac
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/start_pir/${SNAPSHOT_HEIGHT}/start_pir.sh" \
+            | grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'"
+
+      - name: Mark GitHub release latest
+        if: needs.release-metadata.outputs.make_latest == 'true'
+        run: gh release edit "$GITHUB_REF_NAME" --latest --verify-tag
+
+      - name: Verify GitHub release channel
+        if: needs.release-metadata.outputs.make_latest == 'true'
+        run: |
+          set -euo pipefail
+          [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" = "$GITHUB_REF_NAME" ]
 
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [build, release, distribute]
+    needs: [release-metadata, build, release, distribute, publish-release-channel]
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -304,7 +436,7 @@ jobs:
                 },
                 {
                   "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBuild: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}`" }
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nMetadata: `${{ needs.release-metadata.result }}` | Build: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}` | Channel: `${{ needs.publish-release-channel.result }}`" }
                 }
               ]
             }
