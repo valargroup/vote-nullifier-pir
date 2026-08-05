@@ -21,6 +21,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-channel
+  cancel-in-progress: false
+
 jobs:
   release-metadata:
     name: Resolve release channel
@@ -36,11 +40,26 @@ jobs:
       - name: Classify release tag
         id: channel
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_HOLD_TAG: ${{ vars.RELEASE_HOLD_TAG }}
         run: |
+          repo_owner="${GITHUB_REPOSITORY%%/*}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          latest_tag="$(
+            gh api graphql \
+              -f owner="$repo_owner" \
+              -f name="$repo_name" \
+              -f query="query(\$owner: String!, \$name: String!) {
+                repository(owner: \$owner, name: \$name) {
+                  latestRelease { tagName }
+                }
+              }" \
+              --jq '.data.repository.latestRelease.tagName // empty'
+          )"
           scripts/release-metadata.sh \
             "$GITHUB_REF_NAME" \
             "$RELEASE_HOLD_TAG" \
+            "$latest_tag" \
             >> "$GITHUB_OUTPUT"
 
   build:
@@ -280,7 +299,7 @@ jobs:
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [build, release, distribute]
+    needs: [release-metadata, build, release, distribute]
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -306,7 +325,7 @@ jobs:
                 },
                 {
                   "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBuild: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}`" }
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nMetadata: `${{ needs.release-metadata.result }}` | Build: `${{ needs.build.result }}` | Release: `${{ needs.release.result }}` | Distribute: `${{ needs.distribute.result }}`" }
                 }
               ]
             }

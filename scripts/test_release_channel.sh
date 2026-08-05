@@ -29,6 +29,8 @@ expected_held_metadata=$'prerelease=false\nmake_latest=false\npublish_mutable_po
 expected_stable_metadata=$'prerelease=false\nmake_latest=true\npublish_mutable_pointers=true'
 [ "$($metadata_script v0.0.41 v0.0.42)" = "$expected_stable_metadata" ] \
   || fail "unheld stable release metadata"
+[ "$($metadata_script v0.0.41 v0.0.41 v0.0.41)" = "$expected_stable_metadata" ] \
+  || fail "already promoted held release metadata"
 
 [ "$($promotion_script v0.0.41 v0.0.41 v0.0.40)" = "v0.0.41" ] \
   || fail "held stable release promotion validation"
