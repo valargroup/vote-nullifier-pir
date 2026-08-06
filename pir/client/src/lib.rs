@@ -259,8 +259,9 @@ impl PirClient {
 
     /// Perform private Merkle path retrieval for multiple nullifiers in parallel.
     ///
-    /// All queries run concurrently via `try_join_all`, sharing the same
-    /// `PirClient` (and thus the same HTTP client and Tier 0 data).
+    /// All queries run concurrently via `join_all`, sharing the same
+    /// `PirClient` (and thus the same HTTP client and Tier 0 data). Errors are
+    /// propagated only after every sibling request has completed.
     pub async fn fetch_proofs(&self, nullifiers: &[Fp]) -> Result<Vec<ImtProofData>> {
         log::debug!(
             "[PIR] Starting parallel fetch for {} notes...",
@@ -277,7 +278,10 @@ impl PirClient {
             })
             .collect();
 
-        let results_with_timing = futures::future::try_join_all(futures).await?;
+        let results_with_timing = futures::future::join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
         let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
 
         print_timing_table(&results_with_timing, wall_ms);
@@ -390,11 +394,10 @@ impl PirClient {
         let net_queue_ms = server_total_ms.map(|server_ms| (rtt_ms - server_ms).max(0.0));
         let upload_to_server_ms = server_total_ms.map(|server_ms| (send_ms - server_ms).max(0.0));
 
-        // Decode the response. Wrap in catch_unwind so that assert panics
+        // Decode the response. Wrap in catch_unwind so that assertion panics
         // in the YPIR library (e.g. `val < lwe_q_prime` in the LWE decode
-        // path) become recoverable errors rather than process aborts. This is
-        // necessary for the error-oracle mitigation in fetch_proof_inner:
-        // a panic here must not prevent the second query from being sent.
+        // path) become recoverable errors rather than allowing a hostile
+        // response to unwind through and abort the client process.
         let t2 = Instant::now();
         let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             ypir_client.decode_response_simplepir(seed, &response_bytes)
@@ -931,6 +934,27 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn batch_waits_for_all_pir_requests_before_propagating_decode_error() {
+        const K: usize = 5;
+
+        let raw_nfs: Vec<Fp> = (1u64..=20).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let transport = Arc::new(MockTransport::new(&tree));
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .unwrap();
+        let values: Vec<Fp> = tree
+            .ranges
+            .iter()
+            .take(K)
+            .map(|range| range[0] + Fp::one())
+            .collect();
+
+        assert!(client.fetch_proofs(&values).await.is_err());
+        assert_eq!(transport.count_hits("/tier1/query"), K);
     }
 
     #[tokio::test]
