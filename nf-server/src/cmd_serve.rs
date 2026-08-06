@@ -6,17 +6,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Extension};
+use axum::middleware;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Args as ClapArgs;
 use sentry::integrations::tower as sentry_tower;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tower::ServiceBuilder;
 
 use nf_ingest::config;
 use nf_ingest::file_store;
-use pir_server::MAX_QUERY_BODY_BYTES;
+use pir_server::{enforce_query_capacity, DEFAULT_MAX_CONCURRENT_QUERIES, MAX_QUERY_BODY_BYTES};
 
 use crate::bootstrap;
 use crate::metrics;
@@ -34,6 +35,14 @@ pub struct Args {
     /// Listen port.
     #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
+
+    /// Maximum number of query requests admitted concurrently.
+    #[arg(
+        long,
+        env = "SVOTE_PIR_MAX_CONCURRENT_QUERIES",
+        default_value_t = DEFAULT_MAX_CONCURRENT_QUERIES
+    )]
+    max_concurrent_queries: usize,
 
     /// Directory for the dataset marker, nullifiers, tree, and PIR tier files.
     /// Required for snapshot rebuilds via POST /snapshot/prepare.
@@ -121,6 +130,11 @@ pub struct Args {
 }
 
 pub async fn run(args: Args) -> Result<()> {
+    anyhow::ensure!(
+        (1..=Semaphore::MAX_PERMITS).contains(&args.max_concurrent_queries),
+        "--max-concurrent-queries must be between 1 and {}",
+        Semaphore::MAX_PERMITS
+    );
     let chain_url = args
         .chain_url
         .as_ref()
@@ -143,11 +157,16 @@ pub async fn run(args: Args) -> Result<()> {
     });
 
     let cors = tower_http::cors::CorsLayer::permissive();
+    let query_permits = Arc::new(Semaphore::new(args.max_concurrent_queries));
+    let query_routes = Router::new()
+        .route("/tier1/query", post(handlers::post_tier1_query))
+        .route_layer(middleware::from_fn(enforce_query_capacity))
+        .layer(Extension(query_permits));
 
     let app = Router::new()
+        .merge(query_routes)
         .route("/tier0", get(handlers::get_tier0))
         .route("/params/tier1", get(handlers::get_params_tier1))
-        .route("/tier1/query", post(handlers::post_tier1_query))
         .route("/tier1/row/:idx", get(handlers::get_tier1_row))
         .route("/root", get(handlers::get_root))
         .route("/snapshot/prepare", post(rebuild::post_snapshot_prepare))

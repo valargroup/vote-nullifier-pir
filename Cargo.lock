@@ -2094,6 +2094,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
  "valar-spiral-rs",

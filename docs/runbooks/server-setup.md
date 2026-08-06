@@ -459,6 +459,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_ZCASH_NETWORK` | Required Zcash network: `main` or `test`. |
 | `SVOTE_PIR_DATA_DIR` | Network-specific on-disk root. Fleet hosts use `/opt/nf-ingest/pir-data/<network>`. |
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
+| `SVOTE_PIR_MAX_CONCURRENT_QUERIES` | Maximum admitted Tier 1 and Tier 2 query requests across the process. Excess requests fail with HTTP 503 and `Retry-After`; defaults to 64. |
 | `SVOTE_PIR_CONFIG_URL` | Environment PIR snapshot config URL. Empty string disables bootstrap (offline / pre-staged tiers). New installs use `https://voting.valargroup.org/prod/pir.json` by default. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Legacy static voting-config URL. Used to derive the PIR config URL on old hosts and as a fallback active-round discovery path for ambiguous configs. |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to `https://shielded-vote.nyc3.digitaloceanspaces.com`. |

@@ -7,12 +7,14 @@
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
 use pasta_curves::Fp;
+use std::error::Error;
+use std::fmt;
 use std::io::Cursor;
 use std::path::Path;
 use std::time::Instant;
 use tracing::{info, warn};
 
-use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 
 use spiral_rs::params::Params;
 use ypir::params::{params_for_scenario_simplepir, DbRowsCols, PtModulusBits};
@@ -33,6 +35,22 @@ const AVX512_ALIGN: usize = 64;
 /// Maximum accepted HTTP request body size for a PIR query.
 pub const MAX_QUERY_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Default maximum number of PIR queries admitted at the same time.
+pub const DEFAULT_MAX_CONCURRENT_QUERIES: usize = 64;
+
+#[derive(Debug)]
+struct QueryAllocationError {
+    bytes: usize,
+}
+
+impl fmt::Display for QueryAllocationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to allocate {} bytes for query", self.bytes)
+    }
+}
+
+impl Error for QueryAllocationError {}
+
 /// 64-byte aligned u64 buffer for AVX-512 operations.
 struct Aligned64 {
     ptr: *mut u64,
@@ -41,15 +59,28 @@ struct Aligned64 {
 }
 
 impl Aligned64 {
-    fn new(len: usize) -> Self {
-        assert!(len > 0, "Aligned64::new called with zero length");
-        let size = len.checked_mul(U64_BYTES).expect("Aligned64 size overflow");
-        let layout = Layout::from_size_align(size, AVX512_ALIGN).expect("Aligned64 invalid layout");
+    fn try_from_le_bytes(bytes: &[u8]) -> Result<Self> {
+        anyhow::ensure!(
+            !bytes.is_empty() && bytes.len().is_multiple_of(U64_BYTES),
+            "aligned query section must contain whole u64 values"
+        );
+        let len = bytes.len() / U64_BYTES;
+        let size = bytes.len();
+        let layout = Layout::from_size_align(size, AVX512_ALIGN)
+            .context("invalid aligned query buffer layout")?;
         let ptr = unsafe { alloc_zeroed(layout) as *mut u64 };
         if ptr.is_null() {
-            handle_alloc_error(layout);
+            return Err(QueryAllocationError { bytes: size }.into());
         }
-        Self { ptr, len, layout }
+        let mut aligned = Self { ptr, len, layout };
+        for (dest, chunk) in aligned
+            .as_mut_slice()
+            .iter_mut()
+            .zip(bytes.chunks_exact(U64_BYTES))
+        {
+            *dest = u64::from_le_bytes(chunk.try_into().expect("chunk size is exact"));
+        }
+        Ok(aligned)
     }
 
     fn as_slice(&self) -> &[u64] {
@@ -59,6 +90,52 @@ impl Aligned64 {
     fn as_mut_slice(&mut self) -> &mut [u64] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
+}
+
+struct QuerySections<'a> {
+    pqr: &'a [u8],
+    pub_params: &'a [u8],
+}
+
+fn validate_query_layout(
+    query_bytes: &[u8],
+    expected_pqr_u64_len: usize,
+    expected_pub_params_u64_len: usize,
+) -> Result<QuerySections<'_>> {
+    let expected_pqr_byte_len = expected_pqr_u64_len
+        .checked_mul(U64_BYTES)
+        .context("expected pqr byte length overflow")?;
+    let expected_pub_params_byte_len = expected_pub_params_u64_len
+        .checked_mul(U64_BYTES)
+        .context("expected pub_params byte length overflow")?;
+    let expected_query_byte_len = U64_BYTES
+        .checked_add(expected_pqr_byte_len)
+        .and_then(|len| len.checked_add(expected_pub_params_byte_len))
+        .context("expected query byte length overflow")?;
+
+    anyhow::ensure!(
+        query_bytes.len() == expected_query_byte_len,
+        "query length is {} bytes; expected {}",
+        query_bytes.len(),
+        expected_query_byte_len
+    );
+
+    let mut prefix = [0u8; U64_BYTES];
+    prefix.copy_from_slice(&query_bytes[..U64_BYTES]);
+    let declared_pqr_byte_len = usize::try_from(u64::from_le_bytes(prefix))
+        .context("declared pqr byte length does not fit usize")?;
+    anyhow::ensure!(
+        declared_pqr_byte_len == expected_pqr_byte_len,
+        "declared pqr length is {} bytes; expected {}",
+        declared_pqr_byte_len,
+        expected_pqr_byte_len
+    );
+
+    let pqr_end = U64_BYTES + expected_pqr_byte_len;
+    Ok(QuerySections {
+        pqr: &query_bytes[U64_BYTES..pqr_end],
+        pub_params: &query_bytes[pqr_end..],
+    })
 }
 
 impl Drop for Aligned64 {
@@ -211,58 +288,26 @@ impl<'a> TierServer<'a> {
     pub fn answer_query(&self, query_bytes: &[u8]) -> Result<QueryAnswer> {
         let total_start = Instant::now();
 
-        // Validate length-prefixed format: [8: pqr_byte_len][pqr][pub_params]
+        // Validate the tier-specific dimensions before allocating query-sized
+        // buffers or entering YPIR, whose dimension checks are assertions.
         let validate_start = Instant::now();
-        anyhow::ensure!(
-            query_bytes.len() >= 8,
-            "query too short: {} bytes",
-            query_bytes.len()
-        );
-        let pqr_byte_len =
-            u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
-        let payload_len = query_bytes.len() - U64_BYTES;
-        anyhow::ensure!(
-            pqr_byte_len.is_multiple_of(U64_BYTES),
-            "pqr_byte_len {} not a multiple of 8",
-            pqr_byte_len
-        );
-        anyhow::ensure!(
-            pqr_byte_len <= payload_len,
-            "pqr_byte_len {} exceeds payload ({})",
-            pqr_byte_len,
-            payload_len
-        );
-        let remaining = payload_len - pqr_byte_len; // safe: checked above
-        anyhow::ensure!(pqr_byte_len > 0, "pqr section is empty");
-        anyhow::ensure!(remaining > 0, "pub_params section is empty");
-        anyhow::ensure!(
-            remaining.is_multiple_of(U64_BYTES),
-            "pub_params section {} bytes not a multiple of {}",
-            remaining,
-            U64_BYTES
-        );
+        let expected_pub_params_u64_len = self
+            ._params
+            .poly_len_log2
+            .checked_mul(self._params.t_exp_left)
+            .and_then(|len| len.checked_mul(self._params.poly_len))
+            .context("expected YPIR pub_params length overflow")?;
+        let sections = validate_query_layout(
+            query_bytes,
+            self._params.db_rows_padded_simplepir(),
+            expected_pub_params_u64_len,
+        )?;
         let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
-
-        let pqr_u64_len = pqr_byte_len / U64_BYTES;
-        let pp_u64_len = remaining / U64_BYTES;
 
         // Copy into 64-byte aligned memory for AVX-512 operations.
         let decode_start = Instant::now();
-        let mut pqr = Aligned64::new(pqr_u64_len);
-        for (i, chunk) in query_bytes[U64_BYTES..U64_BYTES + pqr_byte_len]
-            .chunks_exact(U64_BYTES)
-            .enumerate()
-        {
-            pqr.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
-        }
-
-        let mut pub_params = Aligned64::new(pp_u64_len);
-        for (i, chunk) in query_bytes[U64_BYTES + pqr_byte_len..]
-            .chunks_exact(U64_BYTES)
-            .enumerate()
-        {
-            pub_params.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
-        }
+        let pqr = Aligned64::try_from_le_bytes(sections.pqr)?;
+        let pub_params = Aligned64::try_from_le_bytes(sections.pub_params)?;
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
         // Run the YPIR online computation (returns Vec<u8> directly)
@@ -446,9 +491,35 @@ unsafe impl Sync for OwnedTierState {}
 
 // ── Shared HTTP helpers ──────────────────────────────────────────────────────
 
-use axum::http::{HeaderValue, StatusCode};
-use axum::response::IntoResponse;
+use axum::extract::{Extension, Request};
+use axum::http::{header::RETRY_AFTER, HeaderValue, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+/// Reject a PIR query immediately when all query permits are occupied.
+///
+/// Install this as route middleware with an [`Extension`] containing an [`Arc`]
+/// of [`Semaphore`] permits. Admission then happens before Axum buffers the
+/// request body for the handler.
+pub async fn enforce_query_capacity(
+    Extension(permits): Extension<Arc<Semaphore>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Ok(_permit) = permits.try_acquire() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(RETRY_AFTER, "1")],
+            "query capacity exhausted",
+        )
+            .into_response();
+    };
+
+    next.run(request).await
+}
 
 /// RAII guard that decrements an atomic inflight counter on drop.
 pub struct InflightGuard<'a> {
@@ -560,15 +631,20 @@ pub fn dispatch_query(
             response
         }
         Err(e) => {
+            let status = if e.downcast_ref::<QueryAllocationError>().is_some() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            };
             warn!(
                 req_id,
                 tier,
-                status = 400,
+                status = status.as_u16(),
                 handler_ms = format!("{:.3}", t0.elapsed().as_secs_f64() * 1000.0),
                 error = %e,
                 "pir_request_failed"
             );
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+            (status, e.to_string()).into_response()
         }
     }
 }
@@ -726,6 +802,58 @@ pub fn load_serving_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_layout_accepts_only_exact_dimensions() {
+        let payload = pir_types::serialize_ypir_query(&[1, 2], &[3, 4, 5]);
+        let sections = validate_query_layout(&payload, 2, 3).unwrap();
+        assert_eq!(sections.pqr.len(), 2 * U64_BYTES);
+        assert_eq!(sections.pub_params.len(), 3 * U64_BYTES);
+
+        let short = &payload[..payload.len() - U64_BYTES];
+        assert!(validate_query_layout(short, 2, 3).is_err());
+
+        let mut wrong_prefix = payload;
+        wrong_prefix[..U64_BYTES].copy_from_slice(&(U64_BYTES as u64).to_le_bytes());
+        assert!(validate_query_layout(&wrong_prefix, 2, 3).is_err());
+    }
+
+    #[test]
+    fn aligned_query_allocation_rejects_invalid_lengths() {
+        assert!(Aligned64::try_from_le_bytes(&[]).is_err());
+        assert!(Aligned64::try_from_le_bytes(&[0]).is_err());
+    }
+
+    #[tokio::test]
+    async fn query_capacity_sheds_when_all_permits_are_occupied() {
+        use axum::body::{Body, Bytes};
+        use axum::extract::DefaultBodyLimit;
+        use axum::middleware;
+        use axum::routing::post;
+        use axum::Router;
+        use tower::ServiceExt as _;
+
+        let permits = Arc::new(Semaphore::new(1));
+        let held_permit = Arc::clone(&permits).try_acquire_owned().unwrap();
+        let app = Router::new()
+            .route(
+                "/query",
+                post(|_body: Bytes| async { StatusCode::NO_CONTENT }),
+            )
+            .route_layer(middleware::from_fn(enforce_query_capacity))
+            .layer(DefaultBodyLimit::max(1))
+            .layer(Extension(permits));
+
+        let request = Request::post("/query").body(Body::from("too large")).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
+
+        drop(held_permit);
+        let request = Request::post("/query").body(Body::empty()).unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 
     #[test]
     fn rejects_wrong_dataset_before_loading_tiers() {

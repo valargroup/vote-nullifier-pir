@@ -12,16 +12,20 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, State};
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
+use tokio::sync::Semaphore;
 
 const DEFAULT_PORT: u16 = 3001;
+const MAX_CONCURRENT_QUERIES_ENV: &str = "SVOTE_PIR_MAX_CONCURRENT_QUERIES";
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, MAX_QUERY_BODY_BYTES,
+    dispatch_query, enforce_query_capacity, read_tier_row, HealthInfo, RootInfo, ServingState,
+    DEFAULT_MAX_CONCURRENT_QUERIES, MAX_QUERY_BODY_BYTES,
 };
 use tracing::info;
 
@@ -49,6 +53,7 @@ async fn main() -> Result<()> {
         .context("SVOTE_ZCASH_NETWORK must be set to main or test")?
         .parse()
         .map_err(anyhow::Error::msg)?;
+    let max_concurrent_queries = max_concurrent_queries_from_env()?;
 
     info!(dir = ?data_dir, "Loading tier files");
     let serving = pir_server::load_serving_state(&data_dir, network)?;
@@ -60,10 +65,16 @@ async fn main() -> Result<()> {
         inflight_requests: AtomicUsize::new(0),
     });
 
+    let query_permits = Arc::new(Semaphore::new(max_concurrent_queries));
+    let query_routes = Router::new()
+        .route("/tier1/query", post(post_tier1_query))
+        .route_layer(middleware::from_fn(enforce_query_capacity))
+        .layer(Extension(query_permits));
+
     let app = Router::new()
+        .merge(query_routes)
         .route("/tier0", get(get_tier0))
         .route("/params/tier1", get(get_params_tier1))
-        .route("/tier1/query", post(post_tier1_query))
         .route("/tier1/row/:idx", get(get_tier1_row))
         .route("/root", get(get_root))
         .route("/health", get(get_health))
@@ -76,6 +87,23 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn max_concurrent_queries_from_env() -> Result<usize> {
+    let value = match std::env::var(MAX_CONCURRENT_QUERIES_ENV) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(DEFAULT_MAX_CONCURRENT_QUERIES),
+        Err(error) => return Err(error).context(MAX_CONCURRENT_QUERIES_ENV),
+    };
+    let max = value
+        .parse::<usize>()
+        .with_context(|| format!("invalid {MAX_CONCURRENT_QUERIES_ENV}"))?;
+    anyhow::ensure!(
+        (1..=Semaphore::MAX_PERMITS).contains(&max),
+        "{MAX_CONCURRENT_QUERIES_ENV} must be between 1 and {}",
+        Semaphore::MAX_PERMITS
+    );
+    Ok(max)
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
