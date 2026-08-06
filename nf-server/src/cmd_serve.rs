@@ -16,6 +16,7 @@ use tower::ServiceBuilder;
 
 use nf_ingest::config;
 use nf_ingest::file_store;
+use pir_server::MAX_QUERY_BODY_BYTES;
 
 use crate::bootstrap;
 use crate::metrics;
@@ -157,7 +158,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/metrics", get(metrics::handle_metrics))
         .route("/health", get(handlers::get_health))
         .route("/ready", get(handlers::get_ready))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(MAX_QUERY_BODY_BYTES))
         .layer(cors)
         .layer(
             ServiceBuilder::new()
