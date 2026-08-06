@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tonic::transport::Channel;
 use tonic::Request;
-use tracing::info;
+use tracing::{info, warn};
 
 use pir_types::ZcashNetwork;
 
@@ -196,9 +196,25 @@ pub async fn sync(
     file_store::ensure_ironwood_dataset(dir, network)?;
 
     let mut clients = Vec::with_capacity(lwd_urls.len());
+    let mut connected_urls = Vec::with_capacity(lwd_urls.len());
+    let mut connection_errors = Vec::new();
     for url in lwd_urls {
-        clients.push(connect_lwd(url).await?);
+        match connect_lwd(url).await {
+            Ok(client) => {
+                clients.push(client);
+                connected_urls.push(url.as_str());
+            }
+            Err(error) => {
+                warn!(%url, %error, "skipping unavailable lightwalletd");
+                connection_errors.push(format!("{url}: {error:#}"));
+            }
+        }
     }
+    anyhow::ensure!(
+        !clients.is_empty(),
+        "failed to connect to any lightwalletd endpoint: {}",
+        connection_errors.join("; ")
+    );
     let n = clients.len();
 
     let latest = clients[0]
@@ -211,7 +227,7 @@ pub async fn sync(
     let existing = file_store::nullifier_count(dir)?;
     let target = resolve_target(start, max_height, chain_tip);
 
-    for (url, client) in lwd_urls.iter().zip(clients.iter_mut()) {
+    for (url, client) in connected_urls.iter().zip(clients.iter_mut()) {
         require_ironwood_tree_state(client, url, network, target).await?;
     }
 

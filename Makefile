@@ -8,7 +8,7 @@
 #   nullifiers.checkpoint  – 16-byte (height LE, offset LE) crash-recovery marker
 #   nullifiers.index       – height → byte offset index
 #   nullifiers.tree        – versioned bincode PIR Merkle checkpoint
-#   tier0/1/2.bin, pir_root.json – PIR tier payload + metadata
+#   tier0/1.bin, pir_root.json – PIR tier payload + metadata
 #
 # Pipeline: `make sync` → `make serve`
 # ──────────────────────────────────
@@ -119,4 +119,5 @@ clean: ## Remove built artifacts and data files
 	rm -f $(PIR_DATA_DIR)/nullifiers.bin $(PIR_DATA_DIR)/nullifiers.dataset.json $(PIR_DATA_DIR)/nullifiers.dataset.json.tmp \
 		$(PIR_DATA_DIR)/nullifiers.checkpoint $(PIR_DATA_DIR)/nullifiers.checkpoint.tmp $(PIR_DATA_DIR)/nullifiers.index \
 		$(PIR_DATA_DIR)/nullifiers.tree $(PIR_DATA_DIR)/nullifiers.tree.tmp \
-		$(PIR_DATA_DIR)/tier0.bin $(PIR_DATA_DIR)/tier1.bin $(PIR_DATA_DIR)/tier2.bin $(PIR_DATA_DIR)/pir_root.json
+		$(PIR_DATA_DIR)/tier2.bin $(PIR_DATA_DIR)/tier2.precompute $(PIR_DATA_DIR)/tier2.precompute.tmp \
+		$(PIR_DATA_DIR)/tier0.bin $(PIR_DATA_DIR)/tier1.bin $(PIR_DATA_DIR)/pir_root.json

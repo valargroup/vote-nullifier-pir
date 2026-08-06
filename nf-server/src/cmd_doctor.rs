@@ -17,7 +17,11 @@ const RECOMMENDED_CPU: u32 = 4;
 /// Recommended minimum system RAM (GiB).
 const RECOMMENDED_RAM_GIB: u64 = 32;
 /// Recommended minimum free space on the PIR data volume (GiB).
-const RECOMMENDED_FREE_DISK_GIB: u64 = 65;
+///
+/// The sole PIR database is 48 MiB. This is a baseline for tier/snapshot
+/// staging; production hosts must additionally reserve space for two copies
+/// of the measured precompute cache during atomic cache replacement.
+const RECOMMENDED_FREE_DISK_GIB: u64 = 1;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -31,7 +35,8 @@ pub fn run(args: Args) -> Result<()> {
     println!("nf-server doctor — hardware vs runbook recommendations");
     println!(
         "Target: ≥{RECOMMENDED_CPU} logical CPUs, ≥{RECOMMENDED_RAM_GIB} GiB RAM, \
-         ≥{RECOMMENDED_FREE_DISK_GIB} GiB free on the PIR data volume, \
+         ≥{RECOMMENDED_FREE_DISK_GIB} GiB free baseline on the PIR data volume \
+         (plus 2× the measured precompute-cache size), \
          AVX-512 on x86_64 for best PIR performance"
     );
     println!();
@@ -49,17 +54,14 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Report whether each tier's precompute cache file is present and how big.
+/// Report whether the PIR tier's precompute cache file is present and how big.
 /// Doesn't validate the header (would require loading YPIR params); presence
 /// is enough for an operator to triage warm-start regressions ("did the cache
 /// disappear?"). A stale cache will be rejected by hash on next load.
 fn check_precompute_cache(pir_data_dir: &Path) {
     println!();
     println!("Precompute cache:");
-    for (label, name) in [
-        ("tier 1", "tier1.precompute"),
-        ("tier 2", "tier2.precompute"),
-    ] {
+    for (label, name) in [("tier 1", "tier1.precompute")] {
         let p = pir_data_dir.join(name);
         match std::fs::metadata(&p) {
             Ok(m) => {

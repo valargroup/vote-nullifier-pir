@@ -84,7 +84,6 @@ pub struct BenchSummary {
     pub observer_host: String,
     pub wall_clock_ms: HistogramSummary,
     pub tier1: TierSummary,
-    pub tier2: TierSummary,
     pub success_count: u64,
     pub error_count: u64,
     pub error_classes: Vec<ErrorClassCount>,
@@ -374,7 +373,6 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     let total_iters = cfg.warmup + cfg.iterations;
     let mut wall_clock = new_us_histogram();
     let mut tier1 = TierAggregator::new();
-    let mut tier2 = TierAggregator::new();
     let mut success_count = 0u64;
     let mut error_count = 0u64;
     let mut error_classes: std::collections::HashMap<String, u64> =
@@ -416,7 +414,6 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
             match outcome {
                 Ok(t) => {
                     tier1.record(&t.tier1);
-                    tier2.record(&t.tier2);
                     success_count += 1;
                 }
                 Err(e) => {
@@ -447,7 +444,6 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
         observer_host: hostname(),
         wall_clock_ms: HistogramSummary::from_histogram(&wall_clock),
         tier1: tier1.into_summary(),
-        tier2: tier2.into_summary(),
         success_count,
         error_count,
         error_classes: error_class_vec,
@@ -602,7 +598,6 @@ fn print_summary(s: &BenchSummary) {
     eprintln!();
 
     print_tier("tier1", &s.tier1);
-    print_tier("tier2", &s.tier2);
 
     if !s.error_classes.is_empty() {
         let parts: Vec<String> = s

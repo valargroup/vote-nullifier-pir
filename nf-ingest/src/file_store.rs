@@ -524,7 +524,7 @@ mod tests {
         let dir = temp_dir("dataset_wrong_network");
         fs::write(
             dataset_marker_path(&dir),
-            br#"{"zcash_network":"test","nullifier_pool":"ironwood","dataset_version":1}"#,
+            br#"{"zcash_network":"test","nullifier_pool":"ironwood","dataset_version":2}"#,
         )
         .unwrap();
 

@@ -21,9 +21,7 @@ use pasta_curves::Fp;
 use rand::Rng;
 
 use pir_export::build_pir_tree;
-use pir_types::{
-    TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ITEM_BITS, TIER2_ROWS, TIER2_ROW_BYTES,
-};
+use pir_types::{TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES};
 
 #[derive(Parser)]
 #[command(name = "pir-test", about = "PIR system end-to-end testing")]
@@ -65,7 +63,7 @@ enum Command {
     /// Full in-process test with real or synthetic nullifiers.
     /// Tests tier data extraction and proof construction without YPIR crypto.
     Local {
-        /// Path to nullifiers.bin. If omitted, generates 10,000 random nullifiers.
+        /// Path to nullifiers.bin. If omitted, generates 31,000 random nullifiers.
         #[arg(long)]
         nullifiers: Option<PathBuf>,
 
@@ -98,18 +96,18 @@ enum Command {
 
     /// Benchmark YPIR query/response sizes and timing in-process (no HTTP).
     Bench {
-        /// Number of YPIR queries per tier.
+        /// Number of YPIR queries.
         #[arg(long, default_value = "3")]
         num_queries: usize,
     },
 
     /// Benchmark multiple tier split configurations to compare sizes/timing.
     BenchSplits {
-        /// Number of YPIR queries per tier per configuration.
+        /// Number of YPIR queries per configuration.
         #[arg(long, default_value = "1")]
         num_queries: usize,
 
-        /// Run only a specific config, e.g. "11-7-7". Omit to run all.
+        /// Run only a specific config, e.g. "12-7". Omit to run all.
         #[arg(long)]
         config: Option<String>,
     },
@@ -332,9 +330,9 @@ fn run_local(nullifiers_path: Option<PathBuf>, num_proofs: usize) -> Result<()> 
         eprintln!("Loading nullifiers from {:?}...", path);
         load_nullifiers(&path)?
     } else {
-        eprintln!("Generating 10,000 random nullifiers...");
+        eprintln!("Generating 31,000 random nullifiers...");
         let mut rng = rand::thread_rng();
-        (0..10_000).map(|_| Fp::random(&mut rng)).collect()
+        (0..31_000).map(|_| Fp::random(&mut rng)).collect()
     };
 
     run_local_inner(&nfs, num_proofs)?;
@@ -358,14 +356,14 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
     let t1 = Instant::now();
     let tree = build_pir_tree(ranges.clone())?;
     eprintln!(
-        "  PIR tree built in {:.1}s (root25={}, root29={})",
+        "  PIR tree built in {:.1}s (pir_root={}, root29={})",
         t1.elapsed().as_secs_f64(),
         &hex::encode(tree.root25.to_repr())[..16],
         &hex::encode(tree.root29.to_repr())[..16],
     );
 
     let t2 = Instant::now();
-    let (tier0_data, tier1_data, tier2_data) = export_tiers(&tree)?;
+    let (tier0_data, tier1_data) = export_tiers(&tree)?;
     eprintln!("  Exported in {:.1}s", t2.elapsed().as_secs_f64());
 
     // Pick random values from populated ranges to query
@@ -395,7 +393,6 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
         let result = pir_client::fetch_proof_local(
             &tier0_data,
             &tier1_data,
-            &tier2_data,
             ranges.len(),
             value,
             &tree.empty_hashes,
@@ -544,10 +541,9 @@ fn run_verify_ypir() -> Result<()> {
     let raw_nfs: Vec<Fp> = (0..1000).map(|_| Fp::random(&mut rng)).collect();
     let ranges = pir_export::prepare_nullifiers(raw_nfs);
     let tree = build_pir_tree(ranges)?;
-    let (_, tier1_data, tier2_data) = export_tiers(&tree)?;
+    let (_, tier1_data) = export_tiers(&tree)?;
 
     let tier1_scenario = pir_server::tier1_scenario();
-    let tier2_scenario = pir_server::tier2_scenario();
 
     eprintln!("Initializing Tier 1 YPIR server...");
     let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
@@ -601,58 +597,6 @@ fn run_verify_ypir() -> Result<()> {
 
     drop(tier1_server);
 
-    eprintln!("\nInitializing Tier 2 YPIR server...");
-    let tier2_server = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
-
-    for row_idx in [0usize, 1, 100] {
-        let ypir_client = YPIRClient::from_db_sz(
-            tier2_scenario.num_items as u64,
-            tier2_scenario.item_size_bits as u64,
-            true,
-        );
-        let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
-        let payload = pir_types::serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
-        let answer = tier2_server.server().answer_query(&payload)?;
-        let decoded = ypir_client.decode_response_simplepir(seed, &answer.response);
-
-        let original = &tier2_data[row_idx * TIER2_ROW_BYTES..(row_idx + 1) * TIER2_ROW_BYTES];
-        let decoded_row = &decoded[..TIER2_ROW_BYTES];
-
-        if original == decoded_row {
-            eprintln!("  Tier 2 row {}: MATCH", row_idx);
-        } else {
-            let mismatches: Vec<usize> = original
-                .iter()
-                .zip(decoded_row.iter())
-                .enumerate()
-                .filter(|(_, (a, b))| a != b)
-                .map(|(i, _)| i)
-                .collect();
-            eprintln!(
-                "  Tier 2 row {}: MISMATCH at {} byte positions (first: {})",
-                row_idx,
-                mismatches.len(),
-                mismatches.first().unwrap_or(&0)
-            );
-            if let Some(&first) = mismatches.first() {
-                eprintln!(
-                    "    original[{}..{}]: {:02x?}",
-                    first,
-                    (first + 16).min(TIER2_ROW_BYTES),
-                    &original[first..(first + 16).min(TIER2_ROW_BYTES)]
-                );
-                eprintln!(
-                    "    decoded [{}..{}]: {:02x?}",
-                    first,
-                    (first + 16).min(TIER2_ROW_BYTES),
-                    &decoded_row[first..(first + 16).min(TIER2_ROW_BYTES)]
-                );
-            }
-        }
-    }
-
-    drop(tier2_server);
-
     eprintln!("\n=== Done ===");
     Ok(())
 }
@@ -663,16 +607,15 @@ fn run_bench(num_queries: usize) -> Result<()> {
     use pir_server::OwnedTierState;
 
     let tier1_scenario = pir_server::tier1_scenario();
-    let tier2_scenario = pir_server::tier2_scenario();
 
     eprintln!(
-        "=== PIR Benchmark: in-process YPIR ({} queries per tier) ===\n",
+        "=== PIR Benchmark: in-process YPIR ({} queries) ===\n",
         num_queries
     );
     eprintln!(
-        "  Config: TIER1_LAYERS={}, TIER2_LAYERS={}",
-        pir_types::TIER1_LAYERS,
-        pir_types::TIER2_LAYERS
+        "  Config: TIER0_LAYERS={}, TIER1_LAYERS={}",
+        pir_types::TIER0_LAYERS,
+        pir_types::TIER1_LAYERS
     );
     eprintln!(
         "  Tier 1: {} rows × {} bytes/row ({} bits/item), instances={}",
@@ -681,14 +624,6 @@ fn run_bench(num_queries: usize) -> Result<()> {
         TIER1_ITEM_BITS,
         (TIER1_ITEM_BITS as f64 / (2048.0 * 14.0)).ceil() as usize,
     );
-    eprintln!(
-        "  Tier 2: {} rows × {} bytes/row ({} bits/item), instances={}",
-        TIER2_ROWS,
-        TIER2_ROW_BYTES,
-        TIER2_ITEM_BITS,
-        (TIER2_ITEM_BITS as f64 / (2048.0 * 14.0)).ceil() as usize,
-    );
-
     // Build a small tree to get valid tier data
     eprintln!("\nBuilding synthetic tree (1000 nullifiers)...");
     let mut rng = rand::thread_rng();
@@ -696,10 +631,10 @@ fn run_bench(num_queries: usize) -> Result<()> {
     let ranges = pir_export::prepare_nullifiers(raw_nfs);
     let tree = build_pir_tree(ranges)?;
 
-    let (_, tier1_data, tier2_data) = export_tiers(&tree)?;
+    let (_, tier1_data) = export_tiers(&tree)?;
 
-    // Initialize YPIR servers
-    eprintln!("\nInitializing YPIR servers...");
+    // Initialize the YPIR server
+    eprintln!("\nInitializing YPIR server...");
     let t0 = Instant::now();
     let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
     eprintln!(
@@ -708,14 +643,6 @@ fn run_bench(num_queries: usize) -> Result<()> {
     );
     drop(tier1_data);
 
-    let t0 = Instant::now();
-    let tier2_server = OwnedTierState::new(&tier2_data, tier2_scenario.clone());
-    eprintln!(
-        "  Tier 2 YPIR server ready in {:.1}s",
-        t0.elapsed().as_secs_f64()
-    );
-    drop(tier2_data);
-
     // Run tier 1 benchmarks
     eprintln!("\n── Tier 1 YPIR Benchmark ──────────────────────────────────");
     let tier1_results = bench_tier(
@@ -723,16 +650,6 @@ fn run_bench(num_queries: usize) -> Result<()> {
         tier1_scenario.num_items,
         tier1_scenario.item_size_bits,
         tier1_server.server(),
-        num_queries,
-    )?;
-
-    // Run tier 2 benchmarks
-    eprintln!("\n── Tier 2 YPIR Benchmark ──────────────────────────────────");
-    let tier2_results = bench_tier(
-        "tier2",
-        tier2_scenario.num_items,
-        tier2_scenario.item_size_bits,
-        tier2_server.server(),
         num_queries,
     )?;
 
@@ -753,21 +670,6 @@ fn run_bench(num_queries: usize) -> Result<()> {
         format_ms(tier1_results.avg_server_ms),
         format_ms(tier1_results.avg_decode_ms),
     );
-    eprintln!(
-        "  {:>10} {:>12} {:>12} {:>10} {:>10} {:>10}",
-        "Tier 2",
-        format_bytes(tier2_results.avg_query_bytes),
-        format_bytes(tier2_results.avg_response_bytes),
-        format_ms(tier2_results.avg_gen_ms),
-        format_ms(tier2_results.avg_server_ms),
-        format_ms(tier2_results.avg_decode_ms),
-    );
-    eprintln!(
-        "  {:>10} {:>12} {:>12}",
-        "TOTAL",
-        format_bytes(tier1_results.avg_query_bytes + tier2_results.avg_query_bytes),
-        format_bytes(tier1_results.avg_response_bytes + tier2_results.avg_response_bytes),
-    );
     eprintln!("══════════════════════════════════════════════════════════════");
 
     Ok(())
@@ -778,63 +680,37 @@ fn run_bench(num_queries: usize) -> Result<()> {
 struct SplitConfig {
     t0: usize,
     t1: usize,
-    t2: usize,
 }
 
 impl SplitConfig {
-    fn tier1_logical_rows(&self) -> usize {
-        1 << self.t0
-    }
-    /// YPIR requires at least poly_len=2048 rows; pad up if t0 < 11.
     fn tier1_rows(&self) -> usize {
-        (1usize << self.t0).max(2048)
-    }
-    fn tier2_rows(&self) -> usize {
-        1 << (self.t0 + self.t1)
+        1usize << self.t0
     }
     fn tier1_leaves(&self) -> usize {
         1 << self.t1
     }
-    fn tier2_leaves(&self) -> usize {
-        1 << self.t2
-    }
     fn tier1_row_bytes(&self) -> usize {
-        self.tier1_leaves() * 64
+        self.tier1_leaves() * 96
     }
-    fn tier2_row_bytes(&self) -> usize {
-        self.tier2_leaves() * 96
-    }
-    /// YPIR requires item_size_bits >= 2048*14 = 28672 (one SimplePIR column).
     fn tier1_item_bits(&self) -> usize {
-        (self.tier1_row_bytes() * 8).max(28672)
-    }
-    fn tier2_item_bits(&self) -> usize {
-        (self.tier2_row_bytes() * 8).max(28672)
+        self.tier1_row_bytes() * 8
     }
     fn tier1_db_bytes(&self) -> usize {
-        self.tier1_rows() * (self.tier1_item_bits() / 8)
+        self.tier1_rows() * self.tier1_row_bytes()
     }
-    fn tier2_db_bytes(&self) -> usize {
-        self.tier2_rows() * (self.tier2_item_bits() / 8)
-    }
-
     fn tier0_bytes(&self) -> usize {
         let internal_nodes = (1usize << self.t0) - 1;
         internal_nodes * 32 + self.tier1_rows() * 64
     }
-
     fn label(&self) -> String {
-        format!("{}-{}-{}", self.t0, self.t1, self.t2)
+        format!("{}-{}", self.t0, self.t1)
     }
 }
 
 struct SplitResults {
     config: SplitConfig,
     tier1: BenchResults,
-    tier2: BenchResults,
-    #[allow(dead_code)]
     tier1_init_s: f64,
-    tier2_init_s: f64,
 }
 
 fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
@@ -842,46 +718,9 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
     use pir_types::YpirScenario;
 
     let all_configs = vec![
-        SplitConfig {
-            t0: 11,
-            t1: 7,
-            t2: 7,
-        },
-        SplitConfig {
-            t0: 10,
-            t1: 6,
-            t2: 9,
-        },
-        SplitConfig {
-            t0: 9,
-            t1: 6,
-            t2: 10,
-        },
-        SplitConfig {
-            t0: 9,
-            t1: 7,
-            t2: 9,
-        },
-        SplitConfig {
-            t0: 8,
-            t1: 6,
-            t2: 11,
-        },
-        SplitConfig {
-            t0: 8,
-            t1: 7,
-            t2: 10,
-        },
-        SplitConfig {
-            t0: 10,
-            t1: 5,
-            t2: 10,
-        },
-        SplitConfig {
-            t0: 10,
-            t1: 4,
-            t2: 11,
-        },
+        SplitConfig { t0: 11, t1: 8 },
+        SplitConfig { t0: 12, t1: 7 },
+        SplitConfig { t0: 13, t1: 6 },
     ];
 
     let configs: Vec<SplitConfig> = if let Some(ref f) = filter {
@@ -898,58 +737,40 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
     }
 
     eprintln!(
-        "=== PIR Split Comparison ({} queries per tier per config) ===\n",
+        "=== PIR Split Comparison: depth-19, plaintext + one PIR ({} queries/config) ===\n",
         num_queries
     );
 
     let mut results = Vec::new();
 
     for cfg in &configs {
-        assert_eq!(
-            cfg.t0 + cfg.t1 + cfg.t2,
-            25,
-            "splits must sum to PIR_DEPTH=25"
-        );
+        let depth = cfg.t0 + cfg.t1;
+        assert_eq!(depth, pir_types::PIR_DEPTH, "split must match PIR depth");
+        assert!(cfg.tier1_rows() >= pir_types::YPIR_MIN_ROWS);
+        assert!(cfg.tier1_item_bits() >= pir_types::YPIR_MIN_ITEM_BITS);
 
         let t1_scenario = YpirScenario {
             num_items: cfg.tier1_rows(),
             item_size_bits: cfg.tier1_item_bits(),
         };
-        let t2_scenario = YpirScenario {
-            num_items: cfg.tier2_rows(),
-            item_size_bits: cfg.tier2_item_bits(),
-        };
 
         eprintln!(
-            "── Config {} ──────────────────────────────────────────",
-            cfg.label()
+            "── Config {} (depth {}) ──────────────────────────────────",
+            cfg.label(),
+            depth,
         );
         eprintln!(
             "  Tier 0: {} (plaintext download)",
             format_bytes(cfg.tier0_bytes()),
         );
-        let pad_note = if cfg.tier1_rows() > cfg.tier1_logical_rows() {
-            format!(" (padded from {} logical rows)", cfg.tier1_logical_rows())
-        } else {
-            String::new()
-        };
         eprintln!(
-            "  Tier 1: {} rows{} × {} B/row = {}, item_bits={}",
+            "  Tier 1: {} rows × {} B/row = {}, item_bits={}",
             cfg.tier1_rows(),
-            pad_note,
             cfg.tier1_row_bytes(),
             format_bytes(cfg.tier1_db_bytes()),
             cfg.tier1_item_bits(),
         );
-        eprintln!(
-            "  Tier 2: {} rows × {} B/row = {}, item_bits={}",
-            cfg.tier2_rows(),
-            cfg.tier2_row_bytes(),
-            format_bytes(cfg.tier2_db_bytes()),
-            cfg.tier2_item_bits(),
-        );
 
-        // Tier 1: create zeroed dummy data of the right size
         eprintln!("  Initializing Tier 1 YPIR server...");
         let t1_data = vec![0u8; cfg.tier1_db_bytes()];
         let t0 = Instant::now();
@@ -965,107 +786,66 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
             t1_server.server(),
             num_queries,
         )?;
-
         drop(t1_server);
-
-        // Tier 2: create zeroed dummy data of the right size
-        eprintln!("  Initializing Tier 2 YPIR server...");
-        let t2_data = vec![0u8; cfg.tier2_db_bytes()];
-        let t0 = Instant::now();
-        let t2_server = OwnedTierState::new(&t2_data, t2_scenario.clone());
-        let tier2_init_s = t0.elapsed().as_secs_f64();
-        eprintln!("  Tier 2 ready in {:.1}s", tier2_init_s);
-        drop(t2_data);
-
-        let tier2_results = bench_tier(
-            "tier2",
-            t2_scenario.num_items,
-            t2_scenario.item_size_bits,
-            t2_server.server(),
-            num_queries,
-        )?;
-
-        drop(t2_server);
 
         results.push(SplitResults {
             config: SplitConfig {
                 t0: cfg.t0,
                 t1: cfg.t1,
-                t2: cfg.t2,
             },
             tier1: tier1_results,
-            tier2: tier2_results,
             tier1_init_s,
-            tier2_init_s,
         });
 
         eprintln!();
     }
 
-    // Print comparison table
-    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
-    eprintln!("  COMPARISON TABLE");
-    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
     eprintln!(
-        "  {:>7} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10}",
-        "Split",
-        "Tier0(dn)",
-        "T1 DB",
-        "T2 DB",
-        "Query(up)",
-        "Resp(dn)",
-        "T1 Srvr",
-        "T2 Srvr",
-        "T2 Init"
+        "════════════════════════════════════════════════════════════════════════════════"
     );
-    eprintln!("  {}", "-".repeat(100));
+    eprintln!("  COMPARISON TABLE (one PIR query per proof)");
+    eprintln!(
+        "════════════════════════════════════════════════════════════════════════════════"
+    );
+    eprintln!(
+        "  {:>8} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "Split", "T0", "T1 DB", "T1 BW", "T1 Srvr", "T1 Init"
+    );
+    eprintln!("  {}", "-".repeat(76));
     for r in &results {
+        let t1_bw = r.tier1.avg_query_bytes + r.tier1.avg_response_bytes;
         eprintln!(
-            "  {:>7} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10}",
+            "  {:>8} {:>10} {:>10} {:>10} {:>10} {:>10}",
             r.config.label(),
             format_bytes(r.config.tier0_bytes()),
             format_bytes(r.config.tier1_db_bytes()),
-            format_bytes(r.config.tier2_db_bytes()),
-            format_bytes(r.tier1.avg_query_bytes + r.tier2.avg_query_bytes),
-            format_bytes(r.tier1.avg_response_bytes + r.tier2.avg_response_bytes),
+            format_bytes(t1_bw),
             format_ms(r.tier1.avg_server_ms),
-            format_ms(r.tier2.avg_server_ms),
-            format_ms(r.tier2_init_s * 1000.0),
+            format_ms(r.tier1_init_s * 1000.0),
         );
     }
-    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
-
-    // Per-tier breakdown
-    eprintln!("\n  PER-TIER DETAIL");
-    eprintln!("  {}", "-".repeat(100));
     eprintln!(
-        "  {:>7} {:>12} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10} {:>10}",
-        "Split",
-        "T1 Q(up)",
-        "T1 R(dn)",
-        "T2 Q(up)",
-        "T2 R(dn)",
-        "T1 Gen",
-        "T2 Gen",
-        "T1 Dec",
-        "T2 Dec"
+        "════════════════════════════════════════════════════════════════════════════════"
     );
-    eprintln!("  {}", "-".repeat(100));
+
+    eprintln!("\n  CLIENT DETAIL");
+    eprintln!("  {}", "-".repeat(64));
+    eprintln!(
+        "  {:>8} {:>10} {:>10} {:>10} {:>10}",
+        "Split", "T1 up", "T1 dn", "T1 gen", "T1 decode"
+    );
+    eprintln!("  {}", "-".repeat(64));
     for r in &results {
         eprintln!(
-            "  {:>7} {:>12} {:>12} {:>12} {:>12} {:>10} {:>10} {:>10} {:>10}",
+            "  {:>8} {:>10} {:>10} {:>10} {:>10}",
             r.config.label(),
             format_bytes(r.tier1.avg_query_bytes),
             format_bytes(r.tier1.avg_response_bytes),
-            format_bytes(r.tier2.avg_query_bytes),
-            format_bytes(r.tier2.avg_response_bytes),
             format_ms(r.tier1.avg_gen_ms),
-            format_ms(r.tier2.avg_gen_ms),
             format_ms(r.tier1.avg_decode_ms),
-            format_ms(r.tier2.avg_decode_ms),
         );
     }
-    eprintln!("══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    eprintln!("════════════════════════════════════════════════════════════════");
 
     Ok(())
 }
@@ -1166,26 +946,17 @@ fn format_ms(ms: f64) -> String {
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
-/// Export all three tier data blobs from a built PIR tree.
-fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+/// Export both tier data blobs from a built PIR tree.
+fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>)> {
     let tier0_data =
         pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
     eprintln!("  Tier 0: {} bytes", tier0_data.len());
 
     let mut tier1_data = Vec::new();
-    pir_export::tier1::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier1_data,
-    )?;
+    pir_export::tier1::export(&tree.ranges, &mut tier1_data)?;
     eprintln!("  Tier 1: {} bytes", tier1_data.len());
 
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&tree.ranges, &mut tier2_data)?;
-    eprintln!("  Tier 2: {} bytes", tier2_data.len());
-
-    Ok((tier0_data, tier1_data, tier2_data))
+    Ok((tier0_data, tier1_data))
 }
 
 fn load_nullifiers(path: &std::path::Path) -> Result<Vec<Fp>> {

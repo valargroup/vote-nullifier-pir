@@ -46,7 +46,7 @@ graph TD
 |-------|------|-------------|
 | **imt-tree** | `imt-tree/` | Indexed Merkle Tree library. Poseidon hashing, punctured-range exclusion proofs (K=2), and tree-building primitives for circuit compatibility. |
 | **pir-types** | `pir/types/` | Lightweight shared types (`YpirScenario`, `RootInfo`, `HealthInfo`) serialised over HTTP between server and client. Also contains YPIR wire-format helpers. |
-| **pir-export** | `pir/export/` | Builds the depth-25 PIR tree from punctured-range leaves (K=2), persists `nullifiers.tree` checkpoints, and exports three binary tier files (tier0, tier1, tier2) consumed by the server and client. |
+| **pir-export** | `pir/export/` | Builds the depth-19 PIR tree from punctured-range leaves (K=2), persists `nullifiers.tree` checkpoints, and exports the plaintext `tier0.bin` plus PIR-backed `tier1.bin`. |
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides an async `PirClient` API and a local in-process mode. |
 | **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
@@ -61,8 +61,8 @@ The system operates as a resumable pipeline:
 nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ──> client query
 ```
 
-1. **`nf-server sync`** — Streams Ironwood nullifiers into `nullifiers.bin` (with dataset marker, checkpoint, and index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, `tier2.bin`, and `pir_root.json` under `--pir-data-dir`. The dataset marker and root metadata identify the Zcash network. Reruns skip completed stages.
-2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves tier 1 and tier 2 rows via encrypted PIR queries.
+1. **`nf-server sync`** — Streams Ironwood nullifiers into `nullifiers.bin` (with dataset marker, checkpoint, and index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, and `pir_root.json` under `--pir-data-dir`. The dataset marker and root metadata identify the Zcash network. Reruns skip completed stages.
+2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves one tier 1 row with a single encrypted PIR query.
 
 ## Build & Run
 
@@ -107,11 +107,11 @@ See [docs/runbooks/server-setup.md](docs/runbooks/server-setup.md) for productio
 All data is stored as flat binary files under one network-specific directory (overridable via `PIR_DATA_DIR` / `SVOTE_PIR_DATA_DIR`):
 
 - `nullifiers.bin` — Append-only raw 32-byte Ironwood nullifier blobs
-- `nullifiers.dataset.json` — Dataset identity (`zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 1`)
+- `nullifiers.dataset.json` — Dataset identity (`zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 2`)
 - `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
 - `nullifiers.index` — Height-to-offset index for subset loading
 - `nullifiers.tree` — Versioned PIR Merkle checkpoint (see `pir-export`)
-- `tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json` — PIR tier payload and root metadata, including the dataset identity
+- `tier0.bin`, `tier1.bin`, `pir_root.json` — PIR tier payload and root metadata, including the dataset identity
 
 Unlabeled and Orchard artifacts are not reusable. Keep mainnet and testnet data in separate directories and rebuild each dataset with `SVOTE_PIR_SYNC_RESET=1`.
 

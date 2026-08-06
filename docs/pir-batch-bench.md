@@ -1,5 +1,11 @@
 # PIR batch query — production baseline (Phase 0)
 
+> Historical dataset-version-1 record. These measurements and Tier 2 design
+> notes describe the retired depth-25, two-query layout. Dataset version 2
+> uses the single-query 12+7 layout in
+> [pir-tree-spec.md](pir-tree-spec.md); the current benchmark JSON schema
+> reports Tier 1 only.
+
 This document is the **pre-rollout baseline** for the PIR batch-query work
 described in the rollout plan. Every later phase (HTTP/wire batching,
 server-side batched matmul) reports a delta against the numbers below.

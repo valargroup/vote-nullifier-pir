@@ -20,10 +20,9 @@ pub use transport::{Transport, TransportFuture, TransportResponse};
 
 use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
-use pir_types::tier2::Tier2Row;
 use pir_types::{
-    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES,
+    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_LEAVES,
+    TIER1_ROWS, TIER1_ROW_BYTES,
 };
 
 use ypir::client::YPIRClient;
@@ -69,10 +68,9 @@ pub struct TierTiming {
     pub download_from_server_ms: f64,
 }
 
-/// Per-note timing breakdown covering both tier 1 and tier 2 YPIR queries.
+/// Per-note timing breakdown for the single YPIR query.
 pub struct NoteTiming {
     pub tier1: TierTiming,
-    pub tier2: TierTiming,
     /// Total wall-clock time for this note's proof retrieval.
     pub total_ms: f64,
 }
@@ -88,19 +86,18 @@ pub struct PirClient {
     transport: Arc<dyn Transport>,
     tier0: Tier0Data,
     tier1_scenario: YpirScenario,
-    tier2_scenario: YpirScenario,
     num_ranges: usize,
     empty_hashes: [Fp; TREE_DEPTH],
     root29: Fp,
 }
 
-/// Return the number of populated leaves in a Tier 2 row, clamped to
-/// [`TIER2_LEAVES`]. The final row may be only partially filled when
+/// Return the number of populated leaves in a Tier 1 row, clamped to
+/// [`TIER1_LEAVES`]. The final row may be only partially filled when
 /// `num_ranges` is not a multiple of the row size.
 #[inline]
 fn valid_leaves_for_row(num_ranges: usize, row_idx: usize) -> usize {
-    let row_start = row_idx.saturating_mul(TIER2_LEAVES);
-    num_ranges.saturating_sub(row_start).min(TIER2_LEAVES)
+    let row_start = row_idx.saturating_mul(TIER1_LEAVES);
+    num_ranges.saturating_sub(row_start).min(TIER1_LEAVES)
 }
 
 // ── Shared tier-processing helpers ───────────────────────────────────────────
@@ -121,27 +118,11 @@ fn process_tier0(tier0: &Tier0Data, nullifier: Fp, path: &mut [Fp; TREE_DEPTH]) 
     Ok(s1)
 }
 
-/// Parse a Tier 1 row, locate the nullifier's sub-subtree, fill its siblings
-/// into `path`, and return the sub-subtree index `s2`.
-fn process_tier1(tier1_row: &[u8], nullifier: Fp, path: &mut [Fp; TREE_DEPTH]) -> Result<usize> {
-    let hasher = PoseidonHasher::new();
-    let tier1 = Tier1Row::from_bytes(tier1_row)?;
-    let s2 = tier1
-        .find_sub_subtree(nullifier)
-        .context("nullifier not found in any Tier 1 sub-subtree")?;
-    fill_path(
-        path,
-        PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS,
-        &tier1.extract_siblings(s2, &hasher),
-    );
-    Ok(s2)
-}
-
-/// Parse a Tier 2 row, locate the nullifier's leaf, fill tier-2 and padding
-/// siblings into `path`, and assemble the final [`ImtProofData`].
-fn process_tier2_and_build(
-    tier2_row: &[u8],
-    t2_row_idx: usize,
+/// Parse a Tier 1 row, locate the nullifier's leaf, fill its siblings and
+/// circuit padding into `path`, and assemble the final [`ImtProofData`].
+fn process_tier1_and_build(
+    tier1_row: &[u8],
+    row_idx: usize,
     num_ranges: usize,
     nullifier: Fp,
     path: &mut [Fp; TREE_DEPTH],
@@ -149,23 +130,23 @@ fn process_tier2_and_build(
     root29: Fp,
 ) -> Result<ImtProofData> {
     let hasher = PoseidonHasher::new();
-    let tier2 = Tier2Row::from_bytes(tier2_row)?;
-    let valid_leaves = valid_leaves_for_row(num_ranges, t2_row_idx);
+    let tier1 = Tier1Row::from_bytes(tier1_row)?;
+    let valid_leaves = valid_leaves_for_row(num_ranges, row_idx);
 
-    let leaf_local_idx = tier2
+    let leaf_local_idx = tier1
         .find_leaf(nullifier, valid_leaves)
-        .context("nullifier not found in Tier 2 leaf scan")?;
+        .context("nullifier not found in Tier 1 leaf scan")?;
 
     fill_path(
         path,
         0,
-        &tier2.extract_siblings(leaf_local_idx, valid_leaves, &hasher),
+        &tier1.extract_siblings(leaf_local_idx, valid_leaves, &hasher),
     );
-    // Pad from PIR depth (25) to circuit depth (29) with empty hashes.
+    // Pad from PIR depth (19) to circuit depth (29) with empty hashes.
     fill_path(path, PIR_DEPTH, &empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
-    let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_local_idx;
-    let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(leaf_local_idx);
+    let global_leaf_idx = row_idx * TIER1_LEAVES + leaf_local_idx;
+    let (nf_lo, nf_mid, nf_hi) = tier1.leaf_record(leaf_local_idx);
 
     Ok(ImtProofData {
         root: root29,
@@ -184,12 +165,10 @@ impl PirClient {
         let t0 = Instant::now();
         let tier0_url = format!("{base}/tier0");
         let tier1_url = format!("{base}/params/tier1");
-        let tier2_url = format!("{base}/params/tier2");
         let root_url = format!("{base}/root");
-        let (tier0_resp, tier1_resp, tier2_resp, root_resp) = tokio::try_join!(
+        let (tier0_resp, tier1_resp, root_resp) = tokio::try_join!(
             transport.get(&tier0_url),
             transport.get(&tier1_url),
-            transport.get(&tier2_url),
             transport.get(&root_url),
         )
         .map_err(|e| anyhow::anyhow!("connect fetch failed: {e}"))?;
@@ -205,9 +184,6 @@ impl PirClient {
         let tier1_scenario: YpirScenario =
             serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
                 .context("parse /params/tier1 response")?;
-        let tier2_scenario: YpirScenario =
-            serde_json::from_slice(&body_for_status(tier2_resp, "GET /params/tier2 failed")?)
-                .context("parse /params/tier2 response")?;
 
         let root_info: RootInfo =
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
@@ -225,6 +201,19 @@ impl PirClient {
             "server pir_depth {} != expected {}",
             root_info.pir_depth,
             PIR_DEPTH
+        );
+        anyhow::ensure!(
+            root_info.tier1_rows == TIER1_ROWS
+                && root_info.tier1_row_bytes == TIER1_ROW_BYTES
+                && tier1_scenario.num_items == root_info.tier1_rows
+                && tier1_scenario.item_size_bits == root_info.tier1_row_bytes * 8,
+            "server Tier 1 shape mismatch: /root reports {}x{} bytes and /params reports {} items x {} bits; expected {}x{} bytes",
+            root_info.tier1_rows,
+            root_info.tier1_row_bytes,
+            tier1_scenario.num_items,
+            tier1_scenario.item_size_bits,
+            TIER1_ROWS,
+            TIER1_ROW_BYTES
         );
         let root29_bytes = hex::decode(&root_info.root29)?;
         anyhow::ensure!(
@@ -244,7 +233,6 @@ impl PirClient {
             transport,
             tier0,
             tier1_scenario,
-            tier2_scenario,
             num_ranges: root_info.num_ranges,
             empty_hashes,
             root29,
@@ -254,7 +242,7 @@ impl PirClient {
     /// Perform private Merkle path retrieval for a nullifier.
     ///
     /// Returns circuit-ready `ImtProofData` with a 29-element path
-    /// (25 PIR siblings + 4 empty-hash padding).
+    /// (19 PIR siblings + 10 empty-hash padding).
     pub async fn fetch_proof(&self, nullifier: Fp) -> Result<ImtProofData> {
         let (proof, _timing) = self.fetch_proof_inner(nullifier).await?;
         Ok(proof)
@@ -303,90 +291,18 @@ impl PirClient {
 
     /// Fetch proof and return timing breakdown.
     ///
-    /// **Error-oracle mitigation**: the tier 2 query is always sent even when
-    /// tier 1 fails. A malicious server could craft a tier 1 response whose
-    /// decryption outcome depends on the client's secret key material (e.g. by
-    /// triggering an assert in the LWE decode path). If the client aborted
-    /// before sending the tier 2 query, the server could observe its absence
-    /// and use the binary "crash / no-crash" signal as an oracle. By
-    /// unconditionally sending a (possibly dummy) tier 2 query we ensure the
-    /// server always sees both requests and gains no information from errors.
     async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
 
-        // Process tier 0 (plaintext, not server-controlled)
+        // Tier 0 identifies the row directly; there is no inter-query chaining.
         let s1 = process_tier0(&self.tier0, nullifier, &mut path)?;
-
-        // Process tier 1 (PIR) — capture the outcome without `?` so that a
-        // tier 2 query is always sent regardless of tier 1 success.
-        //
-        // process_tier1 is wrapped in catch_unwind so that a panic (e.g. from
-        // a debug_assert or an unexpected slice bounds violation) cannot
-        // prevent the tier 2 query from being sent. Without this, a panic
-        // here would unwind past the tier 2 dispatch and give the server an
-        // observable one-query-vs-two oracle.
-        let tier1_outcome = self
+        let (tier1_row, tier1_timing) = self
             .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
-            .await
-            .and_then(|(row, timing)| {
-                let mut_path = &mut path;
-                let s2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    process_tier1(&row, nullifier, mut_path)
-                }))
-                .unwrap_or_else(|payload| {
-                    let msg = payload
-                        .downcast_ref::<String>()
-                        .map(|s| s.as_str())
-                        .or_else(|| payload.downcast_ref::<&str>().copied())
-                        .unwrap_or("unknown panic");
-                    Err(anyhow::anyhow!("process_tier1 panicked: {}", msg))
-                })?;
-                Ok((s1 * TIER1_LEAVES + s2, timing))
-            });
-
-        // Real index on success, dummy index 0 on failure. PIR hides the
-        // queried index from the server, so the dummy is indistinguishable.
-        let t2_row_idx = tier1_outcome.as_ref().map(|(idx, _)| *idx).unwrap_or(0);
-
-        // Validate the tier 2 index before passing it to ypir_query.
-        // ypir_query has an ensure!(row_idx < num_items) that returns Err
-        // *before* sending the HTTP request — if that fires, no tier 2
-        // request reaches the server and we leak an oracle bit. A malicious
-        // server can trigger this by setting tier2 num_items too small or
-        // crafting tier 1 data that produces out-of-bounds indices. Clamp to
-        // dummy index 0 so the query always goes out; propagate the error
-        // only after both queries have been sent.
-        let t2_bounds_err = if t2_row_idx >= self.tier2_scenario.num_items {
-            Some(anyhow::anyhow!(
-                "tier2 row_idx {} >= num_items {}",
-                t2_row_idx,
-                self.tier2_scenario.num_items
-            ))
-        } else {
-            None
-        };
-        let t2_query_idx = if t2_bounds_err.is_some() {
-            0
-        } else {
-            t2_row_idx
-        };
-
-        // Always send tier 2 to void error-based oracles.
-        let tier2_result = self
-            .ypir_query(&self.tier2_scenario, "tier2", t2_query_idx, TIER2_ROW_BYTES)
-            .await;
-
-        // Propagate errors only after both queries have been sent.
-        let (t2_row_idx, tier1_timing) = tier1_outcome?;
-        if let Some(e) = t2_bounds_err {
-            return Err(e);
-        }
-        let (tier2_row, tier2_timing) = tier2_result?;
-
-        let proof = process_tier2_and_build(
-            &tier2_row,
-            t2_row_idx,
+            .await?;
+        let proof = process_tier1_and_build(
+            &tier1_row,
+            s1,
             self.num_ranges,
             nullifier,
             &mut path,
@@ -399,7 +315,6 @@ impl PirClient {
             proof,
             NoteTiming {
                 tier1: tier1_timing,
-                tier2: tier2_timing,
                 total_ms,
             },
         ))
@@ -562,76 +477,54 @@ fn print_timing_table(results: &[(usize, ImtProofData, NoteTiming)], wall_ms: f6
         return;
     }
 
-    log::debug!("[PIR] ┌─────┬──────────┬─────────────┬──────────┬──────────┬─────────────┬──────────┬────────┐");
-    log::debug!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ T2 keygen│ T2 upload+  │ T2 decode│ Total  │");
-    log::debug!("[PIR] │     │ (client) │ server+down │ (client) │ (client) │ server+down │ (client) │        │");
-    log::debug!("[PIR] ├─────┼──────────┼─────────────┼──────────┼──────────┼─────────────┼──────────┼────────┤");
+    log::debug!("[PIR] ┌─────┬──────────┬─────────────┬──────────┬────────┐");
+    log::debug!("[PIR] │ Note│ T1 keygen│ T1 upload+  │ T1 decode│ Total  │");
+    log::debug!("[PIR] │     │ (client) │ server+down │ (client) │        │");
+    log::debug!("[PIR] ├─────┼──────────┼─────────────┼──────────┼────────┤");
     for &(i, _, ref t) in results {
         log::debug!(
-            "[PIR] │  {i:>2} │  {:>6} │   {:>7}   │  {:>6} │  {:>6} │   {:>7}   │  {:>6} │{} │",
+            "[PIR] │  {i:>2} │  {:>6} │   {:>7}   │  {:>6} │{} │",
             fmt_time(t.tier1.gen_ms),
             fmt_time(t.tier1.rtt_ms),
             fmt_time(t.tier1.decode_ms),
-            fmt_time(t.tier2.gen_ms),
-            fmt_time(t.tier2.rtt_ms),
-            fmt_time(t.tier2.decode_ms),
             fmt_time(t.total_ms),
         );
     }
-    log::debug!("[PIR] └─────┴──────────┴─────────────┴──────────┴──────────┴─────────────┴──────────┴────────┘");
+    log::debug!("[PIR] └─────┴──────────┴─────────────┴──────────┴────────┘");
     log::debug!(
-        "[PIR] Upload per note: T1={:.0}KB T2={:.1}MB  |  Wall clock: {:.2}s",
+        "[PIR] Upload per note: T1={:.0}KB  |  Wall clock: {:.2}s",
         results
             .first()
             .map(|(_, _, t)| t.tier1.upload_bytes)
             .unwrap_or(0) as f64
             / 1024.0,
-        results
-            .first()
-            .map(|(_, _, t)| t.tier2.upload_bytes)
-            .unwrap_or(0) as f64
-            / (1024.0 * 1024.0),
         wall_ms / 1000.0,
     );
 
     for &(i, _, ref t) in results {
         log::trace!(
-            "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB | T2 up={:.1}MB down={:.0}KB",
+            "[PIR] Note {i:>2} transfer: T1 up={:.0}KB down={:.0}KB",
             t.tier1.upload_bytes as f64 / 1024.0,
             t.tier1.download_bytes as f64 / 1024.0,
-            t.tier2.upload_bytes as f64 / (1024.0 * 1024.0),
-            t.tier2.download_bytes as f64 / 1024.0,
         );
         log::trace!(
-            "[PIR] Note {i:>2} server/net: T1 {} / {} | T2 {} / {}",
+            "[PIR] Note {i:>2} server/net: T1 {} / {}",
             fmt_opt_time(t.tier1.server_total_ms),
             fmt_opt_time(t.tier1.net_queue_ms),
-            fmt_opt_time(t.tier2.server_total_ms),
-            fmt_opt_time(t.tier2.net_queue_ms),
         );
         log::trace!(
-            "[PIR] Note {i:>2} up/srv/down: T1 {} / {} / {} | T2 {} / {} / {}",
+            "[PIR] Note {i:>2} up/srv/down: T1 {} / {} / {}",
             fmt_opt_time(t.tier1.upload_to_server_ms),
             fmt_opt_time(t.tier1.server_total_ms),
             fmt_time(t.tier1.download_from_server_ms),
-            fmt_opt_time(t.tier2.upload_to_server_ms),
-            fmt_opt_time(t.tier2.server_total_ms),
-            fmt_time(t.tier2.download_from_server_ms),
         );
         log::trace!(
-            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={}) T2(v={} copy={} compute={})",
+            "[PIR] Note {i:>2} server stages: T1(v={} copy={} compute={})",
             fmt_opt_time(t.tier1.server_validate_ms),
             fmt_opt_time(t.tier1.server_decode_copy_ms),
             fmt_opt_time(t.tier1.server_compute_ms),
-            fmt_opt_time(t.tier2.server_validate_ms),
-            fmt_opt_time(t.tier2.server_decode_copy_ms),
-            fmt_opt_time(t.tier2.server_compute_ms),
         );
-        log::trace!(
-            "[PIR] Note {i:>2} req ids: T1={:?} T2={:?}",
-            t.tier1.server_req_id,
-            t.tier2.server_req_id
-        );
+        log::trace!("[PIR] Note {i:>2} req id: T1={:?}", t.tier1.server_req_id);
     }
 }
 
@@ -680,7 +573,7 @@ impl PirClientBlocking {
         self.rt.block_on(self.inner.fetch_proofs(nullifiers))
     }
 
-    /// The depth-29 root (PIR depth 25 padded to tree depth 29).
+    /// The depth-29 root (PIR depth 19 padded to tree depth 29).
     pub fn root29(&self) -> Fp {
         self.inner.root29
     }
@@ -695,7 +588,6 @@ impl PirClientBlocking {
 pub fn fetch_proof_local(
     tier0_data: &[u8],
     tier1_data: &[u8],
-    tier2_data: &[u8],
     num_ranges: usize,
     nullifier: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
@@ -715,26 +607,9 @@ pub fn fetch_proof_local(
         t1_offset,
         tier1_data.len()
     );
-    let s2 = process_tier1(
+    process_tier1_and_build(
         &tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES],
-        nullifier,
-        &mut path,
-    )?;
-
-    // ── Tier 2: direct row lookup (no YPIR in local mode) ────────────────
-    let t2_row_idx = s1 * TIER1_LEAVES + s2;
-    let t2_offset = t2_row_idx * TIER2_ROW_BYTES;
-    anyhow::ensure!(
-        t2_offset + TIER2_ROW_BYTES <= tier2_data.len(),
-        "tier2 data too short: need {} bytes at offset {}, have {}",
-        TIER2_ROW_BYTES,
-        t2_offset,
-        tier2_data.len()
-    );
-
-    process_tier2_and_build(
-        &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES],
-        t2_row_idx,
+        s1,
         num_ranges,
         nullifier,
         &mut path,
@@ -750,11 +625,10 @@ mod tests {
     use pasta_curves::Fp;
     use pir_export::build_ranges_with_sentinels;
 
-    /// Build a tree and export all three tier blobs.
+    /// Build a tree and export both tier blobs.
     struct TestFixture {
         tier0_data: Vec<u8>,
         tier1_data: Vec<u8>,
-        tier2_data: Vec<u8>,
         ranges: Vec<[Fp; 3]>,
         empty_hashes: [Fp; TREE_DEPTH],
         root29: Fp,
@@ -772,20 +646,11 @@ mod tests {
                 &tree.empty_hashes,
             );
             let mut tier1_data = Vec::new();
-            pir_export::tier1::export(
-                &tree.levels,
-                &tree.ranges,
-                &tree.empty_hashes,
-                &mut tier1_data,
-            )
-            .unwrap();
-            let mut tier2_data = Vec::new();
-            pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
+            pir_export::tier1::export(&tree.ranges, &mut tier1_data).unwrap();
 
             Self {
                 tier0_data,
                 tier1_data,
-                tier2_data,
                 ranges,
                 empty_hashes: tree.empty_hashes,
                 root29: tree.root29,
@@ -806,7 +671,6 @@ mod tests {
             let proof = fetch_proof_local(
                 &fix.tier0_data,
                 &fix.tier1_data,
-                &fix.tier2_data,
                 fix.ranges.len(),
                 value,
                 &fix.empty_hashes,
@@ -830,7 +694,6 @@ mod tests {
         let proof = fetch_proof_local(
             &fix.tier0_data,
             &fix.tier1_data,
-            &fix.tier2_data,
             fix.ranges.len(),
             value,
             &fix.empty_hashes,
@@ -884,35 +747,8 @@ mod tests {
         assert!(s1 < pir_types::TIER1_ROWS);
     }
 
-    // ── process_tier1 ────────────────────────────────────────────────────
-
     #[test]
-    fn process_tier1_fills_correct_path_region() {
-        let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
-        let fix = TestFixture::build(&raw_nfs);
-        let tier0 = Tier0Data::from_bytes(fix.tier0_data.clone()).unwrap();
-
-        let value = fix.ranges[0][0];
-        let mut path = [Fp::default(); TREE_DEPTH];
-        let s1 = process_tier0(&tier0, value, &mut path).unwrap();
-
-        let t1_offset = s1 * TIER1_ROW_BYTES;
-        let tier1_row = &fix.tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES];
-        let s2 = process_tier1(tier1_row, value, &mut path).unwrap();
-
-        assert!(s2 < TIER1_LEAVES);
-
-        let tier1_region = &path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS..PIR_DEPTH - TIER0_LAYERS];
-        assert!(
-            tier1_region.iter().any(|&v| v != Fp::default()),
-            "tier1 should write at least one non-zero sibling"
-        );
-    }
-
-    // ── process_tier2_and_build ───────────────────────────────────────────
-
-    #[test]
-    fn process_tier2_and_build_produces_verifiable_proof() {
+    fn process_tier1_and_build_produces_verifiable_proof() {
         let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
         let fix = TestFixture::build(&raw_nfs);
         let tier0 = Tier0Data::from_bytes(fix.tier0_data.clone()).unwrap();
@@ -922,18 +758,9 @@ mod tests {
 
         let s1 = process_tier0(&tier0, value, &mut path).unwrap();
         let t1_offset = s1 * TIER1_ROW_BYTES;
-        let s2 = process_tier1(
+        let proof = process_tier1_and_build(
             &fix.tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES],
-            value,
-            &mut path,
-        )
-        .unwrap();
-
-        let t2_row_idx = s1 * TIER1_LEAVES + s2;
-        let t2_offset = t2_row_idx * TIER2_ROW_BYTES;
-        let proof = process_tier2_and_build(
-            &fix.tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES],
-            t2_row_idx,
+            s1,
             fix.ranges.len(),
             value,
             &mut path,
@@ -950,9 +777,9 @@ mod tests {
 
     #[test]
     fn valid_leaves_for_row_basic() {
-        assert_eq!(valid_leaves_for_row(TIER2_LEAVES, 0), TIER2_LEAVES);
-        assert_eq!(valid_leaves_for_row(TIER2_LEAVES + 1, 0), TIER2_LEAVES);
-        assert_eq!(valid_leaves_for_row(TIER2_LEAVES + 1, 1), 1);
+        assert_eq!(valid_leaves_for_row(TIER1_LEAVES, 0), TIER1_LEAVES);
+        assert_eq!(valid_leaves_for_row(TIER1_LEAVES + 1, 0), TIER1_LEAVES);
+        assert_eq!(valid_leaves_for_row(TIER1_LEAVES + 1, 1), 1);
         assert_eq!(valid_leaves_for_row(0, 0), 0);
         assert_eq!(valid_leaves_for_row(1, 0), 1);
         assert_eq!(valid_leaves_for_row(1, 1), 0);
@@ -968,7 +795,6 @@ mod tests {
         let result = fetch_proof_local(
             &fix.tier0_data,
             &fix.tier1_data[..TIER1_ROW_BYTES / 2],
-            &fix.tier2_data,
             fix.ranges.len(),
             fix.ranges[0][0],
             &fix.empty_hashes,
@@ -976,25 +802,6 @@ mod tests {
         );
         assert!(result.is_err());
     }
-
-    #[test]
-    fn fetch_proof_local_rejects_truncated_tier2() {
-        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
-        let fix = TestFixture::build(&raw_nfs);
-
-        let result = fetch_proof_local(
-            &fix.tier0_data,
-            &fix.tier1_data,
-            &fix.tier2_data[..TIER2_ROW_BYTES / 2],
-            fix.ranges.len(),
-            fix.ranges[0][0],
-            &fix.empty_hashes,
-            fix.root29,
-        );
-        assert!(result.is_err());
-    }
-
-    // ── Error-oracle mitigation ─────────────────────────────────────────
 
     struct MockTransport {
         gets: std::collections::HashMap<&'static str, TransportResponse>,
@@ -1005,7 +812,7 @@ mod tests {
     impl MockTransport {
         fn new(tree: &pir_export::PirTree) -> Self {
             use ff::PrimeField as _;
-            use pir_types::{TIER1_ITEM_BITS, TIER1_YPIR_ROWS, TIER2_ITEM_BITS};
+            use pir_types::TIER1_ITEM_BITS;
 
             let tier0_data = pir_export::tier0::export(
                 &tree.root25,
@@ -1021,15 +828,13 @@ mod tests {
                 root25: hex::encode(tree.root25.to_repr()),
                 num_ranges: tree.ranges.len(),
                 pir_depth: PIR_DEPTH,
+                tier1_rows: TIER1_ROWS,
+                tier1_row_bytes: TIER1_ROW_BYTES,
                 height: None,
             };
             let tier1_scenario = YpirScenario {
-                num_items: TIER1_YPIR_ROWS,
+                num_items: TIER1_ROWS,
                 item_size_bits: TIER1_ITEM_BITS,
-            };
-            let tier2_scenario = YpirScenario {
-                num_items: TIER1_YPIR_ROWS,
-                item_size_bits: TIER2_ITEM_BITS,
             };
 
             let gets = [
@@ -1038,20 +843,13 @@ mod tests {
                     "/params/tier1",
                     response(serde_json::to_vec(&tier1_scenario).unwrap()),
                 ),
-                (
-                    "/params/tier2",
-                    response(serde_json::to_vec(&tier2_scenario).unwrap()),
-                ),
                 ("/root", response(serde_json::to_vec(&root_info).unwrap())),
             ]
             .into_iter()
             .collect();
-            let posts = [
-                ("/tier1/query", response(vec![0xDE; 65536])),
-                ("/tier2/query", response(vec![0xAD; 65536])),
-            ]
-            .into_iter()
-            .collect();
+            let posts = [("/tier1/query", response(vec![0xDE; 65536]))]
+                .into_iter()
+                .collect();
 
             Self {
                 gets,
@@ -1102,12 +900,6 @@ mod tests {
             Box::pin(async move {
                 let path = request_path(url);
                 self.hits.lock().unwrap().push(path.to_string());
-                if path == "/tier2/query" {
-                    // Coarse-grained guard against `try_join_all` cancellation:
-                    // all fetch_proof_inner futures should dispatch tier 2 before
-                    // the first corrupted tier 1 response resolves to Err.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
                 self.posts
                     .get(path)
                     .cloned()
@@ -1116,62 +908,29 @@ mod tests {
         }
     }
 
-    async fn corrupting_client() -> (
-        PirClient,
-        std::sync::Arc<MockTransport>,
-        pir_export::PirTree,
-    ) {
+    #[tokio::test]
+    async fn proof_attempt_sends_exactly_one_pir_request() {
         let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
-        let ranges = build_ranges_with_sentinels(&raw_nfs);
-        let tree = pir_export::build_pir_tree(ranges).unwrap();
-        let transport = std::sync::Arc::new(MockTransport::new(&tree));
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let transport = Arc::new(MockTransport::new(&tree));
         let client = PirClient::with_transport("https://pir.example", transport.clone())
             .await
             .unwrap();
-        (client, transport, tree)
-    }
 
-    /// Verify that the tier 2 query is always sent to the server even when
-    /// the tier 1 response is corrupted.
-    #[tokio::test]
-    async fn tier2_query_sent_despite_tier1_decode_failure() {
-        let (client, transport, tree) = corrupting_client().await;
-        let result = client.fetch_proof(tree.ranges[0][0]).await;
-
-        assert!(
-            result.is_err(),
-            "fetch_proof should fail with corrupted tier1 response"
-        );
+        // The mock response is deliberately corrupt; request count is the
+        // property under test.
+        assert!(client.fetch_proof(tree.ranges[0][0] + Fp::one()).await.is_err());
         assert_eq!(transport.count_hits("/tier1/query"), 1);
-        assert_eq!(transport.count_hits("/tier2/query"), 1);
-    }
-
-    /// Asserts the K-note granularity of the error-oracle mitigation: when
-    /// `fetch_proofs(K=5)` is called and every tier 1 response is corrupted,
-    /// the server must still observe K tier 1 POSTs and K tier 2 POSTs.
-    /// Aborting tier 2 dispatch the moment any tier 1 decode fails would
-    /// re-introduce the "K vs K' tier-2 requests" oracle the per-note
-    /// mitigation closes.
-    #[tokio::test]
-    async fn batched_tier2_queries_all_sent_despite_tier1_decode_failure() {
-        const K: usize = 5;
-
-        let (client, transport, tree) = corrupting_client().await;
-        let nullifiers: Vec<Fp> = tree
-            .ranges
-            .iter()
-            .take(K)
-            .map(|r| r[0] + Fp::one())
-            .collect();
-
-        let result = client.fetch_proofs(&nullifiers).await;
-
-        assert!(
-            result.is_err(),
-            "fetch_proofs should fail with corrupted tier1 responses"
+        assert_eq!(
+            transport
+                .hits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.ends_with("/query"))
+                .count(),
+            1
         );
-        assert_eq!(transport.count_hits("/tier1/query"), K);
-        assert_eq!(transport.count_hits("/tier2/query"), K);
     }
 
     #[tokio::test]
@@ -1186,10 +945,53 @@ mod tests {
             .gets
             .insert("/root", response(serde_json::to_vec(&root).unwrap()));
 
-        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await {
+        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await
+        {
             Ok(_) => panic!("wrong pool must be rejected"),
             Err(err) => err.to_string(),
         };
         assert!(err.contains("orchard"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_mismatched_tier_shape() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&transport.gets.get("/root").unwrap().body).unwrap();
+        root["tier1_row_bytes"] = serde_json::Value::from(4_096);
+        transport
+            .gets
+            .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+
+        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await
+        {
+            Ok(_) => panic!("mismatched Tier 1 shape must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("Tier 1 shape mismatch"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_version_one_root_before_shape_check() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&transport.gets.get("/root").unwrap().body).unwrap();
+        root["dataset_version"] = serde_json::Value::from(1);
+        root.as_object_mut().unwrap().remove("tier1_rows");
+        root.as_object_mut().unwrap().remove("tier1_row_bytes");
+        transport
+            .gets
+            .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+
+        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await
+        {
+            Ok(_) => panic!("version-one root must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("version 1 is unsupported"), "{err}");
     }
 }

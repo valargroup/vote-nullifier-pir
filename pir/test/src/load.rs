@@ -35,9 +35,7 @@ pub struct LoadConfig {
 struct Sample {
     total_ms: f64,
     tier1_rtt_ms: f64,
-    tier2_rtt_ms: f64,
     tier1_server_ms: Option<f64>,
-    tier2_server_ms: Option<f64>,
     success: bool,
     error_class: Option<ErrorClass>,
 }
@@ -109,9 +107,7 @@ pub struct ErrorClassCount {
 struct StatsCollector {
     end_to_end: Histogram<u64>,
     tier1_rtt: Histogram<u64>,
-    tier2_rtt: Histogram<u64>,
     tier1_server: Histogram<u64>,
-    tier2_server: Histogram<u64>,
     ok_count: u64,
     err_count: u64,
     error_counts: std::collections::HashMap<ErrorClass, u64>,
@@ -122,9 +118,7 @@ impl StatsCollector {
         Self {
             end_to_end: Histogram::new_with_max(300_000, 3).unwrap(),
             tier1_rtt: Histogram::new_with_max(300_000, 3).unwrap(),
-            tier2_rtt: Histogram::new_with_max(300_000, 3).unwrap(),
             tier1_server: Histogram::new_with_max(300_000, 3).unwrap(),
-            tier2_server: Histogram::new_with_max(300_000, 3).unwrap(),
             ok_count: 0,
             err_count: 0,
             error_counts: std::collections::HashMap::new(),
@@ -136,12 +130,8 @@ impl StatsCollector {
         if sample.success {
             self.ok_count += 1;
             let _ = self.tier1_rtt.record(sample.tier1_rtt_ms as u64);
-            let _ = self.tier2_rtt.record(sample.tier2_rtt_ms as u64);
             if let Some(ms) = sample.tier1_server_ms {
                 let _ = self.tier1_server.record(ms as u64);
-            }
-            if let Some(ms) = sample.tier2_server_ms {
-                let _ = self.tier2_server.record(ms as u64);
             }
         } else {
             self.err_count += 1;
@@ -175,13 +165,9 @@ impl StatsCollector {
         let mut stages = vec![
             Self::stage_summary("end-to-end", &self.end_to_end),
             Self::stage_summary("tier1_rtt", &self.tier1_rtt),
-            Self::stage_summary("tier2_rtt", &self.tier2_rtt),
         ];
         if self.tier1_server.len() > 0 {
             stages.push(Self::stage_summary("tier1_srvr", &self.tier1_server));
-        }
-        if self.tier2_server.len() > 0 {
-            stages.push(Self::stage_summary("tier2_srvr", &self.tier2_server));
         }
 
         let mut error_classes: Vec<ErrorClassCount> = self
@@ -428,9 +414,7 @@ async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) 
                 return Sample {
                     total_ms: t0.elapsed().as_secs_f64() * 1000.0,
                     tier1_rtt_ms: timing.tier1.rtt_ms,
-                    tier2_rtt_ms: timing.tier2.rtt_ms,
                     tier1_server_ms: timing.tier1.server_total_ms,
-                    tier2_server_ms: timing.tier2.server_total_ms,
                     success: false,
                     error_class: Some(ErrorClass::VerifyFail),
                 };
@@ -438,9 +422,7 @@ async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) 
             Sample {
                 total_ms: timing.total_ms,
                 tier1_rtt_ms: timing.tier1.rtt_ms,
-                tier2_rtt_ms: timing.tier2.rtt_ms,
                 tier1_server_ms: timing.tier1.server_total_ms,
-                tier2_server_ms: timing.tier2.server_total_ms,
                 success: true,
                 error_class: None,
             }
@@ -450,9 +432,7 @@ async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) 
             Sample {
                 total_ms: t0.elapsed().as_secs_f64() * 1000.0,
                 tier1_rtt_ms: 0.0,
-                tier2_rtt_ms: 0.0,
                 tier1_server_ms: None,
-                tier2_server_ms: None,
                 success: false,
                 error_class: Some(class),
             }

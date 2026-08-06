@@ -2,7 +2,7 @@
 
 Private Information Retrieval client for [vote-nullifier-pir](https://github.com/valargroup/vote-nullifier-pir). Fetches circuit-ready Merkle non-membership proofs for Zcash Ironwood nullifiers without revealing which nullifier is being queried to the server.
 
-Used by Zcash wallets integrating shielded voting: before building a delegation ZKP, a wallet must prove its notes' nullifiers are absent from the on-chain nullifier set. `pir-client` avoids downloading the full set by performing a two-tier YPIR query that returns only a short authentication path.
+Used by Zcash wallets integrating shielded voting: before building a delegation ZKP, a wallet must prove its notes' nullifiers are absent from the on-chain nullifier set. `pir-client` avoids downloading the full set by searching the public Tier 0 index and performing one YPIR query for the selected Tier 1 leaf row.
 
 ## Usage
 
@@ -34,7 +34,7 @@ The returned `ImtProofData { root, nf_bounds, leaf_pos, path: [Fp; 29] }` is the
 ## Security
 
 - The client rejects servers that don't report the expected Ironwood dataset version.
-- The client always sends the Tier 2 query even after a Tier 1 failure, to prevent a malicious server from distinguishing queries via timing.
+- The client validates the PIR depth, Tier 1 row count, and Tier 1 row width reported by `/root` against the YPIR scenario.
 - Verify each proof locally with `proof.verify(nullifier)` before trusting the returned root.
 
 ## License

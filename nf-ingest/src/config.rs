@@ -19,8 +19,8 @@ pub const fn nu6_3_activation_height(network: ZcashNetwork) -> u64 {
 /// Default lightwalletd gRPC endpoints used when no override is provided.
 pub const DEFAULT_LWD_URLS: &[&str] = &[
     "https://us.zec.stardust.rest:443",
-    "https://eu2.zec.stardust.rest:443",
     "https://eu.zec.stardust.rest:443",
+    "https://zec.rocks:443",
 ];
 
 /// The default single URL used in CLI `--lwd-url` defaults.
@@ -37,7 +37,6 @@ pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] =
 pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] = &[
     "tier0.bin",
     "tier1.bin",
-    "tier2.bin",
     "pir_root.json",
 ];
 

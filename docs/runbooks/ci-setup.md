@@ -177,7 +177,7 @@ For the one-time Orchard-to-Ironwood migration:
 5. Verify both `/root` responses, then update the environment `pir.json`.
 
 Leave `reset_dataset` false for later bumps. Published manifests use schema 2
-and identify `nullifier_pool: "ironwood"` with `dataset_version: 1`.
+and identify `nullifier_pool: "ironwood"` with `dataset_version: 2`.
 
 ### Changing deploy path or restart command
 
