@@ -4,8 +4,12 @@ Shared wire types and tier-layout constants for [vote-nullifier-pir](https://git
 
 This crate contains:
 
-- Tier-layout constants (`PIR_DEPTH`, `TIER0_LAYERS`, `TIER1_LAYERS`, row widths) shared between `pir-client`, `pir-server`, and `pir-export`.
-- Wire types serialized over HTTP: `YpirScenario`, `RootInfo`, `HealthInfo`. Root metadata includes the required Zcash network and Ironwood dataset identity.
+- Tier-layout constants (`PIR_DEPTH`, `TIER0_LAYERS`, `TIER1_LAYERS`, row widths)
+  for the production default 12+7 split, plus `PirLayout` geometry helpers for
+  any valid two-tier negotiation.
+- Wire types serialized over HTTP: `YpirScenario`, `RootInfo`, `HealthInfo`,
+  `PirMetadata`. Root and snapshot metadata include required `pir_layout` plus
+  the Zcash network and Ironwood dataset identity.
 - Query serialization helper `serialize_ypir_query`.
 
 Enable the `reader` feature to get tier-data parsers (`tier0::Tier0Data`, `tier1::Tier1Row`) and Fp serialization helpers (`fp_utils`). The default feature set is lightweight and only pulls in `serde`.

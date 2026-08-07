@@ -36,8 +36,9 @@ use imt_tree::tree::{
 // Re-export tier-layout constants and PirMetadata from pir-types so that
 // existing consumers (tier submodules, tests, downstream crates) keep working.
 pub use pir_types::{
-    PirMetadata, DATASET_VERSION, NULLIFIER_POOL, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS,
-    TIER1_LAYERS, TIER1_LEAF_BYTES, TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES,
+    PirLayout, PirMetadata, COMPILED_PIR_LAYOUT, DATASET_VERSION, NULLIFIER_POOL, PIR_DEPTH,
+    TIER0_LAYERS, TIER1_ITEM_BITS, TIER1_LAYERS, TIER1_LEAF_BYTES, TIER1_LEAVES, TIER1_ROWS,
+    TIER1_ROW_BYTES,
 };
 
 /// Depth of the full circuit tree (unchanged from existing system).
@@ -289,12 +290,26 @@ pub fn tiers_complete_for_height(
     ) else {
         return Ok(false);
     };
+    let Ok(()) = meta.pir_layout.validate_split() else {
+        return Ok(false);
+    };
+    let Ok(layout_rows) = meta.pir_layout.tier1_rows() else {
+        return Ok(false);
+    };
+    let Ok(layout_row_bytes) = meta.pir_layout.tier1_row_bytes() else {
+        return Ok(false);
+    };
+    let Ok(expected_tier0_bytes) = meta.pir_layout.tier0_bytes() else {
+        return Ok(false);
+    };
     if meta.zcash_network != expected_network
         || meta.height != Some(expected_height)
         || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
-        || meta.pir_depth != PIR_DEPTH
-        || meta.tier1_rows != TIER1_ROWS
-        || meta.tier1_row_bytes != TIER1_ROW_BYTES
+        || meta.pir_depth != meta.pir_layout.pir_depth
+        || meta.pir_layout.pir_depth != PIR_DEPTH
+        || meta.tier1_rows != layout_rows
+        || meta.tier1_row_bytes != layout_row_bytes
+        || meta.tier0_bytes != expected_tier0_bytes
     {
         return Ok(false);
     }
@@ -304,11 +319,10 @@ pub fn tiers_complete_for_height(
         return Ok(false);
     }
     let s0 = std::fs::metadata(&t0)?.len() as usize;
-    let expected_tier0_bytes = ((1usize << TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
-    if s0 != expected_tier0_bytes || meta.tier0_bytes != expected_tier0_bytes {
+    if s0 != expected_tier0_bytes {
         return Ok(false);
     }
-    let exp1 = TIER1_ROWS * TIER1_ROW_BYTES;
+    let exp1 = layout_rows * layout_row_bytes;
     if std::fs::metadata(&t1)?.len() as usize != exp1 {
         return Ok(false);
     }
@@ -387,13 +401,39 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
     }
 }
 
-/// Export all tier files and metadata to the given directory.
+/// Export all tier files and metadata to the given directory using the
+/// compiled production layout.
 pub fn export_all(
     tree: &PirTree,
     output_dir: &std::path::Path,
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<()> {
+    export_all_with_layout(tree, output_dir, network, height, COMPILED_PIR_LAYOUT)
+}
+
+/// Export tier blobs and metadata for an arbitrary valid two-tier layout.
+pub fn export_all_with_layout(
+    tree: &PirTree,
+    output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+    layout: PirLayout,
+) -> Result<()> {
+    layout
+        .validate_split()
+        .map_err(anyhow::Error::msg)
+        .context("invalid export layout")?;
+    layout
+        .validate_ypir_bounds()
+        .map_err(anyhow::Error::msg)
+        .context("export layout fails YPIR bounds")?;
+    anyhow::ensure!(
+        layout.pir_depth == PIR_DEPTH,
+        "export requires pir_depth {PIR_DEPTH}, got {}",
+        layout.pir_depth
+    );
+
     std::fs::create_dir_all(output_dir)?;
     // Dataset v1 used a second PIR database. Remove its artifacts so a
     // regenerated v2 directory contains only the current contract.
@@ -411,7 +451,13 @@ pub fn export_all(
 
     // Tier 0
     let t0 = Instant::now();
-    let tier0_data = tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let tier0_data = tier0::export_layout(
+        &tree.root25,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        layout,
+    )?;
     let tier0_path = output_dir.join("tier0.bin");
     std::fs::write(&tier0_path, &tier0_data)?;
     evict_stale_precompute(&tier0_path);
@@ -425,7 +471,7 @@ pub fn export_all(
     let t1 = Instant::now();
     let tier1_path = output_dir.join("tier1.bin");
     let mut f1 = std::io::BufWriter::new(std::fs::File::create(&tier1_path)?);
-    tier1::export(&tree.ranges, &mut f1)?;
+    tier1::export_layout(&tree.ranges, &mut f1, layout)?;
     f1.flush()?;
     drop(f1);
     evict_stale_precompute(&tier1_path);
@@ -433,6 +479,9 @@ pub fn export_all(
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
         "Tier 1 exported"
     );
+
+    let tier1_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
+    let tier1_row_bytes = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;
 
     // Metadata
     let metadata = PirMetadata {
@@ -442,10 +491,11 @@ pub fn export_all(
         root25: hex::encode(tree.root25.to_repr()),
         root29: hex::encode(tree.root29.to_repr()),
         num_ranges: tree.ranges.len(),
-        pir_depth: PIR_DEPTH,
+        pir_depth: layout.pir_depth,
+        pir_layout: layout,
         tier0_bytes: tier0_data.len(),
-        tier1_rows: TIER1_ROWS,
-        tier1_row_bytes: TIER1_ROW_BYTES,
+        tier1_rows,
+        tier1_row_bytes,
         height,
     };
     let json = serde_json::to_string_pretty(&metadata)?;
@@ -453,6 +503,20 @@ pub fn export_all(
     info!("metadata written to pir_root.json");
 
     Ok(())
+}
+
+/// In-memory two-tier export for tests (no filesystem).
+pub fn export_for_layout(tree: &PirTree, layout: PirLayout) -> Result<(Vec<u8>, Vec<u8>)> {
+    let tier0 = tier0::export_layout(
+        &tree.root25,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        layout,
+    )?;
+    let mut tier1 = Vec::new();
+    tier1::export_layout(&tree.ranges, &mut tier1, layout)?;
+    Ok((tier0, tier1))
 }
 
 // ── Test utilities ───────────────────────────────────────────────────────────

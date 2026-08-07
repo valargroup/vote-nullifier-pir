@@ -42,8 +42,13 @@ The returned `ImtProofData { root, nf_bounds, leaf_pos, path: [Fp; 29] }` is the
 
 - The client rejects servers that don't report the expected Ironwood dataset version.
 - Client construction requires the layout from the resolved dynamic voting config.
-- The client requires an exact config-to-`/root`-to-compiled-layout match before parsing Tier 0 or creating a usable client. Missing layout metadata fails closed.
-- The client validates the depth/split geometry, circuit-depth bound, Tier 1 row count, and Tier 1 row width against `/params/tier1` before any private query.
+- The client requires an exact config-to-`/root` layout match before parsing
+  Tier 0 or creating a usable client. Missing `pir_layout` metadata fails closed.
+  Any valid two-tier split that meets YPIR and circuit bounds is accepted;
+  `COMPILED_PIR_LAYOUT` is not a connect gate.
+- The client validates the depth/split geometry, circuit-depth bound, YPIR
+  minima, Tier 1 row count, and Tier 1 row width against `/params/tier1`
+  before any private query.
 - Verify each proof locally with `proof.verify(nullifier)` before trusting the returned root.
 
 ## License

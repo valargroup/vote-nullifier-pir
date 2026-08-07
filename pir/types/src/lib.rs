@@ -34,6 +34,9 @@ pub const TIER0_LAYERS: usize = 12;
 pub const TIER1_LAYERS: usize = 7;
 
 /// Explicit PIR tree layout negotiated between configuration, server, and client.
+///
+/// Clients accept any valid two-tier split that satisfies geometry and YPIR
+/// bounds; [`COMPILED_PIR_LAYOUT`] is only the production default identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PirLayout {
     /// Depth of the PIR Merkle tree.
@@ -44,12 +47,104 @@ pub struct PirLayout {
     pub tier1_layers: usize,
 }
 
-/// Layout compiled into this version of the fixed-layout PIR implementation.
+/// Layout compiled into this version as the production default advertise/export
+/// identity. Clients no longer require connect-time equality against this value.
 pub const COMPILED_PIR_LAYOUT: PirLayout = PirLayout {
     pir_depth: PIR_DEPTH,
     tier0_layers: TIER0_LAYERS,
     tier1_layers: TIER1_LAYERS,
 };
+
+impl PirLayout {
+    /// Ensure `pir_depth == tier0_layers + tier1_layers` with non-zero tiers.
+    pub fn validate_split(self) -> Result<(), String> {
+        if self.tier0_layers == 0 || self.tier1_layers == 0 {
+            return Err(format!(
+                "PIR layout tiers must be non-zero: {:?}",
+                self
+            ));
+        }
+        let split = self
+            .tier0_layers
+            .checked_add(self.tier1_layers)
+            .ok_or_else(|| "PIR layout tier split overflows".to_owned())?;
+        if self.pir_depth != split {
+            return Err(format!(
+                "PIR layout is inconsistent: pir_depth {} != tier0_layers {} + tier1_layers {}",
+                self.pir_depth, self.tier0_layers, self.tier1_layers
+            ));
+        }
+        Ok(())
+    }
+
+    /// Number of Tier 1 rows (`2^tier0_layers`).
+    pub fn tier1_rows(self) -> Result<usize, String> {
+        self.validate_split()?;
+        let shift = u32::try_from(self.tier0_layers)
+            .map_err(|_| "PIR layout tier0_layers does not fit a shift count".to_owned())?;
+        1usize
+            .checked_shl(shift)
+            .ok_or_else(|| "PIR layout tier0_layers exceeds platform geometry".to_owned())
+    }
+
+    /// Leaves per Tier 1 row (`2^tier1_layers`).
+    pub fn tier1_leaves(self) -> Result<usize, String> {
+        self.validate_split()?;
+        let shift = u32::try_from(self.tier1_layers)
+            .map_err(|_| "PIR layout tier1_layers does not fit a shift count".to_owned())?;
+        1usize
+            .checked_shl(shift)
+            .ok_or_else(|| "PIR layout tier1_layers exceeds platform geometry".to_owned())
+    }
+
+    /// Byte width of one Tier 1 row.
+    pub fn tier1_row_bytes(self) -> Result<usize, String> {
+        self.tier1_leaves()?
+            .checked_mul(TIER1_LEAF_BYTES)
+            .ok_or_else(|| "PIR layout Tier 1 row width overflows".to_owned())
+    }
+
+    /// YPIR item size in bits for one Tier 1 row.
+    pub fn tier1_item_bits(self) -> Result<usize, String> {
+        self.tier1_row_bytes()?
+            .checked_mul(8)
+            .ok_or_else(|| "PIR layout Tier 1 item bits overflow".to_owned())
+    }
+
+    /// Number of BFS internal nodes stored in Tier 0 (`2^tier0_layers - 1`).
+    pub fn tier0_internal_nodes(self) -> Result<usize, String> {
+        let rows = self.tier1_rows()?;
+        rows.checked_sub(1)
+            .ok_or_else(|| "PIR layout tier0_layers must be >= 1".to_owned())
+    }
+
+    /// Total Tier 0 blob size in bytes.
+    pub fn tier0_bytes(self) -> Result<usize, String> {
+        let internal = self.tier0_internal_nodes()?;
+        let rows = self.tier1_rows()?;
+        internal
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(rows.checked_mul(64)?))
+            .ok_or_else(|| "PIR layout Tier 0 size overflows".to_owned())
+    }
+
+    /// Reject layouts below YPIR SimplePIR minima.
+    pub fn validate_ypir_bounds(self) -> Result<(), String> {
+        let rows = self.tier1_rows()?;
+        let bits = self.tier1_item_bits()?;
+        if rows < YPIR_MIN_ROWS {
+            return Err(format!(
+                "PIR layout Tier 1 rows {rows} below YPIR minimum {YPIR_MIN_ROWS}"
+            ));
+        }
+        if bits < YPIR_MIN_ITEM_BITS {
+            return Err(format!(
+                "PIR layout Tier 1 item bits {bits} below YPIR minimum {YPIR_MIN_ITEM_BITS}"
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Number of Tier 1 rows (one per depth-12 subtree).
 pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 4,096
@@ -151,6 +246,11 @@ pub struct PirMetadata {
     pub num_ranges: usize,
     /// PIR tree depth.
     pub pir_depth: usize,
+    /// Explicit two-tier split used when this snapshot was exported.
+    ///
+    /// Required on the wire; snapshots without `pir_layout` fail to deserialize.
+    /// Loaders verify on-disk blob sizes against this layout.
+    pub pir_layout: PirLayout,
     /// Tier 0 size in bytes.
     pub tier0_bytes: usize,
     /// Number of Tier 1 rows.
@@ -186,7 +286,7 @@ pub struct RootInfo {
     /// Legacy wire name for the PIR-depth root; depth 19 in dataset version 2.
     pub root25: String,
     pub num_ranges: usize,
-    /// Explicit depth and tier split compiled into the serving binary.
+    /// Explicit depth and tier split advertised by the serving snapshot.
     pub pir_layout: PirLayout,
     /// Legacy top-level depth retained as an independent consistency check.
     pub pir_depth: usize,
@@ -287,5 +387,72 @@ mod tests {
 
         let remaining = payload.len() - U64_BYTES - pqr_byte_len;
         assert_eq!(remaining, pp.len() * U64_BYTES);
+    }
+
+    #[test]
+    fn layout_geometry_matches_compiled_constants() {
+        assert_eq!(COMPILED_PIR_LAYOUT.tier1_rows().unwrap(), TIER1_ROWS);
+        assert_eq!(COMPILED_PIR_LAYOUT.tier1_leaves().unwrap(), TIER1_LEAVES);
+        assert_eq!(
+            COMPILED_PIR_LAYOUT.tier1_row_bytes().unwrap(),
+            TIER1_ROW_BYTES
+        );
+        assert_eq!(
+            COMPILED_PIR_LAYOUT.tier1_item_bits().unwrap(),
+            TIER1_ITEM_BITS
+        );
+        assert_eq!(
+            COMPILED_PIR_LAYOUT.tier0_bytes().unwrap(),
+            ((1usize << TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64
+        );
+        COMPILED_PIR_LAYOUT.validate_ypir_bounds().unwrap();
+    }
+
+    #[test]
+    fn alt_splits_pass_ypir_bounds() {
+        for (t0, t1) in [(11usize, 8usize), (12, 7), (13, 6)] {
+            let layout = PirLayout {
+                pir_depth: 19,
+                tier0_layers: t0,
+                tier1_layers: t1,
+            };
+            layout.validate_split().unwrap();
+            layout.validate_ypir_bounds().unwrap();
+        }
+    }
+
+    #[test]
+    fn metadata_requires_pir_layout() {
+        let missing = r#"{
+            "zcash_network":"main",
+            "nullifier_pool":"ironwood",
+            "dataset_version":2,
+            "root25":"00",
+            "root29":"00",
+            "num_ranges":0,
+            "pir_depth":19,
+            "tier0_bytes":0,
+            "tier1_rows":4096,
+            "tier1_row_bytes":12288,
+            "height":null
+        }"#;
+        assert!(serde_json::from_str::<PirMetadata>(missing).is_err());
+
+        let present = r#"{
+            "zcash_network":"main",
+            "nullifier_pool":"ironwood",
+            "dataset_version":2,
+            "root25":"00",
+            "root29":"00",
+            "num_ranges":0,
+            "pir_depth":19,
+            "pir_layout":{"pir_depth":19,"tier0_layers":12,"tier1_layers":7},
+            "tier0_bytes":0,
+            "tier1_rows":4096,
+            "tier1_row_bytes":12288,
+            "height":null
+        }"#;
+        let meta: PirMetadata = serde_json::from_str(present).unwrap();
+        assert_eq!(meta.pir_layout, COMPILED_PIR_LAYOUT);
     }
 }

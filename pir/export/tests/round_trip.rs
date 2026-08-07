@@ -258,6 +258,7 @@ fn test_build_and_export_writes_files() {
     assert_eq!(meta.nullifier_pool, pir_types::NULLIFIER_POOL);
     assert_eq!(meta.dataset_version, pir_types::DATASET_VERSION);
     assert_eq!(meta.pir_depth, pir_export::PIR_DEPTH);
+    assert_eq!(meta.pir_layout, pir_types::COMPILED_PIR_LAYOUT);
     assert_eq!(meta.root29, hex::encode(tree.root29.to_repr()));
     assert!(meta.num_ranges > 25); // K=2 punctured ranges from 50 nfs + sentinels
     assert!(

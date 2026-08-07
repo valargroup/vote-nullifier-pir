@@ -1,8 +1,19 @@
 # Unreleased
 
+- Make two-tier PIR geometry runtime-driven: clients accept any valid
+  `PirLayout` that matches `/root` (and passes geometry / YPIR / circuit
+  bounds) instead of requiring equality against `COMPILED_PIR_LAYOUT`.
+  Production default remains 12+7; `COMPILED_PIR_LAYOUT` is only the default
+  export/advertise identity.
+- Require `pir_layout` on `pir_root.json` / `PirMetadata` (breaking for
+  snapshots that omit it). Export writes it; server load and export
+  completeness checks derive expected `tier0`/`tier1.bin` sizes from that
+  layout.
+- Parameterize Tier 0 / Tier 1 readers and path assembly by negotiated
+  layout; covered by reconstruct + connect tests for 11+8, 12+7, and 13+6.
 - Add explicit depth and tier-split metadata to `/root`, and require PIR client
-  construction to match the dynamic-config layout against both the server and
-  the client's fixed compiled layout before any private query.
+  construction to match the dynamic-config layout against the server before
+  any private query.
 - Add held stable releases and a verified manual promotion path so coordinated
   PIR upgrades can publish tag-scoped artifacts without changing installer
   aliases early, then promote every alias without permitting a stale rollback.

@@ -23,14 +23,17 @@ pir/server::tier1_scenario()
 ```
 
 The server and client derive the same lattice parameters from the two
-scenario integers. `/root` advertises the explicit depth and 12+7 split plus
-the row count and byte width. Client construction also receives the expected
-layout from dynamic voting configuration and requires config, server, and
-compiled client layouts to match before parsing Tier 0 or issuing a query.
+scenario integers. `/root` advertises the explicit depth and tier split plus
+the row count and byte width. Client construction receives the expected layout
+from dynamic voting configuration and requires that config match the server
+advertisement before parsing Tier 0 or issuing a query. Within the two-tier
+envelope, any split that satisfies YPIR minima and circuit depth is accepted;
+`COMPILED_PIR_LAYOUT` (12+7) remains the production default identity for
+export and server advertise, not a connect-time gate.
 
 ## Tree constants
 
-The constants in `pir/types/src/lib.rs` are:
+The constants in `pir/types/src/lib.rs` are the production default:
 
 - `PIR_DEPTH = 19`;
 - `TIER0_LAYERS = 12`;
@@ -40,6 +43,10 @@ The constants in `pir/types/src/lib.rs` are:
 - `TIER1_LEAF_BYTES = 3 * 32 = 96`;
 - `TIER1_ROW_BYTES = 128 * 96 = 12,288`;
 - `TIER1_ITEM_BITS = 12,288 * 8 = 98,304`.
+
+Alternate two-tier splits such as 11+8 and 13+6 are valid when advertised
+consistently in config and `/root` and when they meet YPIR minima
+(`rows >= 2048`, item bits `>= 28,672`).
 
 The following invariants are compile-time assertions:
 

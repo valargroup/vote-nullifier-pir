@@ -22,8 +22,7 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, COMPILED_PIR_LAYOUT,
-    TIER1_ROWS, TIER1_ROW_BYTES,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState,
 };
 use tracing::info;
 
@@ -107,7 +106,13 @@ async fn get_tier1_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    get_tier_row_inner(&state, idx, "tier1.bin", TIER1_ROWS, TIER1_ROW_BYTES)
+    get_tier_row_inner(
+        &state,
+        idx,
+        "tier1.bin",
+        state.serving.metadata.tier1_rows,
+        state.serving.metadata.tier1_row_bytes,
+    )
 }
 
 fn get_tier_row_inner(
@@ -144,7 +149,7 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         root29: state.serving.metadata.root29.clone(),
         root25: state.serving.metadata.root25.clone(),
         num_ranges: state.serving.metadata.num_ranges,
-        pir_layout: COMPILED_PIR_LAYOUT,
+        pir_layout: state.serving.metadata.pir_layout,
         pir_depth: state.serving.metadata.pir_depth,
         tier1_rows: state.serving.metadata.tier1_rows,
         tier1_row_bytes: state.serving.metadata.tier1_row_bytes,
@@ -157,7 +162,7 @@ async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let info = HealthInfo {
         status: "ok".to_string(),
         tier1_rows: state.serving.tier1_scenario.num_items,
-        tier1_row_bytes: TIER1_ROW_BYTES,
+        tier1_row_bytes: state.serving.metadata.tier1_row_bytes,
     };
     axum::Json(info)
 }

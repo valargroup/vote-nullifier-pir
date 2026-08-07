@@ -159,20 +159,21 @@ Dataset contract version 2 identifies this layout. `pir_root.json` records:
 
 - the Zcash network, `nullifier_pool = "ironwood"`, and dataset version;
 - the PIR-depth and circuit-depth roots;
-- `num_ranges`, `pir_depth`, and snapshot height;
+- `num_ranges`, `pir_depth`, required `pir_layout`, and snapshot height;
 - Tier 0 byte size;
 - `tier1_rows` and `tier1_row_bytes`.
 
 `GET /root` returns `pir_layout = { pir_depth, tier0_layers, tier1_layers }`
 alongside the legacy top-level depth and Tier 1 shape. Client construction
 requires the expected layout from dynamic voting configuration and rejects
-unless config, server, and compiled client layouts match exactly. It also
-rejects inconsistent splits, depths beyond the 29-layer circuit, and row
-geometry that disagrees with `/params/tier1`, all before any private query.
-Servers validate the metadata and require
-`tier1.bin` to be exactly `4,096 * 12,288` bytes before loading its precompute
-cache. Version-1 snapshots and depth-25 tree checkpoints are intentionally
-incompatible.
+unless config and server layouts match exactly. It also rejects inconsistent
+splits, depths beyond the 29-layer circuit, layouts below YPIR minima, and
+row geometry that disagrees with `/params/tier1`, all before any private
+query. Clients do **not** require equality against `COMPILED_PIR_LAYOUT`.
+Servers validate metadata `pir_layout` and require on-disk `tier0.bin` /
+`tier1.bin` sizes to match that layout before loading the precompute cache.
+Snapshots missing `pir_layout` fail to deserialize. Version-1 snapshots and
+depth-25 tree checkpoints are intentionally incompatible.
 
 ## Privacy
 

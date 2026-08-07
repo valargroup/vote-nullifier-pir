@@ -62,12 +62,23 @@ impl Drop for Aligned64 {
     }
 }
 
-/// Tier 1 YPIR scenario.
+/// Tier 1 YPIR scenario for the compiled production layout.
 pub fn tier1_scenario() -> YpirScenario {
-    YpirScenario {
-        num_items: TIER1_ROWS,
-        item_size_bits: TIER1_ITEM_BITS,
-    }
+    tier1_scenario_for_layout(COMPILED_PIR_LAYOUT).expect("compiled layout YPIR scenario is valid")
+}
+
+/// Derive the Tier 1 YPIR scenario from a negotiated two-tier layout.
+pub fn tier1_scenario_for_layout(layout: PirLayout) -> Result<YpirScenario> {
+    layout
+        .validate_split()
+        .map_err(anyhow::Error::msg)?;
+    layout
+        .validate_ypir_bounds()
+        .map_err(anyhow::Error::msg)?;
+    Ok(YpirScenario {
+        num_items: layout.tier1_rows().map_err(anyhow::Error::msg)?,
+        item_size_bits: layout.tier1_item_bits().map_err(anyhow::Error::msg)?,
+    })
 }
 
 // ── PIR server state ─────────────────────────────────────────────────────────
@@ -618,25 +629,49 @@ pub fn load_serving_state(
         pir_types::DATASET_VERSION
     );
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
+    metadata
+        .pir_layout
+        .validate_split()
+        .map_err(anyhow::Error::msg)
+        .context("invalid metadata pir_layout")?;
+    metadata
+        .pir_layout
+        .validate_ypir_bounds()
+        .map_err(anyhow::Error::msg)
+        .context("metadata pir_layout fails YPIR bounds")?;
+    let layout_rows = metadata
+        .pir_layout
+        .tier1_rows()
+        .map_err(anyhow::Error::msg)?;
+    let layout_row_bytes = metadata
+        .pir_layout
+        .tier1_row_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let expected_tier0_bytes = metadata
+        .pir_layout
+        .tier0_bytes()
+        .map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
-        metadata.pir_depth == pir_types::PIR_DEPTH
-            && metadata.tier1_rows == TIER1_ROWS
-            && metadata.tier1_row_bytes == TIER1_ROW_BYTES,
-        "PIR dataset layout mismatch: got depth {} and tier1 {}x{} bytes; expected depth {} and tier1 {}x{} bytes",
+        metadata.pir_depth == metadata.pir_layout.pir_depth
+            && metadata.pir_layout.pir_depth == pir_types::PIR_DEPTH
+            && metadata.tier1_rows == layout_rows
+            && metadata.tier1_row_bytes == layout_row_bytes
+            && metadata.tier0_bytes == expected_tier0_bytes,
+        "PIR dataset layout mismatch: metadata depth {} / layout {:?} / tier1 {}x{} bytes / tier0 {} bytes; derived tier1 {}x{} bytes and tier0 {} bytes",
         metadata.pir_depth,
+        metadata.pir_layout,
         metadata.tier1_rows,
         metadata.tier1_row_bytes,
-        pir_types::PIR_DEPTH,
-        TIER1_ROWS,
-        TIER1_ROW_BYTES
+        metadata.tier0_bytes,
+        layout_rows,
+        layout_row_bytes,
+        expected_tier0_bytes
     );
 
     let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
-    let expected_tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
     anyhow::ensure!(
-        metadata.tier0_bytes == expected_tier0_bytes && tier0_data.len() == expected_tier0_bytes,
-        "tier0.bin size mismatch: metadata reports {} bytes and file has {}; expected {}",
-        metadata.tier0_bytes,
+        tier0_data.len() == expected_tier0_bytes,
+        "tier0.bin size mismatch: file has {}; expected {} from metadata pir_layout",
         tier0_data.len(),
         expected_tier0_bytes
     );
@@ -648,20 +683,21 @@ pub fn load_serving_state(
     // still serves rows directly from tier{0,1}.bin for some operations.
     let tier1_path = pir_data_dir.join(TIER1_FILE);
     let tier1_size = std::fs::metadata(&tier1_path)?.len() as usize;
+    let expected_tier1_bytes = layout_rows * layout_row_bytes;
     info!(
         bytes = tier1_size,
-        rows = tier1_size / TIER1_ROW_BYTES,
+        rows = layout_rows,
         "Tier 1 sized"
     );
     anyhow::ensure!(
-        tier1_size == TIER1_ROWS * TIER1_ROW_BYTES,
-        "tier1.bin size mismatch: got {} bytes, expected {}",
+        tier1_size == expected_tier1_bytes,
+        "tier1.bin size mismatch: got {} bytes, expected {} from metadata pir_layout",
         tier1_size,
-        TIER1_ROWS * TIER1_ROW_BYTES
+        expected_tier1_bytes
     );
 
     info!("Initializing YPIR servers");
-    let tier1_scenario = tier1_scenario();
+    let tier1_scenario = tier1_scenario_for_layout(metadata.pir_layout)?;
     let tier1_cache_path = pir_data_dir.join(TIER1_PRECOMPUTE_FILE);
     let (tier1, tier1_hit) =
         OwnedTierState::new_or_load(&tier1_path, tier1_scenario.clone(), &tier1_cache_path)?;
@@ -696,6 +732,7 @@ mod tests {
             root29: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
+            pir_layout: COMPILED_PIR_LAYOUT,
             tier0_bytes: 0,
             tier1_rows: 0,
             tier1_row_bytes: 0,
@@ -726,6 +763,7 @@ mod tests {
             root29: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
+            pir_layout: COMPILED_PIR_LAYOUT,
             tier0_bytes: 0,
             tier1_rows: 0,
             tier1_row_bytes: 0,
@@ -756,6 +794,7 @@ mod tests {
             root29: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
+            pir_layout: COMPILED_PIR_LAYOUT,
             tier0_bytes: 0,
             tier1_rows: TIER1_ROWS,
             tier1_row_bytes: TIER1_ROW_BYTES,
@@ -778,7 +817,7 @@ mod tests {
     #[test]
     fn rejects_old_shaped_tier_file_before_precompute() {
         let dir = tempfile::tempdir().unwrap();
-        let tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
+        let tier0_bytes = COMPILED_PIR_LAYOUT.tier0_bytes().unwrap();
         let metadata = PirMetadata {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
@@ -787,6 +826,7 @@ mod tests {
             root29: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
+            pir_layout: COMPILED_PIR_LAYOUT,
             tier0_bytes,
             tier1_rows: TIER1_ROWS,
             tier1_row_bytes: TIER1_ROW_BYTES,
