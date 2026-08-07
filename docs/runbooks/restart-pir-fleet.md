@@ -123,7 +123,7 @@ public endpoints once the workflow is green:
 ```bash
 for host in pir-primary pir-backup; do
     echo "=== $host ==="
-    curl -s "https://$host.valargroup.org/root" | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_root}'
+    curl -s "https://$host.valargroup.org/root" | jq '{zcash_network, nullifier_pool, dataset_version, height, root25}'
 done
 ```
 
