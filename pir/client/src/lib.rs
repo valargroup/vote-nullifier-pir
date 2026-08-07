@@ -753,15 +753,18 @@ pub fn fetch_proof_local_layout(
     let t1_offset = s1
         .checked_mul(row_bytes)
         .context("tier1 row offset overflow")?;
+    let t1_end = t1_offset
+        .checked_add(row_bytes)
+        .context("tier1 row end overflow")?;
     anyhow::ensure!(
-        t1_offset + row_bytes <= tier1_data.len(),
+        t1_end <= tier1_data.len(),
         "tier1 data too short: need {} bytes at offset {}, have {}",
         row_bytes,
         t1_offset,
         tier1_data.len()
     );
     process_tier1_and_build(
-        &tier1_data[t1_offset..t1_offset + row_bytes],
+        &tier1_data[t1_offset..t1_end],
         layout,
         s1,
         num_ranges,
