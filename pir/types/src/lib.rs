@@ -267,10 +267,10 @@ pub struct PirMetadata {
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
     /// Hex-encoded PIR-depth Merkle root (PIR tree root for K=2).
-    #[serde(rename = "root25", alias = "pir_root")]
+    #[serde(alias = "root25")]
     pub pir_root: String,
     /// Hex-encoded depth-29 Merkle root consumed by the circuit.
-    #[serde(rename = "root29", alias = "circuit_root")]
+    #[serde(alias = "root29")]
     pub circuit_root: String,
     /// Number of populated leaf ranges in the tree.
     pub num_ranges: usize,
@@ -313,10 +313,10 @@ pub struct RootInfo {
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
     /// Hex-encoded depth-29 Merkle root consumed by the circuit.
-    #[serde(rename = "root29", alias = "circuit_root")]
+    #[serde(alias = "root29")]
     pub circuit_root: String,
     /// Hex-encoded root at the advertised PIR depth.
-    #[serde(rename = "root25", alias = "pir_root")]
+    #[serde(alias = "root25")]
     pub pir_root: String,
     pub num_ranges: usize,
     /// Explicit depth and tier split advertised by the serving snapshot.
@@ -509,65 +509,5 @@ mod tests {
         }"#;
         let meta: PirMetadata = serde_json::from_str(present).unwrap();
         assert_eq!(meta.pir_layout, COMPILED_PIR_LAYOUT);
-    }
-
-    #[test]
-    fn root_fields_keep_legacy_wire_names_and_accept_descriptive_aliases() {
-        let metadata = PirMetadata {
-            zcash_network: ZcashNetwork::Main,
-            nullifier_pool: NULLIFIER_POOL.to_owned(),
-            dataset_version: DATASET_VERSION,
-            pir_root: "25".to_owned(),
-            circuit_root: "29".to_owned(),
-            num_ranges: 0,
-            pir_depth: PIR_DEPTH,
-            pir_layout: COMPILED_PIR_LAYOUT,
-            tier0_bytes: 0,
-            tier1_rows: 0,
-            tier1_row_bytes: 0,
-            height: None,
-        };
-        let serialized = serde_json::to_value(&metadata).unwrap();
-        assert_eq!(serialized["root25"], "25");
-        assert_eq!(serialized["root29"], "29");
-        assert!(serialized.get("pir_root").is_none());
-        assert!(serialized.get("circuit_root").is_none());
-
-        let descriptive = serde_json::json!({
-            "zcash_network": "main",
-            "nullifier_pool": "ironwood",
-            "dataset_version": 2,
-            "pir_root": "25",
-            "circuit_root": "29",
-            "num_ranges": 0,
-            "pir_depth": 19,
-            "pir_layout": {"pir_depth": 19, "tier0_layers": 12, "tier1_layers": 7},
-            "tier0_bytes": 0,
-            "tier1_rows": 0,
-            "tier1_row_bytes": 0,
-            "height": null
-        });
-        let parsed: PirMetadata = serde_json::from_value(descriptive).unwrap();
-        assert_eq!(parsed.pir_root, "25");
-        assert_eq!(parsed.circuit_root, "29");
-
-        let root_info = RootInfo {
-            zcash_network: metadata.zcash_network,
-            nullifier_pool: metadata.nullifier_pool,
-            dataset_version: metadata.dataset_version,
-            circuit_root: metadata.circuit_root,
-            pir_root: metadata.pir_root,
-            num_ranges: metadata.num_ranges,
-            pir_layout: metadata.pir_layout,
-            pir_depth: metadata.pir_depth,
-            tier1_rows: metadata.tier1_rows,
-            tier1_row_bytes: metadata.tier1_row_bytes,
-            height: metadata.height,
-        };
-        let serialized = serde_json::to_value(root_info).unwrap();
-        assert_eq!(serialized["root25"], "25");
-        assert_eq!(serialized["root29"], "29");
-        assert!(serialized.get("pir_root").is_none());
-        assert!(serialized.get("circuit_root").is_none());
     }
 }

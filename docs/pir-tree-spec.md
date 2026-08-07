@@ -163,10 +163,6 @@ Dataset contract version 2 identifies this layout. `pir_root.json` records:
 - Tier 0 byte size;
 - `tier1_rows` and `tier1_row_bytes`.
 
-The roots retain their legacy JSON names, `root25` and `root29`, for rolling
-compatibility. Rust APIs use the descriptive names `pir_root` and
-`circuit_root`, and deserialization also accepts those descriptive JSON names.
-
 `GET /root` returns `pir_layout = { pir_depth, tier0_layers, tier1_layers }`
 alongside the legacy top-level depth and Tier 1 shape. Client construction
 requires the expected layout from dynamic voting configuration and rejects
