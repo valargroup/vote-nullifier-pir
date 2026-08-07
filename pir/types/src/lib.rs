@@ -27,6 +27,15 @@ pub mod tier1;
 /// leaf count compared to K=1. Depth 19 supports 2^19 = 524,288 leaf slots.
 pub const PIR_DEPTH: usize = 19;
 
+/// Maximum PIR depth supported by the depth-29 circuit.
+pub const MAX_PIR_DEPTH: usize = 29;
+
+/// Maximum public-tier depth supported by client resource limits.
+pub const MAX_TIER0_LAYERS: usize = 16;
+
+/// Maximum privately queried subtree depth supported by YPIR resource limits.
+pub const MAX_TIER1_LAYERS: usize = 15;
+
 /// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 12).
 pub const TIER0_LAYERS: usize = 12;
 
@@ -35,8 +44,8 @@ pub const TIER1_LAYERS: usize = 7;
 
 /// Explicit PIR tree layout negotiated between configuration, server, and client.
 ///
-/// Clients accept any valid two-tier split that satisfies geometry and YPIR
-/// bounds; [`COMPILED_PIR_LAYOUT`] is only the production default identity.
+/// Supported layouts satisfy the shared protocol and YPIR constraints;
+/// [`COMPILED_PIR_LAYOUT`] is the production default identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PirLayout {
     /// Depth of the PIR Merkle tree.
@@ -140,6 +149,31 @@ impl PirLayout {
             ));
         }
         Ok(())
+    }
+
+    /// Validate that this layout is supported by every component in this
+    /// protocol release.
+    pub fn validate_supported(self) -> Result<(), String> {
+        self.validate_split()?;
+        if !(1..=MAX_PIR_DEPTH).contains(&self.pir_depth) {
+            return Err(format!(
+                "unsupported PIR layout depth {}; expected 1..={MAX_PIR_DEPTH}",
+                self.pir_depth,
+            ));
+        }
+        if self.tier0_layers > MAX_TIER0_LAYERS {
+            return Err(format!(
+                "PIR layout Tier 0 layers {} exceeds maximum {MAX_TIER0_LAYERS}",
+                self.tier0_layers
+            ));
+        }
+        if self.tier1_layers > MAX_TIER1_LAYERS {
+            return Err(format!(
+                "PIR layout Tier 1 layers {} exceeds maximum {MAX_TIER1_LAYERS}",
+                self.tier1_layers
+            ));
+        }
+        self.validate_ypir_bounds()
     }
 }
 
@@ -409,15 +443,37 @@ mod tests {
 
     #[test]
     fn alt_splits_pass_ypir_bounds() {
-        for (t0, t1) in [(11usize, 8usize), (12, 7), (13, 6)] {
+        for (tier0_layers, tier1_layers) in [(11, 8), (12, 7), (13, 6)] {
             let layout = PirLayout {
-                pir_depth: 19,
-                tier0_layers: t0,
-                tier1_layers: t1,
+                pir_depth: PIR_DEPTH,
+                tier0_layers,
+                tier1_layers,
             };
-            layout.validate_split().unwrap();
-            layout.validate_ypir_bounds().unwrap();
+            layout.validate_supported().unwrap();
         }
+    }
+
+    #[test]
+    fn unsupported_layouts_fail_shared_validation() {
+        let unsupported_split = PirLayout {
+            pir_depth: PIR_DEPTH,
+            tier0_layers: 10,
+            tier1_layers: 9,
+        };
+        assert!(unsupported_split
+            .validate_supported()
+            .unwrap_err()
+            .contains("below YPIR minimum"));
+
+        let unsupported_depth = PirLayout {
+            pir_depth: 30,
+            tier0_layers: 19,
+            tier1_layers: 11,
+        };
+        assert!(unsupported_depth
+            .validate_supported()
+            .unwrap_err()
+            .contains("expected 1..=29"));
     }
 
     #[test]

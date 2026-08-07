@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 
 use imt_tree::tree::PuncturedRange;
 
-use crate::{write_fp, COMPILED_PIR_LAYOUT, PIR_DEPTH, TIER1_LEAF_BYTES};
+use crate::{write_fp, COMPILED_PIR_LAYOUT, TIER1_LEAF_BYTES};
 use pir_types::PirLayout;
 
 pub use pir_types::tier1::Tier1Row;
@@ -24,21 +24,16 @@ pub fn export(ranges: &[PuncturedRange], writer: &mut impl Write) -> Result<()> 
     export_layout(ranges, writer, COMPILED_PIR_LAYOUT)
 }
 
-/// Export all Tier 1 rows for an arbitrary two-tier layout.
+/// Export all Tier 1 rows for a supported two-tier layout.
 pub fn export_layout(
     ranges: &[PuncturedRange],
     writer: &mut impl Write,
     layout: PirLayout,
 ) -> Result<()> {
     layout
-        .validate_split()
+        .validate_supported()
         .map_err(anyhow::Error::msg)
         .context("invalid Tier 1 export layout")?;
-    anyhow::ensure!(
-        layout.pir_depth == PIR_DEPTH,
-        "Tier 1 export requires pir_depth {PIR_DEPTH}, got {}",
-        layout.pir_depth
-    );
 
     let num_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
     let leaves = layout.tier1_leaves().map_err(anyhow::Error::msg)?;

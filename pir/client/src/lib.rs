@@ -25,17 +25,6 @@ use pir_types::{serialize_ypir_query, RootInfo, YpirScenario, YPIR_MIN_ITEM_BITS
 
 use ypir::client::YPIRClient;
 
-/// Largest supported public-tier depth.
-///
-/// This bounds the Tier 0 download and allocation to less than 6 MiB.
-pub const MAX_TIER0_LAYERS: usize = 16;
-
-/// Largest supported privately queried subtree depth.
-///
-/// This bounds a Tier 1 row to 96 KiB and limits YPIR's per-item parameter
-/// expansion while leaving two layers of headroom above the production layout.
-pub const MAX_TIER1_LAYERS: usize = 10;
-
 /// Valid row used when Tier 0 cannot safely route a nullifier. The encrypted
 /// query is still sent so a server cannot distinguish routing failures by
 /// observing whether `/tier1/query` was requested.
@@ -205,28 +194,7 @@ fn process_tier1_and_build(
 
 fn validate_layout(label: &str, layout: PirLayout) -> Result<()> {
     layout
-        .validate_split()
-        .map_err(|e| anyhow::anyhow!("{label} {e}"))?;
-    anyhow::ensure!(
-        layout.pir_depth <= TREE_DEPTH,
-        "{label} PIR layout depth {} exceeds circuit depth {}",
-        layout.pir_depth,
-        TREE_DEPTH
-    );
-    anyhow::ensure!(
-        layout.tier0_layers <= MAX_TIER0_LAYERS,
-        "{label} PIR layout Tier 0 layers {} exceeds client maximum {}",
-        layout.tier0_layers,
-        MAX_TIER0_LAYERS
-    );
-    anyhow::ensure!(
-        layout.tier1_layers <= MAX_TIER1_LAYERS,
-        "{label} PIR layout Tier 1 layers {} exceeds client maximum {}",
-        layout.tier1_layers,
-        MAX_TIER1_LAYERS
-    );
-    layout
-        .validate_ypir_bounds()
+        .validate_supported()
         .map_err(|e| anyhow::anyhow!("{label} {e}"))?;
     Ok(())
 }
@@ -1260,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inconsistent_or_out_of_circuit_layout_geometry() {
+    fn rejects_inconsistent_or_unsupported_depth_layout_geometry() {
         let inconsistent = PirLayout {
             pir_depth: 19,
             tier0_layers: 12,
@@ -1277,11 +1245,11 @@ mod tests {
             tier1_layers: 15,
         };
         let err = validate_layout("test", too_deep).unwrap_err().to_string();
-        assert!(err.contains("exceeds circuit depth"), "{err}");
+        assert!(err.contains("expected 1..=29"), "{err}");
     }
 
     #[test]
-    fn rejects_layouts_exceeding_client_resource_bounds() {
+    fn rejects_layouts_outside_shared_protocol_constraints() {
         let excessive_tier0 = PirLayout {
             pir_depth: 29,
             tier0_layers: 23,
@@ -1290,21 +1258,21 @@ mod tests {
         let err = validate_layout("test", excessive_tier0)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("Tier 0 layers 23"), "{err}");
+        assert!(err.contains("Tier 0 layers 23 exceeds maximum 16"), "{err}");
 
         let excessive_tier1 = PirLayout {
             pir_depth: 27,
-            tier0_layers: 16,
-            tier1_layers: 11,
+            tier0_layers: 11,
+            tier1_layers: 16,
         };
         let err = validate_layout("test", excessive_tier1)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("Tier 1 layers 11"), "{err}");
+        assert!(err.contains("Tier 1 layers 16 exceeds maximum 15"), "{err}");
     }
 
     #[test]
-    fn rejects_zero_tier_and_sub_minimum_ypir_layouts() {
+    fn rejects_zero_tier_and_other_unsupported_layouts() {
         let zero_tier = PirLayout {
             pir_depth: 19,
             tier0_layers: 19,
@@ -1347,7 +1315,7 @@ mod tests {
 
         let err = rejected_connect(unsafe_layout, transport.clone()).await;
 
-        assert!(err.contains("Tier 0 layers 23"), "{err}");
+        assert!(err.contains("Tier 0 layers 23 exceeds maximum 16"), "{err}");
         assert!(transport.hits.lock().unwrap().is_empty());
     }
 

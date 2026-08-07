@@ -397,13 +397,9 @@ fn validate_pir_metadata(
         pir_types::DATASET_VERSION
     );
     root.pir_layout
-        .validate_split()
+        .validate_supported()
         .map_err(anyhow::Error::msg)
         .context("invalid metadata pir_layout")?;
-    root.pir_layout
-        .validate_ypir_bounds()
-        .map_err(anyhow::Error::msg)
-        .context("metadata pir_layout fails YPIR bounds")?;
     let layout_rows = root.pir_layout.tier1_rows().map_err(anyhow::Error::msg)?;
     let layout_row_bytes = root
         .pir_layout
@@ -412,7 +408,6 @@ fn validate_pir_metadata(
     let layout_tier0_bytes = root.pir_layout.tier0_bytes().map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         root.pir_depth == root.pir_layout.pir_depth
-            && root.pir_layout.pir_depth == pir_types::PIR_DEPTH
             && root.tier1_rows == layout_rows
             && root.tier1_row_bytes == layout_row_bytes
             && root.tier0_bytes == layout_tier0_bytes,

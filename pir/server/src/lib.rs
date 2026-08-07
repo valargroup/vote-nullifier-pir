@@ -71,8 +71,7 @@ pub fn tier1_scenario() -> YpirScenario {
 
 /// Derive the Tier 1 YPIR scenario from a negotiated two-tier layout.
 pub fn tier1_scenario_for_layout(layout: PirLayout) -> Result<YpirScenario> {
-    layout.validate_split().map_err(anyhow::Error::msg)?;
-    layout.validate_ypir_bounds().map_err(anyhow::Error::msg)?;
+    layout.validate_supported().map_err(anyhow::Error::msg)?;
     Ok(YpirScenario {
         num_items: layout.tier1_rows().map_err(anyhow::Error::msg)?,
         item_size_bits: layout.tier1_item_bits().map_err(anyhow::Error::msg)?,
@@ -629,14 +628,9 @@ pub fn load_serving_state(
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
     metadata
         .pir_layout
-        .validate_split()
+        .validate_supported()
         .map_err(anyhow::Error::msg)
         .context("invalid metadata pir_layout")?;
-    metadata
-        .pir_layout
-        .validate_ypir_bounds()
-        .map_err(anyhow::Error::msg)
-        .context("metadata pir_layout fails YPIR bounds")?;
     let layout_rows = metadata
         .pir_layout
         .tier1_rows()
@@ -651,7 +645,6 @@ pub fn load_serving_state(
         .map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         metadata.pir_depth == metadata.pir_layout.pir_depth
-            && metadata.pir_layout.pir_depth == pir_types::PIR_DEPTH
             && metadata.tier1_rows == layout_rows
             && metadata.tier1_row_bytes == layout_row_bytes
             && metadata.tier0_bytes == expected_tier0_bytes,

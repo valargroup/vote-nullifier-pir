@@ -293,7 +293,7 @@ pub fn tiers_complete_for_height(
     ) else {
         return Ok(false);
     };
-    let Ok(()) = meta.pir_layout.validate_split() else {
+    let Ok(()) = meta.pir_layout.validate_supported() else {
         return Ok(false);
     };
     let Ok(layout_rows) = meta.pir_layout.tier1_rows() else {
@@ -309,7 +309,6 @@ pub fn tiers_complete_for_height(
         || meta.height != Some(expected_height)
         || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
         || meta.pir_depth != meta.pir_layout.pir_depth
-        || meta.pir_layout.pir_depth != PIR_DEPTH
         || meta.tier1_rows != layout_rows
         || meta.tier1_row_bytes != layout_row_bytes
         || meta.tier0_bytes != expected_tier0_bytes
@@ -432,7 +431,7 @@ pub fn export_all(
     export_all_with_layout(tree, output_dir, network, height, COMPILED_PIR_LAYOUT)
 }
 
-/// Export tier blobs and metadata for an arbitrary valid two-tier layout.
+/// Export tier blobs and metadata for a supported two-tier layout.
 pub fn export_all_with_layout(
     tree: &PirTree,
     output_dir: &std::path::Path,
@@ -441,18 +440,9 @@ pub fn export_all_with_layout(
     layout: PirLayout,
 ) -> Result<()> {
     layout
-        .validate_split()
+        .validate_supported()
         .map_err(anyhow::Error::msg)
         .context("invalid export layout")?;
-    layout
-        .validate_ypir_bounds()
-        .map_err(anyhow::Error::msg)
-        .context("export layout fails YPIR bounds")?;
-    anyhow::ensure!(
-        layout.pir_depth == PIR_DEPTH,
-        "export requires pir_depth {PIR_DEPTH}, got {}",
-        layout.pir_depth
-    );
 
     std::fs::create_dir_all(output_dir)?;
     // Dataset v1 used a second PIR database. Remove its artifacts so a
