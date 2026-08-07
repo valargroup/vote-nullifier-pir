@@ -2087,6 +2087,7 @@ dependencies = [
  "axum 0.7.9",
  "blake3",
  "ff",
+ "hex",
  "pasta_curves",
  "pir-types",
  "serde",

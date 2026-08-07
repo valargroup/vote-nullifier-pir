@@ -285,6 +285,16 @@ fn test_build_and_export_writes_files() {
             .unwrap()
     );
 
+    // Equal-sized Tier 0 data from another snapshot must not be accepted
+    // alongside this snapshot's metadata.
+    let mut torn_tier0 = std::fs::read(dir.join("tier0.bin")).unwrap();
+    torn_tier0[..32].copy_from_slice(&Fp::zero().to_repr());
+    std::fs::write(dir.join("tier0.bin"), torn_tier0).unwrap();
+    assert!(
+        !pir_export::tiers_complete_for_height(&dir, pir_types::ZcashNetwork::Test, 4_134_000,)
+            .unwrap()
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

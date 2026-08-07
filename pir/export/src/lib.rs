@@ -325,6 +325,23 @@ pub fn tiers_complete_for_height(
     if s0 != expected_tier0_bytes {
         return Ok(false);
     }
+    let Ok(tier0) = tier0::Tier0Data::from_layout(std::fs::read(&t0)?, meta.pir_layout) else {
+        return Ok(false);
+    };
+    let Ok(pir_root_bytes) = hex::decode(&meta.pir_root) else {
+        return Ok(false);
+    };
+    if pir_root_bytes.len() != 32 {
+        return Ok(false);
+    }
+    let mut pir_root_repr = [0u8; 32];
+    pir_root_repr.copy_from_slice(&pir_root_bytes);
+    let Some(metadata_pir_root) = Option::<Fp>::from(Fp::from_repr(pir_root_repr)) else {
+        return Ok(false);
+    };
+    if tier0.root() != metadata_pir_root {
+        return Ok(false);
+    }
     let exp1 = layout_rows * layout_row_bytes;
     if std::fs::metadata(&t1)?.len() as usize != exp1 {
         return Ok(false);

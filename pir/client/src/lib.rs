@@ -314,6 +314,21 @@ impl PirClient {
         );
         let tier0 = Tier0Data::from_layout(tier0_bytes.to_vec(), root_info.pir_layout)?;
 
+        let pir_root_bytes = hex::decode(&root_info.pir_root)?;
+        anyhow::ensure!(
+            pir_root_bytes.len() == 32,
+            "pir_root hex decoded to {} bytes, expected 32",
+            pir_root_bytes.len()
+        );
+        let mut pir_root_arr = [0u8; 32];
+        pir_root_arr.copy_from_slice(&pir_root_bytes);
+        let pir_root = Option::from(Fp::from_repr(pir_root_arr))
+            .ok_or_else(|| anyhow::anyhow!("invalid pir_root field element"))?;
+        anyhow::ensure!(
+            tier0.root() == pir_root,
+            "Tier 0 root does not match server pir_root"
+        );
+
         let circuit_root_bytes = hex::decode(&root_info.circuit_root)?;
         anyhow::ensure!(
             circuit_root_bytes.len() == 32,
@@ -1264,6 +1279,26 @@ mod tests {
         assert_eq!(transport.count_hits("/root"), 1);
         assert_eq!(transport.count_hits("/tier0"), 0);
         assert_eq!(transport.count_hits("/params/tier1"), 0);
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_tier0_root_from_different_snapshot() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        transport.update_root(|root| {
+            root["pir_root"] = serde_json::Value::String(hex::encode(Fp::from(0).to_repr()));
+        });
+        let transport = Arc::new(transport);
+
+        let err = rejected_connect(COMPILED_PIR_LAYOUT, transport.clone()).await;
+        assert!(
+            err.contains("Tier 0 root does not match server pir_root"),
+            "{err}"
+        );
+        assert_eq!(transport.count_hits("/root"), 1);
+        assert_eq!(transport.count_hits("/tier0"), 1);
         assert_eq!(transport.count_hits("/tier1/query"), 0);
     }
 
