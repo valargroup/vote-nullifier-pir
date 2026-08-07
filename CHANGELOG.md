@@ -1,4 +1,4 @@
-# Unreleased
+# v0.0.42-alpha.1
 
 - Make two-tier PIR geometry runtime-driven: clients accept any valid
   `PirLayout` that matches `/root` (and passes geometry / YPIR / circuit
