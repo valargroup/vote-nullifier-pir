@@ -1344,7 +1344,7 @@ mod tests {
         let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
         let mut transport = MockTransport::new(&tree);
         transport.update_root(|root| {
-            root["root25"] = serde_json::Value::String(hex::encode(Fp::from(0).to_repr()));
+            root["pir_root"] = serde_json::Value::String(hex::encode(Fp::from(0).to_repr()));
         });
         let transport = Arc::new(transport);
 
