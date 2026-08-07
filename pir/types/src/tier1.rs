@@ -24,9 +24,7 @@ impl<'a> Tier1Row<'a> {
 
     /// Parse a Tier 1 row for a negotiated two-tier layout.
     pub fn from_layout(data: &'a [u8], layout: PirLayout) -> anyhow::Result<Self> {
-        layout
-            .validate_split()
-            .map_err(anyhow::Error::msg)?;
+        layout.validate_split().map_err(anyhow::Error::msg)?;
         let layers = layout.tier1_layers;
         let leaves = layout.tier1_leaves().map_err(anyhow::Error::msg)?;
         let expected = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;

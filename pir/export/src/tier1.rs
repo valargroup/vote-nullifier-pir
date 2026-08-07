@@ -54,13 +54,7 @@ pub fn export_layout(
 }
 
 /// Write a single Tier 1 row for subtree index `s`.
-fn write_row(
-    ranges: &[PuncturedRange],
-    s: usize,
-    leaves: usize,
-    row_bytes: usize,
-    buf: &mut [u8],
-) {
+fn write_row(ranges: &[PuncturedRange], s: usize, leaves: usize, row_bytes: usize, buf: &mut [u8]) {
     buf.fill(0);
     let leaf_start = s * leaves;
     let mut offset = 0;
