@@ -621,11 +621,7 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
     // Dataset v1 stored a second PIR database and cache. They are not part of
     // v2 manifests, so remove them explicitly after the new metadata has been
     // installed to avoid leaving gigabytes of unreachable data on upgraded hosts.
-    for name in [
-        "tier2.bin",
-        "tier2.precompute",
-        "tier2.precompute.tmp",
-    ] {
+    for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
         let path = pir_data_dir.join(name);
         match std::fs::remove_file(&path) {
             Ok(()) => tracing::info!(legacy = %path.display(), "removed legacy Tier 2 artifact"),
@@ -659,13 +655,14 @@ mod tests {
             "zcash_network": TEST_NETWORK,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "root25": "00",
-            "root29": "00",
+            "pir_root": "00",
+            "circuits_root": "00",
             "num_ranges": 1,
             "pir_depth": 1,
             "tier0_bytes": 0,
             "tier1_rows": 0,
             "tier1_row_bytes": 0,
+            "layout": pir_types::current_layout("bootstrap-test"),
         });
         if let Some(h) = height {
             m["height"] = serde_json::Value::from(h);
@@ -724,7 +721,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("pir_root.json"),
-            format!(r#"{{"height":{TEST_HEIGHT},"root25":"00"}}"#),
+            format!(r#"{{"height":{TEST_HEIGHT},"pir_root":"00"}}"#),
         )
         .unwrap();
         assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
@@ -765,11 +762,7 @@ mod tests {
         let dest = tmp.path().join("pir-data");
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::create_dir_all(&dest).unwrap();
-        for name in [
-            "tier2.bin",
-            "tier2.precompute",
-            "tier2.precompute.tmp",
-        ] {
+        for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
             std::fs::write(dest.join(name), b"legacy").unwrap();
         }
         for name in SNAPSHOT_FILES {
@@ -781,11 +774,7 @@ mod tests {
             assert!(!staging.join(name).exists(), "{name} should be moved");
         }
         assert_eq!(SNAPSHOT_FILES.last(), Some(&"pir_root.json"));
-        for name in [
-            "tier2.bin",
-            "tier2.precompute",
-            "tier2.precompute.tmp",
-        ] {
+        for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
             assert!(!dest.join(name).exists(), "{name} should be removed");
         }
     }

@@ -12,14 +12,30 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
+pub mod layout;
+
+#[cfg(feature = "reader")]
+pub mod boundary_row;
 #[cfg(feature = "reader")]
 pub mod fp_utils;
+#[cfg(feature = "reader")]
+pub mod punctured_row;
 #[cfg(feature = "reader")]
 pub mod tier0;
 #[cfg(feature = "reader")]
 pub mod tier1;
 
+pub use layout::{
+    assert_default_constants_match_layout, current_layout, derive_snapshot_id,
+    encrypted_tier_count, layout_from_splits, path_offset_for_tier, validate_layout, LayoutBounds,
+    PirLayout, TierDescriptor, TierRowEncoding, TierTransport, LAYOUT_WIRE_VERSION,
+    LEAF_ENCODING_PUNCTURED_RANGE_K2_V1,
+};
+
 // ── Tier-layout constants ────────────────────────────────────────────────────
+
+/// Circuit authentication-path depth (Ironwood Halo2).
+pub const CIRCUIT_HEIGHT: usize = 29;
 
 /// Depth of the PIR Merkle tree.
 ///
@@ -122,13 +138,10 @@ pub struct PirMetadata {
     pub nullifier_pool: String,
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
-    /// Hex-encoded PIR-depth Merkle root (PIR tree root for K=2).
-    ///
-    /// The `root25` field name is retained as a legacy wire/API name; in
-    /// dataset version 2 it contains the depth-19 root.
-    pub root25: String,
+    /// Hex-encoded PIR-depth Merkle root (tree root before circuit padding).
+    pub pir_root: String,
     /// Hex-encoded depth-29 Merkle root (circuit-compatible).
-    pub root29: String,
+    pub circuits_root: String,
     /// Number of populated leaf ranges in the tree.
     pub num_ranges: usize,
     /// PIR tree depth.
@@ -141,6 +154,8 @@ pub struct PirMetadata {
     pub tier1_row_bytes: usize,
     /// Block height the tree was built from (if known).
     pub height: Option<u64>,
+    /// Negotiated tier layout the client must follow.
+    pub layout: PirLayout,
 }
 
 // ── Wire types ───────────────────────────────────────────────────────────────
@@ -149,7 +164,7 @@ pub struct PirMetadata {
 ///
 /// Serialized as JSON over HTTP so the client can reconstruct matching
 /// YPIR parameters locally without knowing the tier layout constants.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct YpirScenario {
     pub num_items: usize,
     pub item_size_bits: usize,
@@ -164,9 +179,9 @@ pub struct RootInfo {
     pub nullifier_pool: String,
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
-    pub root29: String,
-    /// Legacy wire name for the PIR-depth root; depth 19 in dataset version 2.
-    pub root25: String,
+    pub circuits_root: String,
+    /// Hex-encoded PIR-depth Merkle root (tree root before circuit padding).
+    pub pir_root: String,
     pub num_ranges: usize,
     pub pir_depth: usize,
     /// Number of rows in the Tier 1 PIR database.
@@ -176,6 +191,8 @@ pub struct RootInfo {
     #[serde(default)]
     pub tier1_row_bytes: usize,
     pub height: Option<u64>,
+    /// Negotiated tier layout the client must follow.
+    pub layout: PirLayout,
 }
 
 /// Health check response returned by `GET /health`.

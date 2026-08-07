@@ -356,10 +356,10 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
     let t1 = Instant::now();
     let tree = build_pir_tree(ranges.clone())?;
     eprintln!(
-        "  PIR tree built in {:.1}s (pir_root={}, root29={})",
+        "  PIR tree built in {:.1}s (pir_root={}, circuits_root={})",
         t1.elapsed().as_secs_f64(),
-        &hex::encode(tree.root25.to_repr())[..16],
-        &hex::encode(tree.root29.to_repr())[..16],
+        &hex::encode(tree.pir_root.to_repr())[..16],
+        &hex::encode(tree.circuits_root.to_repr())[..16],
     );
 
     let t2 = Instant::now();
@@ -396,7 +396,7 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
             ranges.len(),
             value,
             &tree.empty_hashes,
-            tree.root29,
+            tree.circuits_root,
         );
 
         match result {
@@ -800,13 +800,9 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
         eprintln!();
     }
 
-    eprintln!(
-        "════════════════════════════════════════════════════════════════════════════════"
-    );
+    eprintln!("════════════════════════════════════════════════════════════════════════════════");
     eprintln!("  COMPARISON TABLE (one PIR query per proof)");
-    eprintln!(
-        "════════════════════════════════════════════════════════════════════════════════"
-    );
+    eprintln!("════════════════════════════════════════════════════════════════════════════════");
     eprintln!(
         "  {:>8} {:>10} {:>10} {:>10} {:>10} {:>10}",
         "Split", "T0", "T1 DB", "T1 BW", "T1 Srvr", "T1 Init"
@@ -824,9 +820,7 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
             format_ms(r.tier1_init_s * 1000.0),
         );
     }
-    eprintln!(
-        "════════════════════════════════════════════════════════════════════════════════"
-    );
+    eprintln!("════════════════════════════════════════════════════════════════════════════════");
 
     eprintln!("\n  CLIENT DETAIL");
     eprintln!("  {}", "-".repeat(64));
@@ -948,8 +942,12 @@ fn format_ms(ms: f64) -> String {
 
 /// Export both tier data blobs from a built PIR tree.
 fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>)> {
-    let tier0_data =
-        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+    );
     eprintln!("  Tier 0: {} bytes", tier0_data.len());
 
     let mut tier1_data = Vec::new();

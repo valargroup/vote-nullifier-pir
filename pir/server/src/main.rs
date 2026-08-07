@@ -140,13 +140,14 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         zcash_network: state.serving.metadata.zcash_network,
         nullifier_pool: state.serving.metadata.nullifier_pool.clone(),
         dataset_version: state.serving.metadata.dataset_version,
-        root29: state.serving.metadata.root29.clone(),
-        root25: state.serving.metadata.root25.clone(),
+        circuits_root: state.serving.metadata.circuits_root.clone(),
+        pir_root: state.serving.metadata.pir_root.clone(),
         num_ranges: state.serving.metadata.num_ranges,
         pir_depth: state.serving.metadata.pir_depth,
         tier1_rows: state.serving.metadata.tier1_rows,
         tier1_row_bytes: state.serving.metadata.tier1_row_bytes,
         height: state.serving.metadata.height,
+        layout: state.serving.metadata.layout.clone(),
     };
     axum::Json(info)
 }

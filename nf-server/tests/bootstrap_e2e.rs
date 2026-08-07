@@ -130,14 +130,15 @@ fn stage_snapshot_with_network(
             "zcash_network": root_network,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "root25": "00",
-            "root29": "00",
+            "pir_root": "00",
+            "circuits_root": "00",
             "num_ranges": 1,
             "pir_depth": 1,
             "tier0_bytes": 0,
             "tier1_rows": 0,
             "tier1_row_bytes": 0,
             "height": height,
+            "layout": pir_types::current_layout("bootstrap-e2e"),
         }))
         .unwrap(),
     );
@@ -244,14 +245,15 @@ fn write_local_pir_root(dir: &std::path::Path, height: u64) {
             "zcash_network": TEST_NETWORK,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "root25": "00",
-            "root29": "00",
+            "pir_root": "00",
+            "circuits_root": "00",
             "num_ranges": 0,
             "pir_depth": 0,
             "tier0_bytes": 0,
             "tier1_rows": 0,
             "tier1_row_bytes": 0,
             "height": height,
+            "layout": pir_types::current_layout("bootstrap-e2e-local"),
         }))
         .unwrap(),
     )
@@ -520,7 +522,7 @@ async fn legacy_local_root_is_replaced_at_the_same_height() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(
         tmp.path().join("pir_root.json"),
-        serde_json::to_vec(&json!({ "height": h, "root25": "legacy" })).unwrap(),
+        serde_json::to_vec(&json!({ "height": h, "pir_root": "legacy" })).unwrap(),
     )
     .unwrap();
     let cfg = Config {

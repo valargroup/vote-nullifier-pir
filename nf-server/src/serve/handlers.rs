@@ -117,13 +117,14 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
         zcash_network: s.metadata.zcash_network,
         nullifier_pool: s.metadata.nullifier_pool.clone(),
         dataset_version: s.metadata.dataset_version,
-        root29: s.metadata.root29.clone(),
-        root25: s.metadata.root25.clone(),
+        circuits_root: s.metadata.circuits_root.clone(),
+        pir_root: s.metadata.pir_root.clone(),
         num_ranges: s.metadata.num_ranges,
         pir_depth: s.metadata.pir_depth,
         tier1_rows: s.metadata.tier1_rows,
         tier1_row_bytes: s.metadata.tier1_row_bytes,
         height: s.metadata.height,
+        layout: s.metadata.layout.clone(),
     };
     axum::Json(info).into_response()
 }

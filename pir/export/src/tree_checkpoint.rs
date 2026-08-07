@@ -25,8 +25,8 @@ const TREE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct PirTreeWire {
-    root25: [u8; 32],
-    root29: [u8; 32],
+    pir_root: [u8; 32],
+    circuits_root: [u8; 32],
     levels: Vec<Vec<[u8; 32]>>,
     ranges: Vec<[[u8; 32]; 3]>,
     empty_hashes: [[u8; 32]; IMT_TREE_DEPTH],
@@ -53,12 +53,12 @@ fn encode_tree(tree: &PirTree) -> Result<Vec<u8>> {
         .map(|[a, b, c]| [fp_to_bytes(*a), fp_to_bytes(*b), fp_to_bytes(*c)])
         .collect();
     let mut empty_hashes = [[0u8; 32]; IMT_TREE_DEPTH];
-    for i in 0..IMT_TREE_DEPTH {
-        empty_hashes[i] = fp_to_bytes(tree.empty_hashes[i]);
+    for (dst, &src) in empty_hashes.iter_mut().zip(tree.empty_hashes.iter()) {
+        *dst = fp_to_bytes(src);
     }
     let wire = PirTreeWire {
-        root25: fp_to_bytes(tree.root25),
-        root29: fp_to_bytes(tree.root29),
+        pir_root: fp_to_bytes(tree.pir_root),
+        circuits_root: fp_to_bytes(tree.circuits_root),
         levels,
         ranges,
         empty_hashes,
@@ -68,8 +68,8 @@ fn encode_tree(tree: &PirTree) -> Result<Vec<u8>> {
 
 fn decode_tree(bytes: &[u8]) -> Result<PirTree> {
     let wire: PirTreeWire = bincode::deserialize(bytes).context("bincode deserialize PirTree")?;
-    let root25 = fp_from_bytes(wire.root25)?;
-    let root29 = fp_from_bytes(wire.root29)?;
+    let pir_root = fp_from_bytes(wire.pir_root)?;
+    let circuits_root = fp_from_bytes(wire.circuits_root)?;
     let mut levels = Vec::with_capacity(wire.levels.len());
     for row in wire.levels {
         let mut out = Vec::with_capacity(row.len());
@@ -83,12 +83,12 @@ fn decode_tree(bytes: &[u8]) -> Result<PirTree> {
         ranges.push([fp_from_bytes(a)?, fp_from_bytes(b)?, fp_from_bytes(c)?]);
     }
     let mut empty_hashes = [Fp::zero(); IMT_TREE_DEPTH];
-    for i in 0..IMT_TREE_DEPTH {
-        empty_hashes[i] = fp_from_bytes(wire.empty_hashes[i])?;
+    for (dst, &src) in empty_hashes.iter_mut().zip(wire.empty_hashes.iter()) {
+        *dst = fp_from_bytes(src)?;
     }
     Ok(PirTree {
-        root25,
-        root29,
+        pir_root,
+        circuits_root,
         levels,
         ranges,
         empty_hashes,
@@ -217,11 +217,11 @@ mod tests {
         let ranges: Vec<PuncturedRange> = vec![[a, b, c], [c, d, e]];
         let leaves = imt_tree::commit_punctured_ranges(&ranges);
         let empty_hashes = imt_tree::precompute_empty_hashes();
-        let (root25, levels) = imt_tree::build_levels(leaves, &empty_hashes, PIR_DEPTH);
-        let root29 = crate::extend_root(root25, &empty_hashes);
+        let (pir_root, levels) = imt_tree::build_levels(leaves, &empty_hashes, PIR_DEPTH);
+        let circuits_root = crate::extend_root(pir_root, &empty_hashes);
         PirTree {
-            root25,
-            root29,
+            pir_root,
+            circuits_root,
             levels,
             ranges,
             empty_hashes,
@@ -235,7 +235,7 @@ mod tests {
         let tree = tiny_tree();
         save_tree_checkpoint(&path, &tree, 1_700_000).unwrap();
         let loaded = load_tree_checkpoint(&path, 1_700_000).unwrap().unwrap();
-        assert_eq!(loaded.root25, tree.root25);
+        assert_eq!(loaded.pir_root, tree.pir_root);
         assert_eq!(loaded.ranges.len(), tree.ranges.len());
     }
 

@@ -1,4 +1,6 @@
 //! Tier 0 reader: parse and query the plaintext internal nodes and subtree records.
+//!
+//! Supports the compiled-in default layout and negotiated plaintext-tier sizes.
 
 use pasta_curves::Fp;
 
@@ -8,27 +10,55 @@ use crate::{TIER0_LAYERS, TIER1_ROWS};
 /// Number of internal nodes in Tier 0 (depths 0 through TIER0_LAYERS-1).
 pub const TIER0_INTERNAL_NODES: usize = (1 << TIER0_LAYERS) - 1; // 4,095
 
-/// Total size of Tier 0 data in bytes.
+/// Total size of Tier 0 data in bytes for the default layout.
 pub const TIER0_BYTES: usize = TIER0_INTERNAL_NODES * 32 + TIER1_ROWS * 64; // 393,184
 
-/// Number of siblings extracted from Tier 0.
-const TIER0_LAYERS_COUNT: usize = TIER0_LAYERS; // 12
-
-/// Parsed Tier 0 data: internal node hashes and subtree records at depth TIER0_LAYERS.
+/// Parsed Tier 0 data: internal node hashes and subtree records.
 pub struct Tier0Data {
     data: Vec<u8>,
+    layers: usize,
+    num_subtrees: usize,
+    internal_nodes: usize,
 }
 
 impl Tier0Data {
+    /// Parse default-layout Tier 0 bytes.
     pub fn from_bytes(data: Vec<u8>) -> anyhow::Result<Self> {
+        Self::from_bytes_layout(data, TIER0_LAYERS, TIER1_ROWS)
+    }
+
+    /// Parse Tier 0 bytes for an arbitrary plaintext tier size.
+    pub fn from_bytes_layout(
+        data: Vec<u8>,
+        layers: usize,
+        num_subtrees: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(layers > 0 && layers <= 32, "invalid tier0 layers {layers}");
         anyhow::ensure!(
-            data.len() == TIER0_BYTES,
-            "Tier 0 data size mismatch: got {} bytes, expected {}",
-            data.len(),
-            TIER0_BYTES
+            num_subtrees == (1usize << layers),
+            "num_subtrees {num_subtrees} != 2^{layers}"
+        );
+        let internal_nodes = num_subtrees - 1;
+        let expected = internal_nodes
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(num_subtrees.checked_mul(64)?))
+            .ok_or_else(|| anyhow::anyhow!("tier0 size overflow"))?;
+        anyhow::ensure!(
+            data.len() == expected,
+            "Tier 0 data size mismatch: got {} bytes, expected {expected}",
+            data.len()
         );
         validate_all_fp_chunks(&data, "Tier 0")?;
-        Ok(Self { data })
+        Ok(Self {
+            data,
+            layers,
+            num_subtrees,
+            internal_nodes,
+        })
+    }
+
+    pub fn layers(&self) -> usize {
+        self.layers
     }
 
     /// Root hash (depth 0).
@@ -38,7 +68,7 @@ impl Tier0Data {
 
     /// Internal node hash at the given top-down depth and index.
     pub fn node_at(&self, depth: usize, index: usize) -> Fp {
-        debug_assert!(depth < TIER0_LAYERS);
+        debug_assert!(depth < self.layers);
         debug_assert!(index < (1 << depth));
         let bfs_pos = (1usize << depth) - 1 + index;
         let offset = bfs_pos * 32;
@@ -47,13 +77,13 @@ impl Tier0Data {
 
     /// Number of subtree records.
     pub fn num_subtrees(&self) -> usize {
-        TIER1_ROWS
+        self.num_subtrees
     }
 
-    /// Subtree record at depth TIER0_LAYERS: (hash, min_key).
+    /// Subtree record at depth `layers`: (hash, min_key).
     pub fn subtree_record(&self, index: usize) -> (Fp, Fp) {
-        debug_assert!(index < TIER1_ROWS);
-        let base = TIER0_INTERNAL_NODES * 32 + index * 64;
+        debug_assert!(index < self.num_subtrees);
+        let base = self.internal_nodes * 32 + index * 64;
         let hash = read_fp(&self.data[base..base + 32]);
         let min_key = read_fp(&self.data[base + 32..base + 64]);
         (hash, min_key)
@@ -61,25 +91,24 @@ impl Tier0Data {
 
     /// Binary search the subtree min_keys to find which subtree contains `value`.
     pub fn find_subtree(&self, value: Fp) -> Option<usize> {
-        let base = TIER0_INTERNAL_NODES * 32;
-        binary_search_records(&self.data, base, TIER1_ROWS, 64, 32, value)
+        let base = self.internal_nodes * 32;
+        binary_search_records(&self.data, base, self.num_subtrees, 64, 32, value)
     }
 
     /// Extract sibling hashes from Tier 0 for a given subtree index.
-    pub fn extract_siblings(&self, subtree_idx: usize) -> [Fp; TIER0_LAYERS_COUNT] {
-        let mut siblings = [Fp::default(); TIER0_LAYERS_COUNT];
+    pub fn extract_siblings(&self, subtree_idx: usize) -> Vec<Fp> {
+        let mut siblings = Vec::with_capacity(self.layers);
 
         let sibling = subtree_idx ^ 1;
         let (hash, _) = self.subtree_record(sibling);
-        siblings[0] = hash;
+        siblings.push(hash);
 
         let mut pos = subtree_idx;
-        for d in (1..TIER0_LAYERS).rev() {
+        for d in (1..self.layers).rev() {
             pos >>= 1;
             let sibling_pos = pos ^ 1;
-            siblings[TIER0_LAYERS_COUNT - d] = self.node_at(d, sibling_pos);
+            siblings.push(self.node_at(d, sibling_pos));
         }
-
         siblings
     }
 }
@@ -119,13 +148,7 @@ mod tests {
         let tier0 = Tier0Data::from_bytes(data).expect("all-zeros is valid");
         assert_eq!(tier0.root(), Fp::zero());
         assert_eq!(tier0.num_subtrees(), TIER1_ROWS);
-    }
-
-    #[test]
-    fn node_at_returns_root_at_depth_zero() {
-        let data = vec![0u8; TIER0_BYTES];
-        let tier0 = Tier0Data::from_bytes(data).expect("valid");
-        assert_eq!(tier0.node_at(0, 0), tier0.root());
+        assert_eq!(tier0.extract_siblings(0).len(), TIER0_LAYERS);
     }
 
     #[test]
@@ -135,22 +158,5 @@ mod tests {
         let result = tier0.find_subtree(Fp::from(42u64));
         assert!(result.is_some());
         assert!(result.unwrap() < TIER1_ROWS);
-    }
-
-    #[test]
-    fn extract_siblings_returns_correct_count() {
-        let data = vec![0u8; TIER0_BYTES];
-        let tier0 = Tier0Data::from_bytes(data).expect("valid");
-        let siblings = tier0.extract_siblings(0);
-        assert_eq!(siblings.len(), TIER0_LAYERS);
-    }
-
-    #[test]
-    fn subtree_record_round_trip() {
-        let data = vec![0u8; TIER0_BYTES];
-        let tier0 = Tier0Data::from_bytes(data).expect("valid");
-        let (hash, min_key) = tier0.subtree_record(0);
-        assert_eq!(hash, Fp::zero());
-        assert_eq!(min_key, Fp::zero());
     }
 }

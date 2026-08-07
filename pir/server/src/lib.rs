@@ -21,7 +21,8 @@ pub mod precompute_cache;
 
 // Re-export shared types and constants so existing consumers can import from pir_server.
 pub use pir_types::{
-    HealthInfo, PirMetadata, RootInfo, YpirScenario, TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES,
+    current_layout, HealthInfo, PirMetadata, RootInfo, YpirScenario, TIER1_ITEM_BITS, TIER1_ROWS,
+    TIER1_ROW_BYTES,
 };
 
 const U64_BYTES: usize = std::mem::size_of::<u64>();
@@ -629,10 +630,17 @@ pub fn load_serving_state(
         TIER1_ROWS,
         TIER1_ROW_BYTES
     );
+    pir_types::validate_layout(&metadata.layout, &pir_types::LayoutBounds::default())
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        metadata.layout.pir_height == metadata.pir_depth,
+        "metadata.layout.pir_height {} != metadata.pir_depth {}",
+        metadata.layout.pir_height,
+        metadata.pir_depth
+    );
 
     let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
-    let expected_tier0_bytes =
-        ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
+    let expected_tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
     anyhow::ensure!(
         metadata.tier0_bytes == expected_tier0_bytes && tier0_data.len() == expected_tier0_bytes,
         "tier0.bin size mismatch: metadata reports {} bytes and file has {}; expected {}",
@@ -692,14 +700,15 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: "orchard".to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuits_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes: 0,
             tier1_rows: 0,
             tier1_row_bytes: 0,
             height: Some(1),
+            layout: current_layout("test"),
         };
         std::fs::write(
             dir.path().join("pir_root.json"),
@@ -722,14 +731,15 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Test,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuits_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes: 0,
             tier1_rows: 0,
             tier1_row_bytes: 0,
             height: Some(1),
+            layout: current_layout("test"),
         };
         std::fs::write(
             dir.path().join("pir_root.json"),
@@ -752,14 +762,15 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
             dataset_version: 1,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuits_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes: 0,
             tier1_rows: TIER1_ROWS,
             tier1_row_bytes: TIER1_ROW_BYTES,
             height: Some(1),
+            layout: current_layout("test"),
         };
         std::fs::write(
             dir.path().join("pir_root.json"),
@@ -778,20 +789,20 @@ mod tests {
     #[test]
     fn rejects_old_shaped_tier_file_before_precompute() {
         let dir = tempfile::tempdir().unwrap();
-        let tier0_bytes =
-            ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
+        let tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
         let metadata = PirMetadata {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuits_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes,
             tier1_rows: TIER1_ROWS,
             tier1_row_bytes: TIER1_ROW_BYTES,
             height: Some(1),
+            layout: current_layout("test"),
         };
         std::fs::write(
             dir.path().join("pir_root.json"),

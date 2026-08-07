@@ -8,21 +8,20 @@ use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
-use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
 use pasta_curves::Fp;
 // Re-exported so downstream crates (e.g. zcash_voting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
 pub use imt_tree::ImtProofData;
 
+mod reconstruct;
 mod transport;
 pub use transport::{Transport, TransportFuture, TransportResponse};
 
 use pir_types::tier0::Tier0Data;
-use pir_types::tier1::Tier1Row;
 use pir_types::{
-    serialize_ypir_query, RootInfo, YpirScenario, PIR_DEPTH, TIER0_LAYERS, TIER1_LEAVES,
-    TIER1_ROWS, TIER1_ROW_BYTES,
+    current_layout, encrypted_tier_count, serialize_ypir_query, validate_layout, LayoutBounds,
+    PirLayout, RootInfo, TierTransport, YpirScenario, CIRCUIT_HEIGHT, PIR_DEPTH,
 };
 
 use ypir::client::YPIRClient;
@@ -31,6 +30,7 @@ use ypir::client::YPIRClient;
 
 /// Per-tier timing breakdown for a single YPIR query, measuring each stage
 /// of the client-server round trip.
+#[derive(Clone)]
 pub struct TierTiming {
     /// Client-side YPIR query generation time.
     pub gen_ms: f64,
@@ -68,9 +68,12 @@ pub struct TierTiming {
     pub download_from_server_ms: f64,
 }
 
-/// Per-note timing breakdown for the single YPIR query.
+/// Per-note timing breakdown for encrypted YPIR queries.
 pub struct NoteTiming {
+    /// First encrypted tier timing (legacy field used by load/bench tooling).
     pub tier1: TierTiming,
+    /// Timings for every encrypted tier in layout order (includes `tier1`).
+    pub tiers: Vec<TierTiming>,
     /// Total wall-clock time for this note's proof retrieval.
     pub total_ms: f64,
 }
@@ -85,75 +88,14 @@ pub struct PirClient {
     server_url: String,
     transport: Arc<dyn Transport>,
     tier0: Tier0Data,
-    tier1_scenario: YpirScenario,
+    layout: PirLayout,
+    /// YPIR scenarios for each encrypted tier (layout ordinals 1..).
+    encrypted_scenarios: Vec<YpirScenario>,
     num_ranges: usize,
     empty_hashes: [Fp; TREE_DEPTH],
-    root29: Fp,
-}
-
-/// Return the number of populated leaves in a Tier 1 row, clamped to
-/// [`TIER1_LEAVES`]. The final row may be only partially filled when
-/// `num_ranges` is not a multiple of the row size.
-#[inline]
-fn valid_leaves_for_row(num_ranges: usize, row_idx: usize) -> usize {
-    let row_start = row_idx.saturating_mul(TIER1_LEAVES);
-    num_ranges.saturating_sub(row_start).min(TIER1_LEAVES)
-}
-
-// ── Shared tier-processing helpers ───────────────────────────────────────────
-
-/// Copy `siblings` into `path` starting at `offset`.
-#[inline]
-fn fill_path(path: &mut [Fp; TREE_DEPTH], offset: usize, siblings: &[Fp]) {
-    path[offset..offset + siblings.len()].copy_from_slice(siblings);
-}
-
-/// Locate the nullifier's subtree in Tier 0, fill its siblings into `path`,
-/// and return the subtree index `s1`.
-fn process_tier0(tier0: &Tier0Data, nullifier: Fp, path: &mut [Fp; TREE_DEPTH]) -> Result<usize> {
-    let s1 = tier0
-        .find_subtree(nullifier)
-        .context("nullifier not found in any Tier 0 subtree")?;
-    fill_path(path, PIR_DEPTH - TIER0_LAYERS, &tier0.extract_siblings(s1));
-    Ok(s1)
-}
-
-/// Parse a Tier 1 row, locate the nullifier's leaf, fill its siblings and
-/// circuit padding into `path`, and assemble the final [`ImtProofData`].
-fn process_tier1_and_build(
-    tier1_row: &[u8],
-    row_idx: usize,
-    num_ranges: usize,
-    nullifier: Fp,
-    path: &mut [Fp; TREE_DEPTH],
-    empty_hashes: &[Fp; TREE_DEPTH],
-    root29: Fp,
-) -> Result<ImtProofData> {
-    let hasher = PoseidonHasher::new();
-    let tier1 = Tier1Row::from_bytes(tier1_row)?;
-    let valid_leaves = valid_leaves_for_row(num_ranges, row_idx);
-
-    let leaf_local_idx = tier1
-        .find_leaf(nullifier, valid_leaves)
-        .context("nullifier not found in Tier 1 leaf scan")?;
-
-    fill_path(
-        path,
-        0,
-        &tier1.extract_siblings(leaf_local_idx, valid_leaves, &hasher),
-    );
-    // Pad from PIR depth (19) to circuit depth (29) with empty hashes.
-    fill_path(path, PIR_DEPTH, &empty_hashes[PIR_DEPTH..TREE_DEPTH]);
-
-    let global_leaf_idx = row_idx * TIER1_LEAVES + leaf_local_idx;
-    let (nf_lo, nf_mid, nf_hi) = tier1.leaf_record(leaf_local_idx);
-
-    Ok(ImtProofData {
-        root: root29,
-        nf_bounds: [nf_lo, nf_mid, nf_hi],
-        leaf_pos: global_leaf_idx as u32,
-        path: *path,
-    })
+    circuits_root: Fp,
+    zcash_network: pir_types::ZcashNetwork,
+    height: Option<u64>,
 }
 
 impl PirClient {
@@ -161,7 +103,8 @@ impl PirClient {
     pub async fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
-        // Download Tier 0 data, YPIR params, and root concurrently
+        // Download Tier 0 data, first-tier YPIR params, and root concurrently.
+        // Additional encrypted-tier params are fetched after layout negotiation.
         let t0 = Instant::now();
         let tier0_url = format!("{base}/tier0");
         let tier1_url = format!("{base}/params/tier1");
@@ -172,18 +115,6 @@ impl PirClient {
             transport.get(&root_url),
         )
         .map_err(|e| anyhow::anyhow!("connect fetch failed: {e}"))?;
-
-        let tier0_bytes = body_for_status(tier0_resp, "GET /tier0 failed")?;
-        log::debug!(
-            "Downloaded Tier 0: {} bytes in {:.1}s",
-            tier0_bytes.len(),
-            t0.elapsed().as_secs_f64()
-        );
-        let tier0 = Tier0Data::from_bytes(tier0_bytes.to_vec())?;
-
-        let tier1_scenario: YpirScenario =
-            serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
-                .context("parse /params/tier1 response")?;
 
         let root_info: RootInfo =
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
@@ -202,29 +133,105 @@ impl PirClient {
             root_info.pir_depth,
             PIR_DEPTH
         );
+
+        let layout = root_info.layout.clone();
+        validate_layout(&layout, &LayoutBounds::default()).map_err(anyhow::Error::msg)?;
         anyhow::ensure!(
-            root_info.tier1_rows == TIER1_ROWS
-                && root_info.tier1_row_bytes == TIER1_ROW_BYTES
-                && tier1_scenario.num_items == root_info.tier1_rows
-                && tier1_scenario.item_size_bits == root_info.tier1_row_bytes * 8,
-            "server Tier 1 shape mismatch: /root reports {}x{} bytes and /params reports {} items x {} bits; expected {}x{} bytes",
-            root_info.tier1_rows,
-            root_info.tier1_row_bytes,
-            tier1_scenario.num_items,
-            tier1_scenario.item_size_bits,
-            TIER1_ROWS,
-            TIER1_ROW_BYTES
+            layout.circuit_height == CIRCUIT_HEIGHT && layout.pir_height == root_info.pir_depth,
+            "layout heights disagree with /root"
         );
-        let root29_bytes = hex::decode(&root_info.root29)?;
+
+        let tier0_desc = &layout.tiers[0];
+        let tier0_bytes = body_for_status(tier0_resp, "GET /tier0 failed")?;
+        log::debug!(
+            "Downloaded Tier 0: {} bytes in {:.1}s (layout {} encrypted tiers)",
+            tier0_bytes.len(),
+            t0.elapsed().as_secs_f64(),
+            encrypted_tier_count(&layout)
+        );
         anyhow::ensure!(
-            root29_bytes.len() == 32,
-            "root29 hex decoded to {} bytes, expected 32",
-            root29_bytes.len()
+            tier0_bytes.len() == tier0_desc.payload_bytes,
+            "Tier 0 size {} != layout payload_bytes {}",
+            tier0_bytes.len(),
+            tier0_desc.payload_bytes
         );
-        let mut root29_arr = [0u8; 32];
-        root29_arr.copy_from_slice(&root29_bytes);
-        let root29 = Option::from(Fp::from_repr(root29_arr))
-            .ok_or_else(|| anyhow::anyhow!("invalid root29 field element"))?;
+        let tier0 = Tier0Data::from_bytes_layout(
+            tier0_bytes.to_vec(),
+            tier0_desc.layers,
+            tier0_desc.records_per_row,
+        )?;
+
+        let tier1_scenario: YpirScenario =
+            serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
+                .context("parse /params/tier1 response")?;
+
+        // Collect YPIR scenarios: prefer server /params/tierN, fall back to layout.
+        let mut encrypted_scenarios = Vec::new();
+        for (i, tier) in layout.tiers.iter().enumerate().skip(1) {
+            anyhow::ensure!(
+                matches!(tier.transport, TierTransport::YpirSimplepirV1),
+                "tier {i} must be encrypted"
+            );
+            let scenario = if i == 1 {
+                tier1_scenario.clone()
+            } else {
+                let url = format!("{base}/params/tier{i}");
+                match transport.get(&url).await {
+                    Ok(resp) if is_success(resp.status) => {
+                        serde_json::from_slice(&resp.body).context("parse extra tier params")?
+                    }
+                    _ => tier
+                        .pir
+                        .clone()
+                        .context("missing pir params for encrypted tier")?,
+                }
+            };
+            let expected = tier.pir.as_ref().context("layout missing pir params")?;
+            anyhow::ensure!(
+                scenario.num_items == expected.num_items
+                    && scenario.item_size_bits == expected.item_size_bits,
+                "tier {i} params mismatch: server {:?}, layout {:?}",
+                scenario,
+                expected
+            );
+            encrypted_scenarios.push(scenario);
+        }
+
+        // Legacy shape fields must agree with the negotiated first encrypted tier.
+        let first = &layout.tiers[1];
+        let expected_rows = first
+            .pir
+            .as_ref()
+            .map(|p| p.num_items)
+            .unwrap_or(first.logical_rows);
+        if root_info.tier1_rows != 0 {
+            anyhow::ensure!(
+                root_info.tier1_rows == expected_rows || root_info.tier1_rows == first.logical_rows,
+                "server Tier 1 rows {} disagree with layout (logical={}, ypir={})",
+                root_info.tier1_rows,
+                first.logical_rows,
+                expected_rows
+            );
+        }
+        if root_info.tier1_row_bytes != 0 {
+            anyhow::ensure!(
+                root_info.tier1_row_bytes == first.payload_bytes,
+                "server Tier 1 shape mismatch: /root reports {} row bytes; layout expects {}",
+                root_info.tier1_row_bytes,
+                first.payload_bytes
+            );
+        }
+
+        let circuits_root_bytes = hex::decode(&root_info.circuits_root)?;
+        anyhow::ensure!(
+            circuits_root_bytes.len() == 32,
+            "circuits_root hex decoded to {} bytes, expected 32",
+            circuits_root_bytes.len()
+        );
+        let mut circuits_root_arr = [0u8; 32];
+        circuits_root_arr.copy_from_slice(&circuits_root_bytes);
+        let circuits_root = Option::from(Fp::from_repr(circuits_root_arr))
+            .ok_or_else(|| anyhow::anyhow!("invalid circuits_root field element"))?;
 
         let empty_hashes = precompute_empty_hashes();
 
@@ -232,11 +239,19 @@ impl PirClient {
             server_url: base.to_string(),
             transport,
             tier0,
-            tier1_scenario,
+            layout,
+            encrypted_scenarios,
             num_ranges: root_info.num_ranges,
             empty_hashes,
-            root29,
+            circuits_root,
+            zcash_network: root_info.zcash_network,
+            height: root_info.height,
         })
+    }
+
+    /// Negotiated layout accepted at connect time.
+    pub fn layout(&self) -> &PirLayout {
+        &self.layout
     }
 
     /// Perform private Merkle path retrieval for a nullifier.
@@ -295,30 +310,142 @@ impl PirClient {
 
     /// Fetch proof and return timing breakdown.
     ///
+    /// **Error-oracle mitigation**: every advertised encrypted query is
+    /// always sent, even when an earlier stage fails — a Tier 0 lookup miss
+    /// or panic, a tier that fails to decode/process, or an out-of-range row
+    /// index all latch the error and query dummy row 0 for the remaining
+    /// tiers. The server therefore always observes the advertised request
+    /// cardinality regardless of where (or whether) reconstruction failed.
     async fn fetch_proof_inner(&self, nullifier: Fp) -> Result<(ImtProofData, NoteTiming)> {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
+        let mut early_err: Option<anyhow::Error> = None;
 
-        // Tier 0 identifies the row directly; there is no inter-query chaining.
-        let s1 = process_tier0(&self.tier0, nullifier, &mut path)?;
-        let (tier1_row, tier1_timing) = self
-            .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
-            .await?;
-        let proof = process_tier1_and_build(
-            &tier1_row,
-            s1,
+        // Tier 0 is server-supplied plaintext, and `find_subtree` failure is
+        // nullifier-dependent: a malicious server could craft boundary keys
+        // with a gap over a chosen nullifier range and use "client fetched
+        // /tier0 but sent no queries" as a range oracle. Latch the error
+        // instead of returning so every advertised encrypted query below is
+        // still sent (dummy row 0) before the error surfaces.
+        let mut row_idx = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reconstruct::process_plaintext_tier0(&self.tier0, &self.layout, nullifier, &mut path)
+        })) {
+            Ok(Ok(idx)) => idx,
+            Ok(Err(e)) => {
+                early_err = Some(e);
+                0
+            }
+            Err(panic_payload) => {
+                early_err = Some(anyhow::anyhow!(
+                    "tier0 processing panicked: {}",
+                    panic_message(&panic_payload)
+                ));
+                0
+            }
+        };
+
+        let enc_tiers: Vec<_> = self.layout.tiers.iter().enumerate().skip(1).collect();
+        anyhow::ensure!(
+            enc_tiers.len() == self.encrypted_scenarios.len(),
+            "encrypted tier/scenario count mismatch"
+        );
+
+        let mut timings: Vec<TierTiming> = Vec::with_capacity(enc_tiers.len());
+        let mut terminal_row: Option<Vec<u8>> = None;
+
+        for (enc_i, (tier_index, tier)) in enc_tiers.iter().enumerate() {
+            let scenario = &self.encrypted_scenarios[enc_i];
+            let query_idx = if early_err.is_some() || row_idx >= scenario.num_items {
+                if early_err.is_none() && row_idx >= scenario.num_items {
+                    early_err = Some(anyhow::anyhow!(
+                        "tier{} row_idx {} >= num_items {}",
+                        tier_index,
+                        row_idx,
+                        scenario.num_items
+                    ));
+                }
+                0
+            } else {
+                row_idx
+            };
+
+            let tier_name = format!("tier{tier_index}");
+            let query_result = self
+                .ypir_query(scenario, &tier_name, query_idx, tier.payload_bytes)
+                .await;
+
+            match query_result {
+                Ok((row, timing)) => {
+                    timings.push(timing);
+                    if early_err.is_some() {
+                        continue;
+                    }
+                    let is_last = enc_i + 1 == enc_tiers.len();
+                    if is_last {
+                        terminal_row = Some(row);
+                    } else {
+                        // Reconstruction runs on server-controlled row bytes;
+                        // catch panics so a hostile row cannot unwind past the
+                        // loop and suppress the remaining advertised queries.
+                        let boundary =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                reconstruct::process_boundary_tier(
+                                    &row,
+                                    &self.layout,
+                                    *tier_index,
+                                    row_idx,
+                                    nullifier,
+                                    &mut path,
+                                )
+                            }))
+                            .unwrap_or_else(|panic_payload| {
+                                Err(anyhow::anyhow!(
+                                    "tier{} boundary reconstruction panicked: {}",
+                                    tier_index,
+                                    panic_message(&panic_payload)
+                                ))
+                            });
+                        match boundary {
+                            Ok(next) => row_idx = next,
+                            Err(e) => early_err = Some(e),
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Request was attempted; do not retry this ordinal. Continue
+                    // so remaining advertised tiers still observe a query.
+                    early_err = Some(early_err.unwrap_or(e));
+                }
+            }
+        }
+
+        if let Some(err) = early_err {
+            return Err(err);
+        }
+        anyhow::ensure!(
+            !timings.is_empty(),
+            "layout must advertise at least one encrypted tier"
+        );
+        let last_row = terminal_row.context("missing terminal row")?;
+        let last_tier_index = enc_tiers.last().map(|(i, _)| *i).unwrap();
+        let proof = reconstruct::process_terminal_tier(
+            &last_row,
+            &self.layout,
+            last_tier_index,
+            row_idx,
             self.num_ranges,
             nullifier,
             &mut path,
             &self.empty_hashes,
-            self.root29,
+            self.circuits_root,
         )?;
 
         let total_ms = note_start.elapsed().as_secs_f64() * 1000.0;
         Ok((
             proof,
             NoteTiming {
-                tier1: tier1_timing,
+                tier1: timings[0].clone(),
+                tiers: timings,
                 total_ms,
             },
         ))
@@ -357,8 +484,8 @@ impl PirClient {
         // Serialize query. `query.0` is the SimplePIR query vector
         // (per-query); `query.1` is `pack_pub_params` (depends only on
         // the client's `client_seed`).
-        let upload_q_bytes = query.0.as_slice().len() * std::mem::size_of::<u64>();
-        let upload_pp_bytes = query.1.as_slice().len() * std::mem::size_of::<u64>();
+        let upload_q_bytes = std::mem::size_of_val(query.0.as_slice());
+        let upload_pp_bytes = std::mem::size_of_val(query.1.as_slice());
         let payload = serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
         let upload_bytes = payload.len();
 
@@ -403,12 +530,11 @@ impl PirClient {
             ypir_client.decode_response_simplepir(seed, &response_bytes)
         }))
         .map_err(|panic_payload| {
-            let msg = panic_payload
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| panic_payload.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown panic");
-            anyhow::anyhow!("{} response decryption panicked: {}", tier_name, msg)
+            anyhow::anyhow!(
+                "{} response decryption panicked: {}",
+                tier_name,
+                panic_message(&panic_payload)
+            )
         })?;
         let decode_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
@@ -455,6 +581,15 @@ fn fmt_opt_time(ms: Option<f64>) -> String {
         Some(v) => fmt_time(v),
         None => "  n/a ".to_string(),
     }
+}
+
+/// Extract a human-readable message from a `catch_unwind` panic payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic")
 }
 
 fn is_success(status: u16) -> bool {
@@ -577,8 +712,23 @@ impl PirClientBlocking {
     }
 
     /// The depth-29 root (PIR depth 19 padded to tree depth 29).
-    pub fn root29(&self) -> Fp {
-        self.inner.root29
+    pub fn circuits_root(&self) -> Fp {
+        self.inner.circuits_root
+    }
+
+    /// Negotiated layout accepted at connect time.
+    pub fn layout(&self) -> &PirLayout {
+        &self.inner.layout
+    }
+
+    /// Server-reported Zcash network.
+    pub fn zcash_network(&self) -> pir_types::ZcashNetwork {
+        self.inner.zcash_network
+    }
+
+    /// Server-reported snapshot height, if any.
+    pub fn height(&self) -> Option<u64> {
+        self.inner.height
     }
 }
 
@@ -594,30 +744,79 @@ pub fn fetch_proof_local(
     num_ranges: usize,
     nullifier: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
-    root29: Fp,
+    circuits_root: Fp,
 ) -> Result<ImtProofData> {
-    let mut path = [Fp::default(); TREE_DEPTH];
-    let tier0 = Tier0Data::from_bytes(tier0_data.to_vec())?;
+    let layout = current_layout("local");
+    fetch_proof_local_with_layout(
+        &layout,
+        tier0_data,
+        &[tier1_data],
+        num_ranges,
+        nullifier,
+        empty_hashes,
+        circuits_root,
+    )
+}
 
-    let s1 = process_tier0(&tier0, nullifier, &mut path)?;
-
-    // ── Tier 1: direct row lookup (no YPIR in local mode) ────────────────
-    let t1_offset = s1 * TIER1_ROW_BYTES;
+/// Local reconstruction against an arbitrary negotiated layout.
+///
+/// `encrypted_tier_dbs[i]` is the concatenated logical-row database for
+/// layout tier `i + 1` (YPIR padding rows are not required in local mode).
+pub fn fetch_proof_local_with_layout(
+    layout: &PirLayout,
+    tier0_data: &[u8],
+    encrypted_tier_dbs: &[&[u8]],
+    num_ranges: usize,
+    nullifier: Fp,
+    empty_hashes: &[Fp; TREE_DEPTH],
+    circuits_root: Fp,
+) -> Result<ImtProofData> {
+    validate_layout(layout, &LayoutBounds::default()).map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
-        t1_offset + TIER1_ROW_BYTES <= tier1_data.len(),
-        "tier1 data too short: need {} bytes at offset {}, have {}",
-        TIER1_ROW_BYTES,
-        t1_offset,
-        tier1_data.len()
+        encrypted_tier_dbs.len() + 1 == layout.tiers.len(),
+        "encrypted db count mismatch"
     );
-    process_tier1_and_build(
-        &tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES],
-        s1,
+
+    let t0 = &layout.tiers[0];
+    let tier0 = Tier0Data::from_bytes_layout(tier0_data.to_vec(), t0.layers, t0.records_per_row)?;
+    let mut path = [Fp::default(); TREE_DEPTH];
+    let mut row_idx = reconstruct::process_plaintext_tier0(&tier0, layout, nullifier, &mut path)?;
+
+    let mut selected: Vec<Vec<u8>> = Vec::with_capacity(encrypted_tier_dbs.len());
+    for (enc_i, db) in encrypted_tier_dbs.iter().enumerate() {
+        let tier_index = enc_i + 1;
+        let tier = &layout.tiers[tier_index];
+        let offset = row_idx
+            .checked_mul(tier.payload_bytes)
+            .context("row offset overflow")?;
+        anyhow::ensure!(
+            offset + tier.payload_bytes <= db.len(),
+            "tier{tier_index} data too short: need {} bytes at offset {offset}, have {}",
+            tier.payload_bytes,
+            db.len()
+        );
+        let row = db[offset..offset + tier.payload_bytes].to_vec();
+        let is_last = tier_index + 1 == layout.tiers.len();
+        if !is_last {
+            row_idx = reconstruct::process_boundary_tier(
+                &row, layout, tier_index, row_idx, nullifier, &mut path,
+            )?;
+        }
+        selected.push(row);
+    }
+
+    let last = selected.last().context("missing terminal row")?;
+    let last_index = layout.tiers.len() - 1;
+    reconstruct::process_terminal_tier(
+        last,
+        layout,
+        last_index,
+        row_idx,
         num_ranges,
         nullifier,
         &mut path,
         empty_hashes,
-        root29,
+        circuits_root,
     )
 }
 
@@ -627,6 +826,7 @@ mod tests {
     use ff::Field;
     use pasta_curves::Fp;
     use pir_export::build_ranges_with_sentinels;
+    use pir_types::{derive_snapshot_id, TIER1_ROWS, TIER1_ROW_BYTES};
 
     /// Build a tree and export both tier blobs.
     struct TestFixture {
@@ -634,7 +834,7 @@ mod tests {
         tier1_data: Vec<u8>,
         ranges: Vec<[Fp; 3]>,
         empty_hashes: [Fp; TREE_DEPTH],
-        root29: Fp,
+        circuits_root: Fp,
     }
 
     impl TestFixture {
@@ -643,7 +843,7 @@ mod tests {
             let tree = pir_export::build_pir_tree(ranges.clone()).unwrap();
 
             let tier0_data = pir_export::tier0::export(
-                &tree.root25,
+                &tree.pir_root,
                 &tree.levels,
                 &tree.ranges,
                 &tree.empty_hashes,
@@ -656,7 +856,7 @@ mod tests {
                 tier1_data,
                 ranges,
                 empty_hashes: tree.empty_hashes,
-                root29: tree.root29,
+                circuits_root: tree.circuits_root,
             }
         }
     }
@@ -677,7 +877,7 @@ mod tests {
                 fix.ranges.len(),
                 value,
                 &fix.empty_hashes,
-                fix.root29,
+                fix.circuits_root,
             )
             .expect("fetch_proof_local should succeed for a value in range");
             assert!(
@@ -700,35 +900,36 @@ mod tests {
             fix.ranges.len(),
             value,
             &fix.empty_hashes,
-            fix.root29,
+            fix.circuits_root,
         )
         .unwrap();
 
-        assert_eq!(proof.root, fix.root29);
+        assert_eq!(proof.root, fix.circuits_root);
         assert_eq!(proof.path.len(), TREE_DEPTH);
     }
 
-    // ── process_tier0 ────────────────────────────────────────────────────
+    // ── layout-driven reconstruction ─────────────────────────────────────
 
     #[test]
-    fn process_tier0_fills_correct_path_region() {
+    fn process_plaintext_tier0_fills_correct_path_region() {
         let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
         let fix = TestFixture::build(&raw_nfs);
+        let layout = current_layout("test");
         let tier0 = Tier0Data::from_bytes(fix.tier0_data).unwrap();
 
         let value = fix.ranges[0][0];
         let mut path = [Fp::default(); TREE_DEPTH];
-        let s1 = process_tier0(&tier0, value, &mut path).unwrap();
+        let s1 = reconstruct::process_plaintext_tier0(&tier0, &layout, value, &mut path).unwrap();
 
         assert!(s1 < pir_types::TIER1_ROWS);
 
-        let tier0_region = &path[PIR_DEPTH - TIER0_LAYERS..PIR_DEPTH];
+        let tier0_region = &path[PIR_DEPTH - pir_types::TIER0_LAYERS..PIR_DEPTH];
         assert!(
             tier0_region.iter().any(|&v| v != Fp::default()),
             "tier0 should write at least one non-zero sibling"
         );
 
-        let below = &path[..PIR_DEPTH - TIER0_LAYERS];
+        let below = &path[..PIR_DEPTH - pir_types::TIER0_LAYERS];
         assert!(
             below.iter().all(|&v| v == Fp::default()),
             "path below tier0 region should be untouched"
@@ -736,56 +937,81 @@ mod tests {
     }
 
     #[test]
-    fn process_tier0_handles_arbitrary_field_element() {
-        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
-        let fix = TestFixture::build(&raw_nfs);
-        let tier0 = Tier0Data::from_bytes(fix.tier0_data).unwrap();
+    fn twelve_seven_and_twelve_three_four_proofs_match() {
+        let raw_nfs: Vec<Fp> = (1u64..=80).map(|i| Fp::from(i * 997)).collect();
+        let ranges = build_ranges_with_sentinels(&raw_nfs);
+        let tree = pir_export::build_pir_tree(ranges).unwrap();
+        let one = pir_export::layout_export::export_for_splits(&tree, &[12, 7], "one").unwrap();
+        let two = pir_export::layout_export::export_for_splits(&tree, &[12, 3, 4], "two").unwrap();
+        let value = tree.ranges[0][0] + Fp::one();
 
-        // Sentinel nullifiers span the field, so every non-nullifier value
-        // falls in some gap range. Verify this doesn't panic and returns a
-        // valid subtree index.
-        let bogus = Fp::from(u64::MAX);
-        let mut path = [Fp::default(); TREE_DEPTH];
-        let s1 = process_tier0(&tier0, bogus, &mut path).unwrap();
-        assert!(s1 < pir_types::TIER1_ROWS);
-    }
-
-    #[test]
-    fn process_tier1_and_build_produces_verifiable_proof() {
-        let raw_nfs: Vec<Fp> = (1u64..=30).map(|i| Fp::from(i * 1013)).collect();
-        let fix = TestFixture::build(&raw_nfs);
-        let tier0 = Tier0Data::from_bytes(fix.tier0_data.clone()).unwrap();
-
-        let value = fix.ranges[0][0] + Fp::one();
-        let mut path = [Fp::default(); TREE_DEPTH];
-
-        let s1 = process_tier0(&tier0, value, &mut path).unwrap();
-        let t1_offset = s1 * TIER1_ROW_BYTES;
-        let proof = process_tier1_and_build(
-            &fix.tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES],
-            s1,
-            fix.ranges.len(),
+        let proof_one = fetch_proof_local_with_layout(
+            &one.layout,
+            &one.tier0,
+            &one.encrypted_tiers
+                .iter()
+                .map(|t| t.as_slice())
+                .collect::<Vec<_>>(),
+            tree.ranges.len(),
             value,
-            &mut path,
-            &fix.empty_hashes,
-            fix.root29,
+            &tree.empty_hashes,
+            tree.circuits_root,
+        )
+        .unwrap();
+        let proof_two = fetch_proof_local_with_layout(
+            &two.layout,
+            &two.tier0,
+            &two.encrypted_tiers
+                .iter()
+                .map(|t| t.as_slice())
+                .collect::<Vec<_>>(),
+            tree.ranges.len(),
+            value,
+            &tree.empty_hashes,
+            tree.circuits_root,
         )
         .unwrap();
 
-        assert!(proof.verify(value));
-        assert_eq!(proof.root, fix.root29);
+        assert!(proof_one.verify(value));
+        assert!(proof_two.verify(value));
+        assert_eq!(proof_one.root, proof_two.root);
+        assert_eq!(proof_one.nf_bounds, proof_two.nf_bounds);
+        assert_eq!(proof_one.leaf_pos, proof_two.leaf_pos);
+        assert_eq!(proof_one.path, proof_two.path);
     }
 
-    // ── valid_leaves_for_row ──────────────────────────────────────────────
+    #[test]
+    fn height_bump_keeps_same_client_layout_contract() {
+        // Two snapshots at different heights share the same negotiated split;
+        // only roots/range counts change.
+        let a = TestFixture::build(&(1u64..=20).map(|i| Fp::from(i * 3)).collect::<Vec<_>>());
+        let b = TestFixture::build(&(1u64..=40).map(|i| Fp::from(i * 5)).collect::<Vec<_>>());
+        let layout_a = current_layout("height-a");
+        let layout_b = current_layout("height-b");
+        assert_eq!(layout_a.pir_height, layout_b.pir_height);
+        assert_eq!(
+            layout_a.tiers.iter().map(|t| t.layers).collect::<Vec<_>>(),
+            layout_b.tiers.iter().map(|t| t.layers).collect::<Vec<_>>()
+        );
+        assert_ne!(a.circuits_root, b.circuits_root);
+    }
 
     #[test]
     fn valid_leaves_for_row_basic() {
-        assert_eq!(valid_leaves_for_row(TIER1_LEAVES, 0), TIER1_LEAVES);
-        assert_eq!(valid_leaves_for_row(TIER1_LEAVES + 1, 0), TIER1_LEAVES);
-        assert_eq!(valid_leaves_for_row(TIER1_LEAVES + 1, 1), 1);
-        assert_eq!(valid_leaves_for_row(0, 0), 0);
-        assert_eq!(valid_leaves_for_row(1, 0), 1);
-        assert_eq!(valid_leaves_for_row(1, 1), 0);
+        use pir_types::TIER1_LEAVES;
+        use reconstruct::valid_leaves_for_row;
+        assert_eq!(
+            valid_leaves_for_row(TIER1_LEAVES, 0, TIER1_LEAVES),
+            TIER1_LEAVES
+        );
+        assert_eq!(
+            valid_leaves_for_row(TIER1_LEAVES + 1, 0, TIER1_LEAVES),
+            TIER1_LEAVES
+        );
+        assert_eq!(valid_leaves_for_row(TIER1_LEAVES + 1, 1, TIER1_LEAVES), 1);
+        assert_eq!(valid_leaves_for_row(0, 0, TIER1_LEAVES), 0);
+        assert_eq!(valid_leaves_for_row(1, 0, TIER1_LEAVES), 1);
+        assert_eq!(valid_leaves_for_row(1, 1, TIER1_LEAVES), 0);
     }
 
     // ── fetch_proof_local error paths ─────────────────────────────────────
@@ -801,7 +1027,7 @@ mod tests {
             fix.ranges.len(),
             fix.ranges[0][0],
             &fix.empty_hashes,
-            fix.root29,
+            fix.circuits_root,
         );
         assert!(result.is_err());
     }
@@ -818,22 +1044,29 @@ mod tests {
             use pir_types::TIER1_ITEM_BITS;
 
             let tier0_data = pir_export::tier0::export(
-                &tree.root25,
+                &tree.pir_root,
                 &tree.levels,
                 &tree.ranges,
                 &tree.empty_hashes,
             );
+            let layout = current_layout(derive_snapshot_id(
+                "test",
+                None,
+                &hex::encode(tree.pir_root.to_repr()),
+                &hex::encode(tree.circuits_root.to_repr()),
+            ));
             let root_info = pir_types::RootInfo {
                 zcash_network: pir_types::ZcashNetwork::Test,
                 nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
                 dataset_version: pir_types::DATASET_VERSION,
-                root29: hex::encode(tree.root29.to_repr()),
-                root25: hex::encode(tree.root25.to_repr()),
+                circuits_root: hex::encode(tree.circuits_root.to_repr()),
+                pir_root: hex::encode(tree.pir_root.to_repr()),
                 num_ranges: tree.ranges.len(),
                 pir_depth: PIR_DEPTH,
                 tier1_rows: TIER1_ROWS,
                 tier1_row_bytes: TIER1_ROW_BYTES,
                 height: None,
+                layout,
             };
             let tier1_scenario = YpirScenario {
                 num_items: TIER1_ROWS,
@@ -922,7 +1155,10 @@ mod tests {
 
         // The mock response is deliberately corrupt; request count is the
         // property under test.
-        assert!(client.fetch_proof(tree.ranges[0][0] + Fp::one()).await.is_err());
+        assert!(client
+            .fetch_proof(tree.ranges[0][0] + Fp::one())
+            .await
+            .is_err());
         assert_eq!(transport.count_hits("/tier1/query"), 1);
         assert_eq!(
             transport
@@ -934,6 +1170,44 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn tier0_gap_forgery_still_sends_all_pir_queries() {
+        use ff::PrimeField as _;
+
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+
+        // Forge Tier 0 the way a malicious server would: raise every boundary
+        // min_key above the target nullifier so find_subtree returns None.
+        let layout = current_layout("forged");
+        let t0 = &layout.tiers[0];
+        let mut tier0_data = transport.gets.get("/tier0").unwrap().body.clone();
+        let base = (t0.records_per_row - 1) * 32;
+        let big_key = Fp::from(u64::MAX).to_repr();
+        for rec in 0..t0.records_per_row {
+            let key_off = base + rec * 64 + 32;
+            tier0_data[key_off..key_off + 32].copy_from_slice(big_key.as_ref());
+        }
+        transport.gets.insert("/tier0", response(tier0_data));
+
+        let transport = Arc::new(transport);
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .unwrap();
+
+        let err = client
+            .fetch_proof(tree.ranges[0][0] + Fp::one())
+            .await
+            .expect_err("forged tier0 must fail reconstruction");
+        assert!(
+            err.to_string().contains("Tier 0"),
+            "error should surface the tier0 lookup miss: {err}"
+        );
+        // The oracle-closing property: the encrypted query was still sent.
+        assert_eq!(transport.count_hits("/tier1/query"), 1);
     }
 
     #[tokio::test]
@@ -955,6 +1229,112 @@ mod tests {
 
         assert!(client.fetch_proofs(&values).await.is_err());
         assert_eq!(transport.count_hits("/tier1/query"), K);
+    }
+
+    #[tokio::test]
+    async fn multi_tier_layout_sends_two_pir_requests_including_after_error() {
+        use pir_types::layout_from_splits;
+
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let layout = layout_from_splits("multi", PIR_DEPTH, CIRCUIT_HEIGHT, &[12, 3, 4]).unwrap();
+        let mut transport = MockTransport::new(&tree);
+
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&transport.gets.get("/root").unwrap().body).unwrap();
+        root["layout"] = serde_json::to_value(&layout).unwrap();
+        // First encrypted tier is now 3-layer boundary with padded YPIR rows.
+        let t1 = &layout.tiers[1];
+        let t2 = &layout.tiers[2];
+        root["tier1_rows"] = serde_json::json!(t1.pir.as_ref().unwrap().num_items);
+        root["tier1_row_bytes"] = serde_json::json!(t1.payload_bytes);
+        transport
+            .gets
+            .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+        transport.gets.insert(
+            "/params/tier1",
+            response(serde_json::to_vec(t1.pir.as_ref().unwrap()).unwrap()),
+        );
+        // Keep static str keys by using leaked strings for dynamic paths...
+        // MockTransport uses &'static str keys; rebuild with owned map instead.
+        let transport = MultiTierMockTransport {
+            gets: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "/tier0".to_string(),
+                    transport.gets.remove("/tier0").unwrap(),
+                );
+                m.insert("/root".to_string(), transport.gets.remove("/root").unwrap());
+                m.insert(
+                    "/params/tier1".to_string(),
+                    response(serde_json::to_vec(t1.pir.as_ref().unwrap()).unwrap()),
+                );
+                m.insert(
+                    "/params/tier2".to_string(),
+                    response(serde_json::to_vec(t2.pir.as_ref().unwrap()).unwrap()),
+                );
+                m
+            },
+            posts: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("/tier1/query".to_string(), response(vec![0xDE; 65536]));
+                m.insert("/tier2/query".to_string(), response(vec![0xDE; 65536]));
+                m
+            },
+            hits: std::sync::Mutex::new(Vec::new()),
+        };
+        let transport = Arc::new(transport);
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .unwrap();
+        assert_eq!(encrypted_tier_count(client.layout()), 2);
+        assert!(client
+            .fetch_proof(tree.ranges[0][0] + Fp::one())
+            .await
+            .is_err());
+        assert_eq!(transport.count_hits("/tier1/query"), 1);
+        assert_eq!(transport.count_hits("/tier2/query"), 1);
+    }
+
+    struct MultiTierMockTransport {
+        gets: std::collections::HashMap<String, TransportResponse>,
+        posts: std::collections::HashMap<String, TransportResponse>,
+        hits: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl MultiTierMockTransport {
+        fn count_hits(&self, path: &str) -> usize {
+            self.hits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|hit| hit.as_str() == path)
+                .count()
+        }
+    }
+
+    impl Transport for MultiTierMockTransport {
+        fn get<'a>(&'a self, url: &'a str) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                self.gets
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("unexpected GET {path}"))
+            })
+        }
+
+        fn post<'a>(&'a self, url: &'a str, _body: Vec<u8>) -> transport::TransportFuture<'a> {
+            Box::pin(async move {
+                let path = request_path(url);
+                self.hits.lock().unwrap().push(path.to_string());
+                self.posts
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("unexpected POST {path}"))
+            })
+        }
     }
 
     #[tokio::test]
