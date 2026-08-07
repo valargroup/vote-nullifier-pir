@@ -27,6 +27,11 @@ use pir_types::{
 
 use ypir::client::YPIRClient;
 
+/// Valid row used when Tier 0 cannot safely route a nullifier. The encrypted
+/// query is still sent so a server cannot distinguish routing failures by
+/// observing whether `/tier1/query` was requested.
+const DUMMY_TIER1_ROW: usize = 0;
+
 // ── Timing breakdown ─────────────────────────────────────────────────────────
 
 /// Per-tier timing breakdown for a single YPIR query, measuring each stage
@@ -299,11 +304,31 @@ impl PirClient {
         let note_start = Instant::now();
         let mut path = [Fp::default(); TREE_DEPTH];
 
-        // Tier 0 identifies the row directly; there is no inter-query chaining.
-        let s1 = process_tier0(&self.tier0, nullifier, &mut path)?;
-        let (tier1_row, tier1_timing) = self
-            .ypir_query(&self.tier1_scenario, "tier1", s1, TIER1_ROW_BYTES)
-            .await?;
+        // A hostile Tier 0 must not be able to suppress the private request.
+        // Convert both normal errors and unwind panics into a deferred routing
+        // error, and query a fixed valid row when routing failed. Fresh YPIR
+        // randomness makes that dummy query indistinguishable from a real one.
+        let tier0_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process_tier0(&self.tier0, nullifier, &mut path)
+        }))
+        .map_err(|panic_payload| {
+            let msg = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            anyhow::anyhow!("Tier 0 processing panicked: {msg}")
+        })
+        .and_then(|result| result);
+        let query_row = tier0_result.as_ref().copied().unwrap_or(DUMMY_TIER1_ROW);
+
+        // Await the Tier 1 attempt before propagating the deferred Tier 0
+        // failure, preserving one request attempt per input nullifier.
+        let tier1_result = self
+            .ypir_query(&self.tier1_scenario, "tier1", query_row, TIER1_ROW_BYTES)
+            .await;
+        let s1 = tier0_result?;
+        let (tier1_row, tier1_timing) = tier1_result?;
         let proof = process_tier1_and_build(
             &tier1_row,
             s1,
@@ -937,6 +962,38 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn tier0_routing_failure_still_sends_one_pir_request_per_nullifier() {
+        const K: usize = 5;
+
+        let raw_nfs: Vec<Fp> = (1u64..=20).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+
+        // Set every subtree minimum above each queried value. The metadata is
+        // structurally valid, but every local Tier 0 lookup returns None.
+        let tier0 = &mut transport.gets.get_mut("/tier0").unwrap().body;
+        let records_base = pir_types::tier0::TIER0_INTERNAL_NODES * 32;
+        let threshold = Fp::from(1_000_000u64).to_repr();
+        for row in 0..TIER1_ROWS {
+            let min_key_offset = records_base + row * 64 + 32;
+            tier0[min_key_offset..min_key_offset + 32].copy_from_slice(&threshold);
+        }
+
+        let transport = Arc::new(transport);
+        let client = PirClient::with_transport("https://pir.example", transport.clone())
+            .await
+            .unwrap();
+        let values: Vec<Fp> = (1u64..=K as u64).map(Fp::from).collect();
+
+        let err = client.fetch_proofs(&values).await.unwrap_err().to_string();
+        assert!(
+            err.contains("nullifier not found in any Tier 0 subtree"),
+            "{err}"
+        );
+        assert_eq!(transport.count_hits("/tier1/query"), K);
     }
 
     #[tokio::test]

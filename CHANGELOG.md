@@ -1,5 +1,8 @@
 # Unreleased
 
+- Always issue a Tier 1 PIR request when Tier 0 routing fails or panics,
+  preventing malicious routing metadata from leaking nullifier ranks through
+  request counts.
 - Add held stable releases and a verified manual promotion path so coordinated
   PIR upgrades can publish tag-scoped artifacts without changing installer
   aliases early, then promote every alias without permitting a stale rollback.
