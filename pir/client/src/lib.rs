@@ -145,16 +145,29 @@ fn process_tier0(
 
 /// Parse a Tier 1 row, locate the nullifier's leaf, fill its siblings and
 /// circuit padding into `path`, and assemble the final [`ImtProofData`].
-fn process_tier1_and_build(
-    tier1_row: &[u8],
+struct Tier1ProofInput<'a> {
+    tier1_row: &'a [u8],
     layout: PirLayout,
     row_idx: usize,
     num_ranges: usize,
     nullifier: Fp,
-    path: &mut [Fp; TREE_DEPTH],
-    empty_hashes: &[Fp; TREE_DEPTH],
+    empty_hashes: &'a [Fp; TREE_DEPTH],
     circuit_root: Fp,
+}
+
+fn process_tier1_and_build(
+    input: Tier1ProofInput<'_>,
+    path: &mut [Fp; TREE_DEPTH],
 ) -> Result<ImtProofData> {
+    let Tier1ProofInput {
+        tier1_row,
+        layout,
+        row_idx,
+        num_ranges,
+        nullifier,
+        empty_hashes,
+        circuit_root,
+    } = input;
     let hasher = PoseidonHasher::new();
     let tier1 = Tier1Row::from_layout(tier1_row, layout)?;
     let leaves = layout.tier1_leaves().map_err(anyhow::Error::msg)?;
@@ -451,14 +464,16 @@ impl PirClient {
         let s1 = tier0_result?;
         let (tier1_row, tier1_timing) = tier1_result?;
         let proof = process_tier1_and_build(
-            &tier1_row,
-            self.layout,
-            s1,
-            self.num_ranges,
-            nullifier,
+            Tier1ProofInput {
+                tier1_row: &tier1_row,
+                layout: self.layout,
+                row_idx: s1,
+                num_ranges: self.num_ranges,
+                nullifier,
+                empty_hashes: &self.empty_hashes,
+                circuit_root: self.circuit_root,
+            },
             &mut path,
-            &self.empty_hashes,
-            self.circuit_root,
         )?;
 
         let total_ms = note_start.elapsed().as_secs_f64() * 1000.0;
@@ -794,14 +809,16 @@ pub fn fetch_proof_local_layout(
         tier1_data.len()
     );
     process_tier1_and_build(
-        &tier1_data[t1_offset..t1_end],
-        layout,
-        s1,
-        num_ranges,
-        nullifier,
+        Tier1ProofInput {
+            tier1_row: &tier1_data[t1_offset..t1_end],
+            layout,
+            row_idx: s1,
+            num_ranges,
+            nullifier,
+            empty_hashes,
+            circuit_root,
+        },
         &mut path,
-        empty_hashes,
-        circuit_root,
     )
 }
 
@@ -946,14 +963,16 @@ mod tests {
         let s1 = process_tier0(&tier0, fix.layout, value, &mut path).unwrap();
         let t1_offset = s1 * row_bytes;
         let proof = process_tier1_and_build(
-            &fix.tier1_data[t1_offset..t1_offset + row_bytes],
-            fix.layout,
-            s1,
-            fix.ranges.len(),
-            value,
+            Tier1ProofInput {
+                tier1_row: &fix.tier1_data[t1_offset..t1_offset + row_bytes],
+                layout: fix.layout,
+                row_idx: s1,
+                num_ranges: fix.ranges.len(),
+                nullifier: value,
+                empty_hashes: &fix.empty_hashes,
+                circuit_root: fix.circuit_root,
+            },
             &mut path,
-            &fix.empty_hashes,
-            fix.circuit_root,
         )
         .unwrap();
 
