@@ -21,11 +21,20 @@ pub use transport::{Transport, TransportFuture, TransportResponse};
 
 use pir_types::tier0::Tier0Data;
 use pir_types::tier1::Tier1Row;
-use pir_types::{
-    serialize_ypir_query, RootInfo, YpirScenario, YPIR_MIN_ITEM_BITS, YPIR_MIN_ROWS,
-};
+use pir_types::{serialize_ypir_query, RootInfo, YpirScenario, YPIR_MIN_ITEM_BITS, YPIR_MIN_ROWS};
 
 use ypir::client::YPIRClient;
+
+/// Largest supported public-tier depth.
+///
+/// This bounds the Tier 0 download and allocation to less than 6 MiB.
+pub const MAX_TIER0_LAYERS: usize = 16;
+
+/// Largest supported privately queried subtree depth.
+///
+/// This bounds a Tier 1 row to 96 KiB and limits YPIR's per-item parameter
+/// expansion while leaving two layers of headroom above the production layout.
+pub const MAX_TIER1_LAYERS: usize = 10;
 
 // ── Timing breakdown ─────────────────────────────────────────────────────────
 
@@ -186,6 +195,18 @@ fn validate_layout(label: &str, layout: PirLayout) -> Result<()> {
         layout.pir_depth,
         TREE_DEPTH
     );
+    anyhow::ensure!(
+        layout.tier0_layers <= MAX_TIER0_LAYERS,
+        "{label} PIR layout Tier 0 layers {} exceeds client maximum {}",
+        layout.tier0_layers,
+        MAX_TIER0_LAYERS
+    );
+    anyhow::ensure!(
+        layout.tier1_layers <= MAX_TIER1_LAYERS,
+        "{label} PIR layout Tier 1 layers {} exceeds client maximum {}",
+        layout.tier1_layers,
+        MAX_TIER1_LAYERS
+    );
     layout
         .validate_ypir_bounds()
         .map_err(|e| anyhow::anyhow!("{label} {e}"))?;
@@ -206,24 +227,22 @@ impl PirClient {
         expected_layout: PirLayout,
         transport: Arc<dyn Transport>,
     ) -> Result<Self> {
+        // Validate caller-controlled configuration before it can commit the
+        // client to any network download or YPIR parameter generation.
+        validate_layout("expected", expected_layout)?;
+
         let base = server_url.trim_end_matches('/');
 
-        // Download Tier 0 data, YPIR params, and root concurrently
+        // Validate the small root response before downloading layout-sized
+        // Tier 0 data or YPIR parameters.
         let t0 = Instant::now();
         let tier0_url = format!("{base}/tier0");
         let tier1_url = format!("{base}/params/tier1");
         let root_url = format!("{base}/root");
-        let (tier0_resp, tier1_resp, root_resp) = tokio::try_join!(
-            transport.get(&tier0_url),
-            transport.get(&tier1_url),
-            transport.get(&root_url),
-        )
-        .map_err(|e| anyhow::anyhow!("connect fetch failed: {e}"))?;
-
-        let tier1_scenario: YpirScenario =
-            serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
-                .context("parse /params/tier1 response")?;
-
+        let root_resp = transport
+            .get(&root_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect root fetch failed: {e}"))?;
         let root_info: RootInfo =
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
                 .context("parse /root response")?;
@@ -235,7 +254,6 @@ impl PirClient {
             pir_types::NULLIFIER_POOL,
             pir_types::DATASET_VERSION
         );
-        validate_layout("expected", expected_layout)?;
         validate_layout("server", root_info.pir_layout)?;
         anyhow::ensure!(
             expected_layout == root_info.pir_layout,
@@ -250,8 +268,14 @@ impl PirClient {
             root_info.pir_layout.pir_depth
         );
 
-        let (layout_rows, _layout_leaves, layout_row_bytes) =
-            tier1_geometry(root_info.pir_layout)?;
+        let (tier0_resp, tier1_resp) =
+            tokio::try_join!(transport.get(&tier0_url), transport.get(&tier1_url))
+                .map_err(|e| anyhow::anyhow!("connect data fetch failed: {e}"))?;
+        let tier1_scenario: YpirScenario =
+            serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
+                .context("parse /params/tier1 response")?;
+
+        let (layout_rows, _layout_leaves, layout_row_bytes) = tier1_geometry(root_info.pir_layout)?;
         let scenario_item_bits = root_info
             .tier1_row_bytes
             .checked_mul(8)
@@ -379,12 +403,7 @@ impl PirClient {
         // Tier 0 identifies the row directly; there is no inter-query chaining.
         let s1 = process_tier0(&self.tier0, self.layout, nullifier, &mut path)?;
         let (tier1_row, tier1_timing) = self
-            .ypir_query(
-                &self.tier1_scenario,
-                "tier1",
-                s1,
-                self.tier1_row_bytes,
-            )
+            .ypir_query(&self.tier1_scenario, "tier1", s1, self.tier1_row_bytes)
             .await?;
         let proof = process_tier1_and_build(
             &tier1_row,
@@ -1158,6 +1177,77 @@ mod tests {
         assert!(err.contains("exceeds circuit depth"), "{err}");
     }
 
+    #[test]
+    fn rejects_layouts_exceeding_client_resource_bounds() {
+        let excessive_tier0 = PirLayout {
+            pir_depth: 29,
+            tier0_layers: 23,
+            tier1_layers: 6,
+        };
+        let err = validate_layout("test", excessive_tier0)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Tier 0 layers 23"), "{err}");
+
+        let excessive_tier1 = PirLayout {
+            pir_depth: 27,
+            tier0_layers: 16,
+            tier1_layers: 11,
+        };
+        let err = validate_layout("test", excessive_tier1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Tier 1 layers 11"), "{err}");
+    }
+
+    #[test]
+    fn rejects_zero_tier_and_sub_minimum_ypir_layouts() {
+        let zero_tier = PirLayout {
+            pir_depth: 19,
+            tier0_layers: 19,
+            tier1_layers: 0,
+        };
+        let err = validate_layout("test", zero_tier).unwrap_err().to_string();
+        assert!(err.contains("tiers must be non-zero"), "{err}");
+
+        let too_few_rows = PirLayout {
+            pir_depth: 19,
+            tier0_layers: 10,
+            tier1_layers: 9,
+        };
+        let err = validate_layout("test", too_few_rows)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("below YPIR minimum"), "{err}");
+
+        let too_few_item_bits = PirLayout {
+            pir_depth: 18,
+            tier0_layers: 13,
+            tier1_layers: 5,
+        };
+        let err = validate_layout("test", too_few_item_bits)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("below YPIR minimum"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_unsafe_config_layout_before_network_io() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let transport = Arc::new(MockTransport::new(&tree));
+        let unsafe_layout = PirLayout {
+            pir_depth: 29,
+            tier0_layers: 23,
+            tier1_layers: 6,
+        };
+
+        let err = rejected_connect(unsafe_layout, transport.clone()).await;
+
+        assert!(err.contains("Tier 0 layers 23"), "{err}");
+        assert!(transport.hits.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn rejects_missing_layout_metadata_without_query() {
         let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
@@ -1241,9 +1331,10 @@ mod tests {
                 tier1_layers: t1,
             };
             let transport = Arc::new(MockTransport::new_layout(&tree, layout));
-            let client = PirClient::with_transport("https://pir.example", layout, transport.clone())
-                .await
-                .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
+            let client =
+                PirClient::with_transport("https://pir.example", layout, transport.clone())
+                    .await
+                    .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
             assert_eq!(client.layout, layout);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
