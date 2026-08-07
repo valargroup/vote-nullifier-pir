@@ -53,8 +53,8 @@ fn encode_tree(tree: &PirTree) -> Result<Vec<u8>> {
         .map(|[a, b, c]| [fp_to_bytes(*a), fp_to_bytes(*b), fp_to_bytes(*c)])
         .collect();
     let mut empty_hashes = [[0u8; 32]; IMT_TREE_DEPTH];
-    for i in 0..IMT_TREE_DEPTH {
-        empty_hashes[i] = fp_to_bytes(tree.empty_hashes[i]);
+    for (encoded, empty_hash) in empty_hashes.iter_mut().zip(tree.empty_hashes) {
+        *encoded = fp_to_bytes(empty_hash);
     }
     let wire = PirTreeWire {
         root25: fp_to_bytes(tree.root25),
@@ -83,8 +83,8 @@ fn decode_tree(bytes: &[u8]) -> Result<PirTree> {
         ranges.push([fp_from_bytes(a)?, fp_from_bytes(b)?, fp_from_bytes(c)?]);
     }
     let mut empty_hashes = [Fp::zero(); IMT_TREE_DEPTH];
-    for i in 0..IMT_TREE_DEPTH {
-        empty_hashes[i] = fp_from_bytes(wire.empty_hashes[i])?;
+    for (empty_hash, encoded) in empty_hashes.iter_mut().zip(wire.empty_hashes) {
+        *empty_hash = fp_from_bytes(encoded)?;
     }
     Ok(PirTree {
         root25,

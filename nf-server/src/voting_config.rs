@@ -301,8 +301,7 @@ mod tests {
         let err =
             fetch_voting_snapshot_height(&format!("{base}/static.json"), Duration::from_secs(5))
                 .await
-                .err()
-                .expect("expected error");
+                .expect_err("expected error");
         let s = format!("{err:#}");
         assert!(
             s.contains("empty dynamic_config_url"),
@@ -328,8 +327,7 @@ mod tests {
         let err =
             fetch_voting_snapshot_height(&format!("{base}/static.json"), Duration::from_secs(5))
                 .await
-                .err()
-                .expect("expected error");
+                .expect_err("expected error");
         let s = format!("{err:#}");
         assert!(s.contains("no vote_servers"), "unexpected error: {s}");
     }

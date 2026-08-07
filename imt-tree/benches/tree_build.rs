@@ -2,7 +2,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use ff::Field;
 use pasta_curves::Fp;
 
-use imt_tree::tree::{build_levels, build_punctured_ranges, commit_punctured_ranges, precompute_empty_hashes, TREE_DEPTH};
+use imt_tree::tree::{
+    build_levels, build_punctured_ranges, commit_punctured_ranges, precompute_empty_hashes,
+    TREE_DEPTH,
+};
 
 fn bench_punctured_tree_build(c: &mut Criterion) {
     let mut rng = rand::thread_rng();
@@ -14,7 +17,7 @@ fn bench_punctured_tree_build(c: &mut Criterion) {
     nfs.extend(extra);
     nfs.sort();
     nfs.dedup();
-    if nfs.len() % 2 == 0 {
+    if nfs.len().is_multiple_of(2) {
         nfs.insert(1, Fp::one());
     }
 

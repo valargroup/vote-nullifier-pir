@@ -430,7 +430,7 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
         .into_iter()
         .map(|(class, count)| ErrorClassCount { class, count })
         .collect();
-    error_class_vec.sort_by(|a, b| b.count.cmp(&a.count));
+    error_class_vec.sort_by_key(|entry| std::cmp::Reverse(entry.count));
 
     let summary = BenchSummary {
         label,

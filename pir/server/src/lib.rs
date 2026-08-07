@@ -631,8 +631,7 @@ pub fn load_serving_state(
     );
 
     let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
-    let expected_tier0_bytes =
-        ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
+    let expected_tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
     anyhow::ensure!(
         metadata.tier0_bytes == expected_tier0_bytes && tier0_data.len() == expected_tier0_bytes,
         "tier0.bin size mismatch: metadata reports {} bytes and file has {}; expected {}",
@@ -778,8 +777,7 @@ mod tests {
     #[test]
     fn rejects_old_shaped_tier_file_before_precompute() {
         let dir = tempfile::tempdir().unwrap();
-        let tier0_bytes =
-            ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
+        let tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
         let metadata = PirMetadata {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),

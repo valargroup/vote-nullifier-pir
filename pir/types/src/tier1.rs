@@ -82,8 +82,8 @@ impl<'a> Tier1Row<'a> {
 
         let mut siblings = [Fp::default(); TIER1_LAYERS];
         let mut pos = leaf_idx;
-        for level in 0..TIER1_LAYERS {
-            siblings[level] = current_level[pos ^ 1];
+        for (level, sibling) in siblings.iter_mut().enumerate() {
+            *sibling = current_level[pos ^ 1];
             if level < TIER1_LAYERS - 1 {
                 let next_len = current_level.len() / 2;
                 let mut next_level = Vec::with_capacity(next_len);

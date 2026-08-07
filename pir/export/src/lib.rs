@@ -215,7 +215,7 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
     // K=2 requires an odd number of sorted nullifiers. If even, insert 2
     // right after sentinel 0. A real nullifier at exactly 2 has probability
     // ~2^{-254}, so this slot is effectively always free.
-    if nfs.len() % 2 == 0 {
+    if nfs.len().is_multiple_of(2) {
         debug_assert_eq!(nfs[0], Fp::zero(), "sentinel 0 must be first");
         nfs.insert(1, Fp::from(2u64));
     }
@@ -304,8 +304,7 @@ pub fn tiers_complete_for_height(
         return Ok(false);
     }
     let s0 = std::fs::metadata(&t0)?.len() as usize;
-    let expected_tier0_bytes =
-        ((1usize << TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
+    let expected_tier0_bytes = ((1usize << TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
     if s0 != expected_tier0_bytes || meta.tier0_bytes != expected_tier0_bytes {
         return Ok(false);
     }
@@ -473,7 +472,7 @@ pub fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<PuncturedRange> {
     all_nfs.extend_from_slice(raw_nfs);
     all_nfs.sort();
     all_nfs.dedup();
-    if all_nfs.len() % 2 == 0 {
+    if all_nfs.len().is_multiple_of(2) {
         debug_assert_eq!(all_nfs[0], Fp::zero(), "sentinel 0 must be first");
         all_nfs.insert(1, Fp::from(2u64));
     }

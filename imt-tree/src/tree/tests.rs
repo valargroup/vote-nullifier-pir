@@ -53,8 +53,14 @@ fn test_hash3_equivalence() {
         hasher.hash3(Fp::zero(), Fp::zero(), Fp::zero()),
         canonical(Fp::zero(), Fp::zero(), Fp::zero()),
     );
-    assert_eq!(hasher.hash3(fp(1), fp(2), fp(3)), canonical(fp(1), fp(2), fp(3)));
-    assert_eq!(hasher.hash3(fp(42), fp(0), fp(99)), canonical(fp(42), fp(0), fp(99)));
+    assert_eq!(
+        hasher.hash3(fp(1), fp(2), fp(3)),
+        canonical(fp(1), fp(2), fp(3))
+    );
+    assert_eq!(
+        hasher.hash3(fp(42), fp(0), fp(99)),
+        canonical(fp(42), fp(0), fp(99))
+    );
 
     let a = fp(0xDEAD_BEEF);
     let b = fp(0xCAFE_BABE);
@@ -88,7 +94,10 @@ fn test_hash3_frozen_vectors() {
 
     // (0xDEAD_BEEF, 0xCAFE_BABE, p-1)
     let h = hasher.hash3(fp(0xDEAD_BEEF), fp(0xCAFE_BABE), Fp::one().neg());
-    assert_eq!(h, canonical(fp(0xDEAD_BEEF), fp(0xCAFE_BABE), Fp::one().neg()));
+    assert_eq!(
+        h,
+        canonical(fp(0xDEAD_BEEF), fp(0xCAFE_BABE), Fp::one().neg())
+    );
     assert_eq!(h, from_hex(&hex::encode(h.to_repr())));
 
     // (42, 0, 99)
@@ -169,7 +178,8 @@ fn test_build_levels_consistency() {
         for j in 0..pairs {
             let expected = hasher.hash(prev[j * 2], prev[j * 2 + 1]);
             assert_eq!(
-                next[j], expected,
+                next[j],
+                expected,
                 "level {} node {} does not match hash of level {} children",
                 i + 1,
                 j,
@@ -253,7 +263,8 @@ fn test_punctured_ranges_cover_all_gaps() {
     // Every non-nullifier value between nf[0]+1 and nf[last]-1 should be found.
     let nfs = vec![fp(0), fp(10), fp(20), fp(30), fp(40)];
     let ranges = build_punctured_ranges(&nfs);
-    let nullifier_set: std::collections::HashSet<u64> = vec![0, 10, 20, 30, 40].into_iter().collect();
+    let nullifier_set: std::collections::HashSet<u64> =
+        vec![0, 10, 20, 30, 40].into_iter().collect();
 
     for v in 1u64..40 {
         if nullifier_set.contains(&v) {
@@ -344,11 +355,11 @@ fn test_punctured_proof_real_tree_e2e() {
 
     // Test values at different leaf positions
     let test_cases: Vec<(Fp, usize)> = vec![
-        (fp(50), 0),   // in range[0] = [0, 100, 200]
-        (fp(150), 0),  // also range[0]
-        (fp(250), 1),  // in range[1] = [200, 300, 400]
-        (fp(450), 2),  // in range[2] = [400, 500, 600]
-        (fp(750), 3),  // in range[3] = [600, 700, 800]
+        (fp(50), 0),  // in range[0] = [0, 100, 200]
+        (fp(150), 0), // also range[0]
+        (fp(250), 1), // in range[1] = [200, 300, 400]
+        (fp(450), 2), // in range[2] = [400, 500, 600]
+        (fp(750), 3), // in range[3] = [600, 700, 800]
     ];
 
     for (value, expected_idx) in test_cases {
