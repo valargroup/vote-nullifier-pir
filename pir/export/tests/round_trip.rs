@@ -166,6 +166,70 @@ fn test_pir_proof_verifies_independently() {
     }
 }
 
+#[test]
+fn test_pir_proofs_across_all_populated_tier1_rows() {
+    // Approximate the production dataset size with deterministic, well-spaced
+    // nullifiers. This produces more than 100 Tier 1 rows and ensures that the
+    // local-to-global leaf index conversion is exercised with non-zero rows.
+    let raw_nfs: Vec<Fp> = (1u64..=31_000).map(|i| Fp::from(i * 1_000)).collect();
+    let ranges = build_ranges_with_sentinels(&raw_nfs);
+    let tree = build_pir_tree(ranges.clone()).unwrap();
+
+    let tier0_data =
+        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let mut tier1_data = Vec::new();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_data).unwrap();
+
+    for (row_idx, row) in ranges.chunks(TIER1_LEAVES).enumerate() {
+        let mut local_indices = vec![0, 1, row.len() - 1];
+        local_indices.sort_unstable();
+        local_indices.dedup();
+
+        for local_idx in local_indices {
+            let expected_idx = row_idx * TIER1_LEAVES + local_idx;
+            let expected_bounds = ranges[expected_idx];
+            let value = expected_bounds[0] + Fp::one();
+            let proof = construct_proof(
+                &tier0_data,
+                &tier1_data,
+                ranges.len(),
+                value,
+                &tree.empty_hashes,
+                tree.root29,
+            )
+            .unwrap_or_else(|| {
+                panic!("proof construction failed for row {row_idx}, local leaf {local_idx}")
+            });
+
+            assert!(
+                proof.verify(value),
+                "proof failed for row {row_idx}, local leaf {local_idx}"
+            );
+            assert_eq!(proof.root, tree.root29);
+            assert_eq!(proof.leaf_pos as usize, expected_idx);
+            assert_eq!(proof.nf_bounds, expected_bounds);
+        }
+    }
+
+    // The first row probe covers the lower endpoint at value 1. Also query
+    // p - 2 to cover the opposite end of the final punctured range.
+    let value = Fp::from(2u64).neg();
+    let expected_idx = ranges.len() - 1;
+    let proof = construct_proof(
+        &tier0_data,
+        &tier1_data,
+        ranges.len(),
+        value,
+        &tree.empty_hashes,
+        tree.root29,
+    )
+    .expect("proof construction failed near the field maximum");
+    assert!(proof.verify(value));
+    assert_eq!(proof.root, tree.root29);
+    assert_eq!(proof.leaf_pos as usize, expected_idx);
+    assert_eq!(proof.nf_bounds, ranges[expected_idx]);
+}
+
 /// Test the `build_and_export` convenience function (used by the serve rebuild path).
 ///
 /// This exercises the full pipeline: sort, sentinel injection, tree build, and
