@@ -22,7 +22,6 @@
 //! <precomputed_base_url>/snapshots/<network>/<height>/manifest.json
 //! <precomputed_base_url>/snapshots/<network>/<height>/tier0.bin
 //! <precomputed_base_url>/snapshots/<network>/<height>/tier1.bin
-//! <precomputed_base_url>/snapshots/<network>/<height>/tier2.bin
 //! <precomputed_base_url>/snapshots/<network>/<height>/pir_root.json
 //! ```
 //!
@@ -80,7 +79,7 @@ pub const PIR_SNAPSHOTS_PATH: &str = "/snapshots";
 /// must be moved into place. `pir_root.json` is intentionally last so
 /// that its presence at the canonical height implies the tier blobs are
 /// already in place.
-const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "tier2.bin", "pir_root.json"];
+const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "pir_root.json"];
 
 /// Dataset identity and height read from `pir_root.json` during bootstrap.
 #[derive(Debug, Deserialize)]
@@ -619,6 +618,25 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
             }
         }
     }
+    // Dataset v1 stored a second PIR database and cache. They are not part of
+    // v2 manifests, so remove them explicitly after the new metadata has been
+    // installed to avoid leaving gigabytes of unreachable data on upgraded hosts.
+    for name in [
+        "tier2.bin",
+        "tier2.precompute",
+        "tier2.precompute.tmp",
+    ] {
+        let path = pir_data_dir.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => tracing::info!(legacy = %path.display(), "removed legacy Tier 2 artifact"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                legacy = %path.display(),
+                error = %e,
+                "failed to remove legacy Tier 2 artifact"
+            ),
+        }
+    }
     Ok(())
 }
 
@@ -648,8 +666,6 @@ mod tests {
             "tier0_bytes": 0,
             "tier1_rows": 0,
             "tier1_row_bytes": 0,
-            "tier2_rows": 0,
-            "tier2_row_bytes": 0,
         });
         if let Some(h) = height {
             m["height"] = serde_json::Value::from(h);
@@ -748,6 +764,14 @@ mod tests {
         let staging = tmp.path().join(".bootstrap-staging");
         let dest = tmp.path().join("pir-data");
         std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        for name in [
+            "tier2.bin",
+            "tier2.precompute",
+            "tier2.precompute.tmp",
+        ] {
+            std::fs::write(dest.join(name), b"legacy").unwrap();
+        }
         for name in SNAPSHOT_FILES {
             std::fs::write(staging.join(name), name.as_bytes()).unwrap();
         }
@@ -757,6 +781,13 @@ mod tests {
             assert!(!staging.join(name).exists(), "{name} should be moved");
         }
         assert_eq!(SNAPSHOT_FILES.last(), Some(&"pir_root.json"));
+        for name in [
+            "tier2.bin",
+            "tier2.precompute",
+            "tier2.precompute.tmp",
+        ] {
+            assert!(!dest.join(name).exists(), "{name} should be removed");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -894,8 +925,7 @@ mod tests {
             "files": {
                 "tier0.bin":     { "size": 1, "sha256": "00" },
                 "tier1.bin":     { "size": 2, "sha256": "11" },
-                "tier2.bin":     { "size": 3, "sha256": "22" },
-                "pir_root.json": { "size": 4, "sha256": "33" }
+                "pir_root.json": { "size": 3, "sha256": "22" }
             }
         });
         let m: PublishedManifest = serde_json::from_value(raw).unwrap();
@@ -904,10 +934,7 @@ mod tests {
         assert_eq!(m.height, TEST_HEIGHT);
         let mut keys: Vec<&str> = m.files.keys().map(String::as_str).collect();
         keys.sort();
-        assert_eq!(
-            keys,
-            ["pir_root.json", "tier0.bin", "tier1.bin", "tier2.bin"]
-        );
+        assert_eq!(keys, ["pir_root.json", "tier0.bin", "tier1.bin"]);
     }
 
     #[test]
@@ -923,8 +950,7 @@ mod tests {
             "files": {
                 "tier0.bin":     { "size": 1, "sha256": "00" },
                 "tier1.bin":     { "size": 2, "sha256": "11" },
-                "tier2.bin":     { "size": 3, "sha256": "22" },
-                "pir_root.json": { "size": 4, "sha256": "33" },
+                "pir_root.json": { "size": 3, "sha256": "22" },
                 "nullifiers.bin": { "size": 5, "sha256": "44" },
                 "nullifiers.checkpoint": { "size": 16, "sha256": "55" },
                 "nullifiers.dataset.json": { "size": 52, "sha256": "77" },

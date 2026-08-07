@@ -47,6 +47,7 @@ fn delete_sync_artifacts(nullifier_root: &Path, tier_dir: &Path) -> Result<()> {
     for name in [
         "tier0.bin",
         "tier1.bin",
+        // Legacy v1 artifacts are removed during reset.
         "tier2.bin",
         "pir_root.json",
         // Precompute caches are derived from tier files; reset wipes them
@@ -106,7 +107,7 @@ pub struct Args {
     #[arg(long, default_value = "./pir-data", env = "SVOTE_PIR_DATA_DIR")]
     pir_data_dir: PathBuf,
 
-    /// Directory for PIR tier files (tier0.bin, tier1.bin, tier2.bin, pir_root.json).
+    /// Directory for PIR tier files (tier0.bin, tier1.bin, pir_root.json).
     /// When omitted, defaults to `--pir-data-dir`.
     #[arg(long)]
     output_dir: Option<PathBuf>,

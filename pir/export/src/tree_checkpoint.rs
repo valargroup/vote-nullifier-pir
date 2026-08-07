@@ -166,7 +166,8 @@ pub fn load_tree_checkpoint(path: &Path, expected_height: u64) -> Result<Option<
     // Light sanity: level count matches PIR depth.
     anyhow::ensure!(
         tree.levels.len() == PIR_DEPTH,
-        "checkpoint levels len {} != PIR_DEPTH {}",
+        "nullifiers.tree has {} Merkle levels but this binary requires PIR_DEPTH={}; \
+         remove the checkpoint and tier files, then re-run sync",
         tree.levels.len(),
         PIR_DEPTH
     );
@@ -196,7 +197,8 @@ pub fn save_tree_checkpoint(path: &Path, tree: &PirTree, chain_height: u64) -> R
     f.write_all(&payload)?;
     f.sync_all().context("fsync tree checkpoint tmp")?;
     drop(f);
-    fs::rename(&tmp, path).with_context(|| format!("rename tree checkpoint to {}", path.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("rename tree checkpoint to {}", path.display()))?;
     Ok(())
 }
 
@@ -243,6 +245,22 @@ mod tests {
         let path = dir.path().join("nullifiers.tree");
         save_tree_checkpoint(&path, &tiny_tree(), 1).unwrap();
         assert!(load_tree_checkpoint(&path, 2).is_err());
+    }
+
+    #[test]
+    fn wrong_pir_depth_fails_with_rebuild_guidance() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nullifiers.tree");
+        let mut tree = tiny_tree();
+        tree.levels.extend((PIR_DEPTH..25).map(|_| Vec::new()));
+        save_tree_checkpoint(&path, &tree, 1).unwrap();
+
+        let err = match load_tree_checkpoint(&path, 1) {
+            Ok(_) => panic!("wrong-depth checkpoint must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("requires PIR_DEPTH=19"), "{err}");
+        assert!(err.contains("re-run sync"), "{err}");
     }
 
     #[test]

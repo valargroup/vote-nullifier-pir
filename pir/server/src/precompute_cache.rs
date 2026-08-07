@@ -554,8 +554,6 @@ mod test {
     fn cache_path_naming() {
         let p = Path::new("/data/tier1.bin");
         assert_eq!(cache_path_for_tier(p), Path::new("/data/tier1.precompute"));
-        let p = Path::new("/data/tier2.bin");
-        assert_eq!(cache_path_for_tier(p), Path::new("/data/tier2.precompute"));
     }
 
     #[test]

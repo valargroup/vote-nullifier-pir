@@ -5,8 +5,8 @@
 //! (export, server, client, test).
 //!
 //! The default feature set is lightweight (only `serde`). Enable the `reader`
-//! feature to get tier-data parsers ([`tier0::Tier0Data`], [`tier1::Tier1Row`],
-//! [`tier2::Tier2Row`]) and Fp serialization helpers ([`fp_utils`]).
+//! feature to get tier-data parsers ([`tier0::Tier0Data`], [`tier1::Tier1Row`])
+//! and Fp serialization helpers ([`fp_utils`]).
 
 use std::{fmt, str::FromStr};
 
@@ -18,60 +18,47 @@ pub mod fp_utils;
 pub mod tier0;
 #[cfg(feature = "reader")]
 pub mod tier1;
-#[cfg(feature = "reader")]
-pub mod tier2;
 
 // ── Tier-layout constants ────────────────────────────────────────────────────
 
 /// Depth of the PIR Merkle tree.
 ///
 /// With punctured-range leaves (K=2), each leaf covers two gaps, halving the
-/// leaf count compared to K=1. Depth 25 supports 2^25 = 33,554,432 leaf slots.
-pub const PIR_DEPTH: usize = 25;
+/// leaf count compared to K=1. Depth 19 supports 2^19 = 524,288 leaf slots.
+pub const PIR_DEPTH: usize = 19;
 
-/// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 9).
-pub const TIER0_LAYERS: usize = 9;
+/// Number of layers in Tier 0 (root at depth 0 down to subtree records at depth 12).
+pub const TIER0_LAYERS: usize = 12;
 
-/// Number of layers in each Tier 1 subtree (depth 9 to depth 15).
-pub const TIER1_LAYERS: usize = 6;
+/// Number of layers in each Tier 1 subtree (depth 12 to depth 19).
+pub const TIER1_LAYERS: usize = 7;
 
-/// Number of layers in each Tier 2 subtree (depth 15 to depth 25).
-pub const TIER2_LAYERS: usize = 10;
+/// Number of Tier 1 rows (one per depth-12 subtree).
+pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 4,096
 
-/// Number of Tier 1 rows (one per depth-9 subtree).
-pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 512
-
-/// Number of Tier 2 rows (one per depth-15 subtree).
-pub const TIER2_ROWS: usize = 1 << (TIER0_LAYERS + TIER1_LAYERS); // 32,768
-
-/// Number of leaves per Tier 1 subtree (at relative depth 6 = global depth 15).
-pub const TIER1_LEAVES: usize = 1 << TIER1_LAYERS; // 64
-
-/// Number of leaves per Tier 2 subtree (at relative depth 10 = global depth 25).
-pub const TIER2_LEAVES: usize = 1 << TIER2_LAYERS; // 1,024
+/// Number of leaves per Tier 1 subtree (at relative depth 7 = global depth 19).
+pub const TIER1_LEAVES: usize = 1 << TIER1_LAYERS; // 128
 
 /// YPIR SimplePIR requires at least 2048 rows (`poly_len`). When TIER1_ROWS
-/// is smaller, the YPIR database is padded with zero rows up to this minimum.
+/// is smaller, the layout is invalid.
 pub const YPIR_MIN_ROWS: usize = 2048;
 
-/// Number of rows in the Tier 1 YPIR database (padded to YPIR minimum).
-pub const TIER1_YPIR_ROWS: usize = if TIER1_ROWS >= YPIR_MIN_ROWS { TIER1_ROWS } else { YPIR_MIN_ROWS }; // 2,048
+/// YPIR's minimum supported item size.
+pub const YPIR_MIN_ITEM_BITS: usize = 28_672;
 
-/// Byte size of each Tier 2 leaf record: 3 field elements for punctured range
+/// Byte size of each Tier 1 leaf record: 3 field elements for punctured range
 /// `[nf_lo, nf_mid, nf_hi]`.
-pub const TIER2_LEAF_BYTES: usize = 96;
+pub const TIER1_LEAF_BYTES: usize = 96;
 
-/// Byte size of one Tier 1 row: 64 × 64 (leaf records only).
-pub const TIER1_ROW_BYTES: usize = TIER1_LEAVES * 64; // 4,096
-
-/// Byte size of one Tier 2 row: 1,024 × 96 (leaf records only).
-pub const TIER2_ROW_BYTES: usize = TIER2_LEAVES * TIER2_LEAF_BYTES; // 98,304
+/// Byte size of one Tier 1 row: 128 × 96 (leaf records only).
+pub const TIER1_ROW_BYTES: usize = TIER1_LEAVES * TIER1_LEAF_BYTES; // 12,288
 
 /// Tier 1 item size in bits (for YPIR parameter setup).
 pub const TIER1_ITEM_BITS: usize = TIER1_ROW_BYTES * 8;
 
-/// Tier 2 item size in bits (for YPIR parameter setup).
-pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
+const _: () = assert!(PIR_DEPTH == TIER0_LAYERS + TIER1_LAYERS);
+const _: () = assert!(TIER1_ROWS >= YPIR_MIN_ROWS);
+const _: () = assert!(TIER1_ITEM_BITS >= YPIR_MIN_ITEM_BITS);
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
 
@@ -79,7 +66,7 @@ pub const TIER2_ITEM_BITS: usize = TIER2_ROW_BYTES * 8;
 pub const NULLIFIER_POOL: &str = "ironwood";
 
 /// Version of the nullifier dataset contract.
-pub const DATASET_VERSION: u32 = 1;
+pub const DATASET_VERSION: u32 = 2;
 
 /// Zcash network represented by a PIR dataset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,7 +122,10 @@ pub struct PirMetadata {
     pub nullifier_pool: String,
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
-    /// Hex-encoded depth-25 Merkle root (PIR tree root for K=2).
+    /// Hex-encoded PIR-depth Merkle root (PIR tree root for K=2).
+    ///
+    /// The `root25` field name is retained as a legacy wire/API name; in
+    /// dataset version 2 it contains the depth-19 root.
     pub root25: String,
     /// Hex-encoded depth-29 Merkle root (circuit-compatible).
     pub root29: String,
@@ -149,10 +139,6 @@ pub struct PirMetadata {
     pub tier1_rows: usize,
     /// Tier 1 row size in bytes.
     pub tier1_row_bytes: usize,
-    /// Number of Tier 2 rows.
-    pub tier2_rows: usize,
-    /// Tier 2 row size in bytes.
-    pub tier2_row_bytes: usize,
     /// Block height the tree was built from (if known).
     pub height: Option<u64>,
 }
@@ -179,9 +165,16 @@ pub struct RootInfo {
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
     pub root29: String,
+    /// Legacy wire name for the PIR-depth root; depth 19 in dataset version 2.
     pub root25: String,
     pub num_ranges: usize,
     pub pir_depth: usize,
+    /// Number of rows in the Tier 1 PIR database.
+    #[serde(default)]
+    pub tier1_rows: usize,
+    /// Tier 1 PIR row size in bytes.
+    #[serde(default)]
+    pub tier1_row_bytes: usize,
     pub height: Option<u64>,
 }
 
@@ -190,9 +183,7 @@ pub struct RootInfo {
 pub struct HealthInfo {
     pub status: String,
     pub tier1_rows: usize,
-    pub tier2_rows: usize,
     pub tier1_row_bytes: usize,
-    pub tier2_row_bytes: usize,
 }
 
 const U64_BYTES: usize = std::mem::size_of::<u64>();

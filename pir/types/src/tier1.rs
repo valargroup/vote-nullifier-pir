@@ -1,4 +1,4 @@
-//! Tier 1 reader: parse and query a single Tier 1 row.
+//! Tier 1 reader: parse and query a single Tier 1 row (punctured-range leaves, K=2).
 //!
 //! Each row contains TIER1_LEAVES leaf records only (no pre-computed internal
 //! nodes). The client rebuilds the subtree locally to extract siblings.
@@ -6,9 +6,9 @@
 use pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
-use crate::{TIER1_LAYERS, TIER1_LEAVES, TIER1_ROW_BYTES};
+use crate::{TIER1_LAYERS, TIER1_LEAF_BYTES, TIER1_LEAVES, TIER1_ROW_BYTES};
 
-/// Parsed Tier 1 row: TIER1_LEAVES leaf records.
+/// Parsed Tier 1 row: TIER1_LEAVES punctured-range leaf records.
 pub struct Tier1Row<'a> {
     data: &'a [u8],
 }
@@ -25,38 +25,63 @@ impl<'a> Tier1Row<'a> {
         Ok(Self { data })
     }
 
-    /// Leaf record at index i: (hash, min_key).
-    pub fn leaf_record(&self, i: usize) -> (Fp, Fp) {
+    /// Leaf record at index i: `(nf_lo, nf_mid, nf_hi)` — the three boundary
+    /// nullifiers of a punctured range.
+    pub fn leaf_record(&self, i: usize) -> (Fp, Fp, Fp) {
         debug_assert!(i < TIER1_LEAVES);
-        let base = i * 64;
-        let hash = read_fp(&self.data[base..base + 32]);
-        let min_key = read_fp(&self.data[base + 32..base + 64]);
-        (hash, min_key)
+        let base = i * TIER1_LEAF_BYTES;
+        let nf_lo = read_fp(&self.data[base..base + 32]);
+        let nf_mid = read_fp(&self.data[base + 32..base + 64]);
+        let nf_hi = read_fp(&self.data[base + 64..base + 96]);
+        (nf_lo, nf_mid, nf_hi)
     }
 
-    /// Binary search the leaf min_keys to find which sub-subtree contains `value`.
-    pub fn find_sub_subtree(&self, value: Fp) -> Option<usize> {
-        binary_search_records(self.data, 0, TIER1_LEAVES, 64, 32, value)
+    /// Find the leaf whose punctured range contains `value`.
+    ///
+    /// Binary-searches on `nf_lo`, then checks `nf_lo < value < nf_hi` and
+    /// `value != nf_mid`.
+    pub fn find_leaf(&self, value: Fp, valid_leaves: usize) -> Option<usize> {
+        debug_assert!(valid_leaves <= TIER1_LEAVES);
+        if valid_leaves == 0 {
+            return None;
+        }
+        let idx = binary_search_records(self.data, 0, valid_leaves, TIER1_LEAF_BYTES, 0, value)?;
+
+        let (nf_lo, nf_mid, nf_hi) = self.leaf_record(idx);
+        let offset = value - nf_lo;
+        let span = nf_hi - nf_lo;
+        if offset == Fp::zero() || offset >= span || value == nf_mid {
+            return None;
+        }
+        Some(idx)
     }
 
-    /// Rebuild the subtree from leaf hashes and extract sibling hashes.
+    /// Rebuild the subtree from leaf data and extract sibling hashes.
     ///
     /// The client builds the tree bottom-up from the leaf hashes to collect
     /// the TIER1_LAYERS siblings needed for the Merkle authentication path.
     pub fn extract_siblings(
         &self,
-        sub_idx: usize,
+        leaf_idx: usize,
+        valid_leaves: usize,
         hasher: &imt_tree::hasher::PoseidonHasher,
     ) -> [Fp; TIER1_LAYERS] {
+        debug_assert!(valid_leaves <= TIER1_LEAVES);
+
+        let empty_leaf = hasher.hash3(Fp::zero(), Fp::zero(), Fp::zero());
         let mut current_level: Vec<Fp> = (0..TIER1_LEAVES)
             .map(|i| {
-                let (hash, _) = self.leaf_record(i);
-                hash
+                if i < valid_leaves {
+                    let (lo, mid, hi) = self.leaf_record(i);
+                    hasher.hash3(lo, mid, hi)
+                } else {
+                    empty_leaf
+                }
             })
             .collect();
 
         let mut siblings = [Fp::default(); TIER1_LAYERS];
-        let mut pos = sub_idx;
+        let mut pos = leaf_idx;
         for level in 0..TIER1_LAYERS {
             siblings[level] = current_level[pos ^ 1];
             if level < TIER1_LAYERS - 1 {
@@ -76,6 +101,7 @@ impl<'a> Tier1Row<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fp_utils::write_fp;
     use imt_tree::hasher::PoseidonHasher;
 
     #[test]
@@ -98,69 +124,38 @@ mod tests {
     }
 
     #[test]
-    fn find_sub_subtree_on_all_zeros() {
-        let row = vec![0u8; TIER1_ROW_BYTES];
-        let tier1 = Tier1Row::from_bytes(&row).unwrap();
-        let result = tier1.find_sub_subtree(Fp::from(42u64));
-        assert!(result.is_some());
-        assert!(result.unwrap() < TIER1_LEAVES);
-    }
-
-    #[test]
     fn extract_siblings_returns_correct_count() {
         let row = vec![0u8; TIER1_ROW_BYTES];
         let tier1 = Tier1Row::from_bytes(&row).unwrap();
         let hasher = PoseidonHasher::new();
-        let siblings = tier1.extract_siblings(0, &hasher);
+        let siblings = tier1.extract_siblings(0, 0, &hasher);
         assert_eq!(siblings.len(), TIER1_LAYERS);
     }
 
     #[test]
-    fn leaf_record_round_trip_on_zeros() {
-        let row = vec![0u8; TIER1_ROW_BYTES];
-        let tier1 = Tier1Row::from_bytes(&row).unwrap();
-        let (hash, min_key) = tier1.leaf_record(0);
-        assert_eq!(hash, Fp::zero());
-        assert_eq!(min_key, Fp::zero());
-    }
-
-    #[test]
-    fn extract_siblings_correctness() {
-        use crate::fp_utils::write_fp;
-
-        let hasher = PoseidonHasher::new();
+    fn punctured_leaf_record_round_trip() {
         let mut row = vec![0u8; TIER1_ROW_BYTES];
+        let hasher = PoseidonHasher::new();
 
-        // Write distinct hash values into the first 4 leaf records
-        // (min_key fields are irrelevant for sibling extraction).
-        let leaf_hashes: Vec<Fp> = (0..TIER1_LEAVES)
-            .map(|i| Fp::from((i + 1) as u64))
-            .collect();
-        for (i, &h) in leaf_hashes.iter().enumerate() {
-            write_fp(&mut row[i * 64..], h);
-        }
+        write_fp(&mut row[0..], Fp::from(10u64));
+        write_fp(&mut row[32..], Fp::from(20u64));
+        write_fp(&mut row[64..], Fp::from(30u64));
 
         let tier1 = Tier1Row::from_bytes(&row).unwrap();
-        let siblings = tier1.extract_siblings(0, &hasher);
+        let (nf_lo, nf_mid, nf_hi) = tier1.leaf_record(0);
+        assert_eq!(nf_lo, Fp::from(10u64));
+        assert_eq!(nf_mid, Fp::from(20u64));
+        assert_eq!(nf_hi, Fp::from(30u64));
+        assert!(tier1.find_leaf(Fp::from(15u64), 1).is_some());
+        assert!(tier1.find_leaf(Fp::from(25u64), 1).is_some());
+        assert!(tier1.find_leaf(Fp::from(10u64), 1).is_none());
+        assert!(tier1.find_leaf(Fp::from(20u64), 1).is_none());
+        assert!(tier1.find_leaf(Fp::from(30u64), 1).is_none());
 
-        // Level 0 sibling: leaf at index 0 ^ 1 = 1
-        assert_eq!(siblings[0], leaf_hashes[1]);
-
-        // Level 1 sibling: parent of leaves 2,3
-        let expected_level1_sib = hasher.hash(leaf_hashes[2], leaf_hashes[3]);
-        assert_eq!(siblings[1], expected_level1_sib);
-
-        // Verify all siblings by building the tree independently
-        let mut level = leaf_hashes.clone();
-        let mut pos = 0usize;
-        for lev in 0..TIER1_LAYERS {
-            assert_eq!(siblings[lev], level[pos ^ 1]);
-            let next: Vec<Fp> = level
-                .chunks_exact(2)
-                .map(|pair| hasher.hash(pair[0], pair[1]))
-                .collect();
-            level = next;
-            pos >>= 1;
-        }
+        let siblings = tier1.extract_siblings(0, 1, &hasher);
+        assert_eq!(
+            siblings[0],
+            hasher.hash3(Fp::zero(), Fp::zero(), Fp::zero())
+        );
     }
 }

@@ -15,7 +15,7 @@ This runbook covers the operator side: standing up an `nf-server` host that answ
 There are two data-source modes the server can run in:
 
 1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
-2. **Synced** — the PIR server runs `nf-server sync`: stream Ironwood nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 3-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from compatible on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+2. **Synced** — the PIR server runs `nf-server sync`: stream Ironwood nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 12+7 two-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from compatible on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
 
 ## Quick start
 
@@ -48,18 +48,18 @@ See [Smoke test](#smoke-test) for a post-install check.
 
 ## Recommended hardware
 
-**Production target: `linux-amd64` with AVX-512, 4 vCPU, 32 GB RAM, and at least 65 GB free disk.** Other platforms build but are not recommended for serving traffic (see [Platform support](#platform-support)).
+**Production target: `linux-amd64` with AVX-512, 4 vCPU, 32 GB RAM, and at least 1 GiB free disk plus twice the measured `tier1.precompute` size.** Other platforms build but are not recommended for serving traffic (see [Platform support](#platform-support)).
 
 Why these numbers:
 
 - AVX-512 meaningfully accelerates PIR packing and query-side linear algebra; without it, queries fall back to the scalar path.
 - 4 vCPUs parallelize the matrix–vector steps that dominate query latency.
 - **Disk budget:**
-  - ~7 GB tier files (`tier0.bin` + `tier1.bin` + `tier2.bin` + `pir_root.json`)
-  - ~14 GB precompute cache (`tier1.precompute` ≈ 720 MB + `tier2.precompute` ≈ 13 GB), written by `serve` after first YPIR setup; see [Files under `SVOTE_PIR_DATA_DIR`](#files-under-svote_pir_data_dir)
-  - ~14 GB transient peak during cache rewrite (atomic `.tmp` + rename means the new cache exists alongside the old briefly)
-  - Nullifier data and working space, which grow with Ironwood usage
-  - Total ~37 GB minimum, ~65 GB recommended for headroom
+  - 48 MiB `tier1.bin` plus a 384 KiB `tier0.bin`
+  - one derived `tier1.precompute` cache, written by `serve` after first YPIR setup
+  - transient cache-rewrite space because atomic `.tmp` + rename briefly keeps old and new files
+  - nullifier data and working space, which grow with Ironwood usage
+  - 1 GiB is the baseline for tier data and snapshot staging; after the first cold boot, reserve at least twice the observed cache size in addition so an atomic cache rewrite cannot exhaust the volume
   - On synced hosts, re-check `nullifiers.bin` size before each snapshot rotation.
 
 Verify a candidate host with [`nf-server doctor`](#host-health-check-nf-server-doctor) before installing.
@@ -212,12 +212,12 @@ After install, verify end-to-end without a real client:
 ```bash
 curl -fsS http://127.0.0.1:3000/ready                                   # 200 OK
 curl -fsS http://127.0.0.1:3000/health | jq -r '.status'                # ok (starting / rebuilding / error while warming)
-curl -fsS http://127.0.0.1:3000/root   | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_depth, num_ranges}'
+curl -fsS http://127.0.0.1:3000/root   | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_depth, tier1_rows, tier1_row_bytes, num_ranges}'
 ```
 
 `GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
-Confirm `/root` reports the configured network, `nullifier_pool: "ironwood"`, and `dataset_version: 1`.
+Confirm `/root` reports the configured network, `nullifier_pool: "ironwood"`, `dataset_version: 2`, `pir_depth: 19`, `tier1_rows: 4096`, and `tier1_row_bytes: 12288`.
 Its `height` should match `snapshot_height` from the environment's published
 `pir.json` while bootstrap is enabled.
 
@@ -256,8 +256,8 @@ systemctl restart nullifier-query-server
 
 **Startup time:** roughly two phases.
 
-- **Cold (no `tier{1,2}.precompute` cache present)**: bootstrap CDN download + YPIR precomputation + cache write. Bootstrap dominates on a fresh host (~2 min for the 3 GB tier-2 download from the configured CDN region). YPIR setup is ~50 s on a 16-core Apple Silicon dev box; ~2 min on the recommended production SKU. The precompute cache is written at the end (~5 s I/O for the 13 GB tier-2 cache on SSD), enabling fast restarts thereafter.
-- **Warm (`tier{1,2}.precompute` present and valid)**: cache load only. ~10 s on Apple Silicon dev; expected sub-15 s on the production SKU. The expensive YPIR offline precomputation is skipped entirely.
+- **Cold (no `tier1.precompute` cache present)**: download the 48 MiB database, run one YPIR precomputation, and write the cache.
+- **Warm (`tier1.precompute` present and valid)**: load the cache and skip YPIR offline precomputation.
 
 Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
 
@@ -323,9 +323,13 @@ Useful flags:
 - `--invalidate-after-blocks` — force `nullifiers.tree` and tier blobs to rebuild when new blocks stream in.
 - `--max-height <H>` — stop at `H` (must be a multiple of 10). Without it, syncs to the configured network tip, capped by the active round snapshot height when bootstrap is enabled.
 
-`nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `tier2.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped when the dataset identity matches.
+`nf-server sync` runs three resumable stages: stream nullifiers from lightwalletd → build `nullifiers.tree` → write tier files (`tier0.bin`, `tier1.bin`, `pir_root.json`). Rerunning after partial failure picks up where it stopped when the dataset identity matches.
 
 Unlabeled, wrong-network, and legacy Orchard data cannot be resumed. Use a separate data directory for each network and set `SVOTE_PIR_SYNC_RESET=1` when rebuilding incompatible data.
+
+Dataset version 2 also changes the `nullifiers.dataset.json` identity. The
+first migration from version 1 requires `SVOTE_PIR_SYNC_RESET=1` and a full
+nullifier re-stream; deleting only the tree and tier files is insufficient.
 
 **Sync time** is governed by lightwalletd nullifier streaming, not local CPU, and grows with chain length from Ironwood activation.
 
@@ -368,12 +372,12 @@ systemctl restart nullifier-query-server
 pir.example.org {
     reverse_proxy 127.0.0.1:3000
     # Restrict debug rows to internal callers; clients don't need them.
-    @debug path /tier1/row/* /tier2/row/*
+    @debug path /tier1/row/*
     handle @debug { respond 403 }
 }
 ```
 
-Caddy obtains a certificate automatically. For nginx, use any standard `proxy_pass` config to `127.0.0.1:3000` and block the `/tier1/row/*` and `/tier2/row/*` paths.
+Caddy obtains a certificate automatically. For nginx, use any standard `proxy_pass` config to `127.0.0.1:3000` and block the `/tier1/row/*` path.
 
 ## Observability
 
@@ -494,13 +498,13 @@ Everything under `SVOTE_PIR_DATA_DIR` belongs to exactly one Zcash network. Flee
 | File | Stage / source | Purpose |
 |------|----------------|---------|
 | `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Ironwood nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
-| `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 1`. |
+| `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 2`. |
 | `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`; half-written batches are discarded on startup. |
 | `nullifiers.index` | Stage 1 — sync | Per-batch height index; lets `sync` and `POST /snapshot/prepare` export a snapshot at a past height. Auto-rebuilt if missing. |
-| `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-25 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
-| `tier0.bin`, `tier1.bin`, `tier2.bin` | Stage 3 — sync **or** serve bootstrap | The PIR database that answers queries. Identical to `<precomputed-base>/snapshots/<network>/<height>/tier*.bin`. |
+| `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-19 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
+| `tier0.bin`, `tier1.bin` | Stage 3 — sync **or** serve bootstrap | The public index and 48 MiB PIR database. Identical to `<precomputed-base>/snapshots/<network>/<height>/tier*.bin`. |
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: dataset identity, tree roots, tier byte sizes, and `height`. Installed **last** so a half-applied bootstrap retries cleanly next start. |
-| `tier1.precompute`, `tier2.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Skips the ~50–120 s YPIR offline precomputation on subsequent boots. Auto-invalidated by content hash when the corresponding `tier{N}.bin` changes; safe to delete (next boot recomputes). Sizes: tier 1 ≈ 720 MB, tier 2 ≈ 13 GB on the production scenario. **Not** distributed via the CDN; each host writes its own. |
+| `tier1.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Auto-invalidated by the Tier 1 content hash; safe to delete (next boot recomputes). **Not** distributed via the CDN; each host writes its own. |
 
 When in doubt, reset only the selected network directory. For example, `rm -rf /opt/nf-ingest/pir-data/test/* && systemctl restart nullifier-query-server` re-bootstraps testnet from the CDN.
 
@@ -513,13 +517,13 @@ When in doubt, reset only the selected network directory. For example, `rm -rf /
 | Method & path | Audience | Purpose |
 |---------------|----------|---------|
 | `GET /tier0` | Client | Download tier-0 of the PIR tree in plaintext (small, public). |
-| `GET /params/tier1`, `GET /params/tier2` | Client | YPIR scenario parameters needed to build a query. |
-| `POST /tier1/query`, `POST /tier2/query` | Client | Submit an encrypted PIR query, get an encrypted response. |
+| `GET /params/tier1` | Client | YPIR scenario parameters needed to build the single query. |
+| `POST /tier1/query` | Client | Submit an encrypted PIR query and receive an encrypted response. |
 | `GET /root` | Client | Zcash network, dataset identity, tree roots, depth, `num_ranges`, and serving `height`. |
 | `GET /health` | Ops | JSON: `status` (`starting` / `ok` / `rebuilding` / `error`) plus tier row metadata. Always 200. |
 | `GET /ready` | Ops / load balancer | 200 only when the internal phase is `Serving`; **503** with a JSON `phase` body while still starting or on error. |
 | `GET /metrics` | Ops | Prometheus exposition. |
-| `GET /tier1/row/:idx`, `GET /tier2/row/:idx` | Debug only | Raw tier row, **not** privacy-preserving. Block at the proxy. |
+| `GET /tier1/row/:idx` | Debug only | Raw tier row, **not** privacy-preserving. Block at the proxy. |
 
 ## Troubleshooting
 

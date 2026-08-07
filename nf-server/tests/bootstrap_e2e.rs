@@ -124,7 +124,6 @@ fn stage_snapshot_with_network(
     let mut blobs = BTreeMap::new();
     blobs.insert("tier0.bin".to_string(), b"tier0-payload".to_vec());
     blobs.insert("tier1.bin".to_string(), b"tier1-payload".to_vec());
-    blobs.insert("tier2.bin".to_string(), b"tier2-payload".to_vec());
     blobs.insert(
         "pir_root.json".to_string(),
         serde_json::to_vec(&json!({
@@ -138,8 +137,6 @@ fn stage_snapshot_with_network(
             "tier0_bytes": 0,
             "tier1_rows": 0,
             "tier1_row_bytes": 0,
-            "tier2_rows": 0,
-            "tier2_row_bytes": 0,
             "height": height,
         }))
         .unwrap(),
@@ -254,8 +251,6 @@ fn write_local_pir_root(dir: &std::path::Path, height: u64) {
             "tier0_bytes": 0,
             "tier1_rows": 0,
             "tier1_row_bytes": 0,
-            "tier2_rows": 0,
-            "tier2_row_bytes": 0,
             "height": height,
         }))
         .unwrap(),
@@ -300,12 +295,7 @@ async fn full_bootstrap_installs_all_files() {
 async fn wrong_network_root_falls_through_without_installing() {
     let bucket = MockBucket::default();
     let h = TEST_HEIGHT + 20;
-    stage_snapshot_with_network(
-        &bucket,
-        TEST_NETWORK,
-        pir_types::ZcashNetwork::Main,
-        h,
-    );
+    stage_snapshot_with_network(&bucket, TEST_NETWORK, pir_types::ZcashNetwork::Main, h);
     stage_pir_config(&bucket, h);
     let (base, _shutdown) = spawn_mock(bucket.clone()).await;
 
@@ -459,7 +449,6 @@ async fn manifest_height_mismatch_falls_through() {
         "files": {
             "tier0.bin":     { "size": 1, "sha256": "00" },
             "tier1.bin":     { "size": 1, "sha256": "00" },
-            "tier2.bin":     { "size": 1, "sha256": "00" },
             "pir_root.json": { "size": 1, "sha256": "00" }
         }
     });

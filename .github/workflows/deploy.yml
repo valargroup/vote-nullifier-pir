@@ -113,7 +113,7 @@ jobs:
           curl -fsSL --retry 3 "$MANIFEST_URL" -o manifest.json
 
           if ! jq -e \
-            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             manifest.json >/dev/null; then
             echo "manifest has the wrong schema or dataset identity" >&2
             exit 1
@@ -125,7 +125,7 @@ jobs:
             exit 1
           fi
 
-          for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+          for f in tier0.bin tier1.bin pir_root.json; do
             if ! jq -e --arg f "$f" '.files[$f].sha256 and .files[$f].size' manifest.json >/dev/null; then
               echo "manifest is missing required file entry: $f" >&2
               exit 1
@@ -187,7 +187,7 @@ jobs:
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])'; then
               echo "FAIL: staged nf-server does not support Ironwood dataset version 1."
               exit 1
             fi
@@ -302,7 +302,7 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
                ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
               echo "FAIL: backup is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 1."
               exit 1
@@ -382,7 +382,7 @@ jobs:
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
             if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])'; then
+               ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])'; then
               echo "FAIL: staged nf-server does not support Ironwood dataset version 1."
               exit 1
             fi
@@ -491,7 +491,7 @@ jobs:
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
-               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])' || \
+               ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
                ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
               echo "FAIL: primary is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 1."
               exit 1

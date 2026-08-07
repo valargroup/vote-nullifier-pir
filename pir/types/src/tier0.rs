@@ -6,13 +6,13 @@ use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
 use crate::{TIER0_LAYERS, TIER1_ROWS};
 
 /// Number of internal nodes in Tier 0 (depths 0 through TIER0_LAYERS-1).
-pub const TIER0_INTERNAL_NODES: usize = (1 << TIER0_LAYERS) - 1; // 511
+pub const TIER0_INTERNAL_NODES: usize = (1 << TIER0_LAYERS) - 1; // 4,095
 
 /// Total size of Tier 0 data in bytes.
-pub const TIER0_BYTES: usize = TIER0_INTERNAL_NODES * 32 + TIER1_ROWS * 64; // 49,120
+pub const TIER0_BYTES: usize = TIER0_INTERNAL_NODES * 32 + TIER1_ROWS * 64; // 393,184
 
 /// Number of siblings extracted from Tier 0.
-const TIER0_LAYERS_COUNT: usize = TIER0_LAYERS; // 9
+const TIER0_LAYERS_COUNT: usize = TIER0_LAYERS; // 12
 
 /// Parsed Tier 0 data: internal node hashes and subtree records at depth TIER0_LAYERS.
 pub struct Tier0Data {

@@ -31,7 +31,9 @@ Punctured ranges (leaves):
 
 Each leaf commitment is `Poseidon3(nf_lo, nf_mid, nf_hi)`. To prove a value `x` is NOT a nullifier, show it falls strictly inside one of these punctured ranges: `nf_lo < x < nf_hi` and `x != nf_mid`.
 
-This halves the number of leaves compared to single-gap ranges, reducing the PIR tree depth from 26 to 25 and cutting tier-2 storage by ~33%.
+This halves the number of leaves compared to single-gap ranges. The current
+Ironwood PIR layout uses a depth-19 tree (524,288 leaf slots) and pads its root
+to the circuit's fixed depth 29.
 
 ### Tree Structure and Empty-Slot Optimization
 
@@ -112,8 +114,8 @@ Proves `nf_lo < real_nf < nf_hi` and `real_nf ≠ nf_mid`.
 x = real_nf - nf_lo - 1
 ```
 
-Range-check `x ∈ [0, 2^251)`. If `real_nf ≤ nf_lo`, then `x` wraps to a
-huge field element (`≥ p - 2^251`), failing the range check.
+Range-check `x ∈ [0, 2^250)`. If `real_nf ≤ nf_lo`, then `x` wraps to a
+huge field element (`≥ p - 2^250`), failing the range check.
 
 **Strict upper bound** (`real_nf < nf_hi`):
 
@@ -121,7 +123,7 @@ huge field element (`≥ p - 2^251`), failing the range check.
 x_upper = nf_hi - real_nf - 1
 ```
 
-Range-check `x_upper ∈ [0, 2^251)`. If `real_nf ≥ nf_hi`, then `x_upper`
+Range-check `x_upper ∈ [0, 2^250)`. If `real_nf ≥ nf_hi`, then `x_upper`
 wraps or equals `p - 1`, failing the range check.
 
 **Non-equality** (`real_nf ≠ nf_mid`):
@@ -137,11 +139,9 @@ constrain: diff × diff_inv = 1
 If `real_nf = nf_mid` then `diff = 0`, which has no inverse, so the
 constraint cannot be satisfied.
 
-**Range-check width**: Each strict-inequality range check must accommodate
-spans up to `2^251` (the maximum K=2 outer span with sentinel spacing
-`2^250`). This requires **251-bit** range checks — one bit wider than the
-old K=1 model's 250 bits. A tighter 250-bit bound can be recovered by
-halving sentinel spacing to `2^249` (33 sentinels instead of 17).
+**Range-check width**: Sentinel spacing is `2^249`, so a K=2 outer span is
+at most `2^250`. Each strict inequality therefore uses the circuit's
+**250-bit** range check.
 
 ### Root Pinning (`q_per_note` gate)
 
@@ -160,10 +160,10 @@ slots uniformly.
 |-----------|-------------|---------------|-------------------|-------|
 | Leaf hash | — | 2 (Poseidon3) | — | — |
 | Merkle path | 29 `q_imt_swap` | 29 | — | — |
-| Interval check | 1 `q_punctured_interval` | — | 2 × 26 = 52 (for 251-bit) | 1 inverse |
+| Interval check | 1 `q_punctured_interval` | — | 2 × 25 = 50 (for 250-bit) | 1 inverse |
 | Root check | 1 `q_per_note` (shared) | — | — | — |
-| **Total per note** | **31** | **31** | **52** | **1** |
-| **Total (4 notes)** | **124** | **124** | **208** | **4** |
+| **Total per note** | **31** | **31** | **50** | **1** |
+| **Total (4 notes)** | **124** | **124** | **200** | **4** |
 
 The 124 in-circuit Poseidon permutations for condition 13 are the dominant
 constraint count contributor for the IMT check.
@@ -179,8 +179,8 @@ Zcash chain --> nf-server sync --> nullifiers.bin (Ironwood nullifiers)
                                   (sort, sentinels, K=2 ranges)
                                           |
                           +───────────────+───────────────+
-                          │  ~25.5M punctured ranges,     │
-                          │  depth-25 PIR tree + depth-29  │
+                          │  Ironwood punctured ranges,   │
+                          │  depth-19 PIR tree + depth-29  │
                           │  root (extended with empties)  │
                           +───────────────+───────────────+
                                           |
@@ -219,24 +219,28 @@ testing.
 
 The delegation circuit proves that a value falls inside a punctured range using a **range check** over the span `nf_hi - nf_lo`. With K=2 each leaf's outer span can cover two adjacent gaps, so the maximum span between boundary nullifiers is up to twice the width of a single gap. The Pallas field is ~2^254, so without additional structure, spans could far exceed the range-check capacity.
 
-Solution: **17 sentinel nullifiers** at `k * 2^250` for `k = 0..=16`, plus `p - 1` to close the tail:
+Solution: **33 sentinel nullifiers** at `k * 2^249` for `k = 0..=32`, plus `p - 1` to close the tail:
 
 ```
 Sentinel placement on the Pallas field [0, p):
 
-  |--2^250--|--2^250--|--2^250--| ... |--2^250--|--remainder--|
-  0       2^250    2*2^250           15*2^250  16*2^250    p-1
+  |--2^249--|--2^249--|--2^249--| ... |--2^249--|--remainder--|
+  0       2^249    2*2^249           31*2^249  32*2^249    p-1
 
 Between consecutive sentinels:
-  - single gap width ≤ 2^250 - 2
-  - K=2 outer span   ≤ 2^251 (two gaps joined)
+  - single gap width < 2^249
+  - K=2 outer span   < 2^250 (two gaps joined)
 ```
 
-Since `p ~ 16.something × 2^250`, 17 sentinels cover the entire field. Adding real nullifiers only **splits** existing gaps into smaller ones, so the invariant holds permanently once established.
+The 33 regularly spaced sentinels cover the field up to `2^254`; `p - 1`
+closes the remaining tail. Adding real nullifiers only **splits** existing
+gaps into smaller ones, so the invariant holds permanently once established.
 
-`prepare_nullifiers()` in `pir-export` merges these sentinels with real nullifiers, sorts, deduplicates, and pads to odd count before building punctured ranges. The tree crate itself is sentinel-agnostic — it takes pre-sorted nullifiers and builds ranges — but `verify_punctured_range_spans()` validates that no outer span exceeds `2^251`.
-
-A tighter bound (`≤ 2^250`) can be achieved by doubling sentinel density (spacing `2^249`), if the circuit's range check requires it.
+`prepare_nullifiers()` in `pir-export` merges these sentinels with real
+nullifiers, sorts, deduplicates, and pads to odd count before building
+punctured ranges. The tree crate itself is sentinel-agnostic — it takes
+pre-sorted nullifiers and builds ranges — while
+`verify_punctured_range_spans()` enforces the 250-bit outer-span bound.
 
 ## Key Files
 

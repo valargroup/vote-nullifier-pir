@@ -5,6 +5,13 @@
   aliases early, then promote every alias without permitting a stale rollback.
   Ordinary stable releases become Latest only after those aliases are published.
 
+# pir-types 0.3.0-rc.3 and pir-client 0.4.0-rc.3
+
+- Replace the depth-25, two-query PIR tree with the Ironwood-sized depth-19
+  12+7 layout and a single PIR round trip.
+- Require dataset contract v2 and validate tier geometry before serving or
+  querying snapshots.
+
 # pir-types 0.3.0-rc.2 and pir-client 0.4.0-rc.2
 
 - Add Zcash network identity to Ironwood ingestion, snapshot artifacts, and `/root` responses.
