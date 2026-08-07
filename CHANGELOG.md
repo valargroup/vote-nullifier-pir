@@ -14,6 +14,8 @@
 - Add explicit depth and tier-split metadata to `/root`, and require PIR client
   construction to match the dynamic-config layout against the server before
   any private query.
+- Rename the depth-specific `root25` and `root29` fields to `pir_root` and
+  `circuit_root`; legacy metadata field names remain accepted as aliases.
 - Always issue a Tier 1 PIR request when Tier 0 routing fails or panics,
   preventing malicious routing metadata from leaking nullifier ranks through
   request counts.
