@@ -503,7 +503,7 @@ async fn connect_client(mode: BenchMode, url: &str) -> Result<PirClient> {
         BenchMode::SingleTls => HyperTransport::http1_only(),
         _ => HyperTransport::new(),
     };
-    PirClient::with_transport(url, Arc::new(transport)).await
+    PirClient::with_transport(url, pir_types::COMPILED_PIR_LAYOUT, Arc::new(transport)).await
 }
 
 fn pick_values<R: Rng + ?Sized>(ranges: &[[Fp; 3]], k: usize, rng: &mut R) -> Vec<Fp> {

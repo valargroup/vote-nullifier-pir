@@ -22,7 +22,8 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, TIER1_ROWS, TIER1_ROW_BYTES,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, COMPILED_PIR_LAYOUT,
+    TIER1_ROWS, TIER1_ROW_BYTES,
 };
 use tracing::info;
 
@@ -143,6 +144,7 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         root29: state.serving.metadata.root29.clone(),
         root25: state.serving.metadata.root25.clone(),
         num_ranges: state.serving.metadata.num_ranges,
+        pir_layout: COMPILED_PIR_LAYOUT,
         pir_depth: state.serving.metadata.pir_depth,
         tier1_rows: state.serving.metadata.tier1_rows,
         tier1_row_bytes: state.serving.metadata.tier1_row_bytes,

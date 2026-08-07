@@ -33,6 +33,24 @@ pub const TIER0_LAYERS: usize = 12;
 /// Number of layers in each Tier 1 subtree (depth 12 to depth 19).
 pub const TIER1_LAYERS: usize = 7;
 
+/// Explicit PIR tree layout negotiated between configuration, server, and client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PirLayout {
+    /// Depth of the PIR Merkle tree.
+    pub pir_depth: usize,
+    /// Number of public Tier 0 tree layers.
+    pub tier0_layers: usize,
+    /// Number of privately queried Tier 1 tree layers.
+    pub tier1_layers: usize,
+}
+
+/// Layout compiled into this version of the fixed-layout PIR implementation.
+pub const COMPILED_PIR_LAYOUT: PirLayout = PirLayout {
+    pir_depth: PIR_DEPTH,
+    tier0_layers: TIER0_LAYERS,
+    tier1_layers: TIER1_LAYERS,
+};
+
 /// Number of Tier 1 rows (one per depth-12 subtree).
 pub const TIER1_ROWS: usize = 1 << TIER0_LAYERS; // 4,096
 
@@ -168,6 +186,9 @@ pub struct RootInfo {
     /// Legacy wire name for the PIR-depth root; depth 19 in dataset version 2.
     pub root25: String,
     pub num_ranges: usize,
+    /// Explicit depth and tier split compiled into the serving binary.
+    pub pir_layout: PirLayout,
+    /// Legacy top-level depth retained as an independent consistency check.
     pub pir_depth: usize,
     /// Number of rows in the Tier 1 PIR database.
     #[serde(default)]

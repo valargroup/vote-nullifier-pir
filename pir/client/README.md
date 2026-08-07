@@ -9,10 +9,15 @@ Used by Zcash wallets integrating shielded voting: before building a delegation 
 ```rust
 use std::sync::Arc;
 
-use pir_client::{ImtProofData, PirClientBlocking, Transport};
+use pir_client::{ImtProofData, PirClientBlocking, PirLayout, Transport};
 
 let transport: Arc<dyn Transport> = Arc::new(my_http_transport);
-let client = PirClientBlocking::with_transport("https://pir1.example.com", transport)?;
+let expected_layout: PirLayout = resolved_voting_config.pir_layout.into();
+let client = PirClientBlocking::with_transport(
+    "https://pir1.example.com",
+    expected_layout,
+    transport,
+)?;
 let proof: ImtProofData = client.fetch_proof(my_nullifier)?;
 assert!(proof.verify(my_nullifier));
 ```
@@ -22,10 +27,12 @@ Async equivalent:
 ```rust
 use std::sync::Arc;
 
-use pir_client::{PirClient, Transport};
+use pir_client::{PirClient, PirLayout, Transport};
 
 let transport: Arc<dyn Transport> = Arc::new(my_http_transport);
-let client = PirClient::with_transport("https://pir1.example.com", transport).await?;
+let expected_layout: PirLayout = resolved_voting_config.pir_layout.into();
+let client =
+    PirClient::with_transport("https://pir1.example.com", expected_layout, transport).await?;
 let proofs = client.fetch_proofs(&[nf1, nf2, nf3]).await?;
 ```
 
@@ -34,7 +41,9 @@ The returned `ImtProofData { root, nf_bounds, leaf_pos, path: [Fp; 29] }` is the
 ## Security
 
 - The client rejects servers that don't report the expected Ironwood dataset version.
-- The client validates the PIR depth, Tier 1 row count, and Tier 1 row width reported by `/root` against the YPIR scenario.
+- Client construction requires the layout from the resolved dynamic voting config.
+- The client requires an exact config-to-`/root`-to-compiled-layout match before parsing Tier 0 or creating a usable client. Missing layout metadata fails closed.
+- The client validates the depth/split geometry, circuit-depth bound, Tier 1 row count, and Tier 1 row width against `/params/tier1` before any private query.
 - Verify each proof locally with `proof.verify(nullifier)` before trusting the returned root.
 
 ## License

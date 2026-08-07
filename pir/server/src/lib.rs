@@ -21,7 +21,8 @@ pub mod precompute_cache;
 
 // Re-export shared types and constants so existing consumers can import from pir_server.
 pub use pir_types::{
-    HealthInfo, PirMetadata, RootInfo, YpirScenario, TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES,
+    HealthInfo, PirLayout, PirMetadata, RootInfo, YpirScenario, COMPILED_PIR_LAYOUT,
+    TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES,
 };
 
 const U64_BYTES: usize = std::mem::size_of::<u64>();

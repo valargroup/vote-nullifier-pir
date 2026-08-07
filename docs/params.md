@@ -23,8 +23,10 @@ pir/server::tier1_scenario()
 ```
 
 The server and client derive the same lattice parameters from the two
-scenario integers. `/root` separately reports the row count and byte width so
-the client can reject a mismatched tier split before issuing a query.
+scenario integers. `/root` advertises the explicit depth and 12+7 split plus
+the row count and byte width. Client construction also receives the expected
+layout from dynamic voting configuration and requires config, server, and
+compiled client layouts to match before parsing Tier 0 or issuing a query.
 
 ## Tree constants
 

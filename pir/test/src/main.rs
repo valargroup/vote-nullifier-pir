@@ -451,6 +451,7 @@ async fn run_server(
     // Connect to server
     let client = pir_client::PirClient::with_transport(
         &url,
+        pir_types::COMPILED_PIR_LAYOUT,
         std::sync::Arc::new(transport::HyperTransport::new()),
     )
     .await?;

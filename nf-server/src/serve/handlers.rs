@@ -12,7 +12,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, COMPILED_PIR_LAYOUT, TIER1_ROWS,
+    TIER1_ROW_BYTES,
 };
 
 use super::state::{AppState, ServerPhase};
@@ -120,6 +121,7 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
         root29: s.metadata.root29.clone(),
         root25: s.metadata.root25.clone(),
         num_ranges: s.metadata.num_ranges,
+        pir_layout: COMPILED_PIR_LAYOUT,
         pir_depth: s.metadata.pir_depth,
         tier1_rows: s.metadata.tier1_rows,
         tier1_row_bytes: s.metadata.tier1_row_bytes,

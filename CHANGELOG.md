@@ -1,5 +1,8 @@
 # Unreleased
 
+- Add explicit depth and tier-split metadata to `/root`, and require PIR client
+  construction to match the dynamic-config layout against both the server and
+  the client's fixed compiled layout before any private query.
 - Add held stable releases and a verified manual promotion path so coordinated
   PIR upgrades can publish tag-scoped artifacts without changing installer
   aliases early, then promote every alias without permitting a stale rollback.

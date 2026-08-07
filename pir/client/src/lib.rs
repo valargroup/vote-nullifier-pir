@@ -16,6 +16,7 @@ use pasta_curves::Fp;
 pub use imt_tree::ImtProofData;
 
 mod transport;
+pub use pir_types::{PirLayout, COMPILED_PIR_LAYOUT};
 pub use transport::{Transport, TransportFuture, TransportResponse};
 
 use pir_types::tier0::Tier0Data;
@@ -156,9 +157,51 @@ fn process_tier1_and_build(
     })
 }
 
+fn validate_layout(label: &str, layout: PirLayout) -> Result<()> {
+    let split_depth = layout
+        .tier0_layers
+        .checked_add(layout.tier1_layers)
+        .ok_or_else(|| anyhow::anyhow!("{label} PIR layout tier split overflows"))?;
+    anyhow::ensure!(
+        layout.pir_depth == split_depth,
+        "{label} PIR layout is inconsistent: pir_depth {} != tier0_layers {} + tier1_layers {}",
+        layout.pir_depth,
+        layout.tier0_layers,
+        layout.tier1_layers
+    );
+    anyhow::ensure!(
+        layout.pir_depth <= TREE_DEPTH,
+        "{label} PIR layout depth {} exceeds circuit depth {}",
+        layout.pir_depth,
+        TREE_DEPTH
+    );
+    Ok(())
+}
+
+fn tier1_geometry(layout: PirLayout) -> Result<(usize, usize)> {
+    let tier0_shift = u32::try_from(layout.tier0_layers)
+        .context("PIR layout tier0_layers does not fit a shift count")?;
+    let tier1_shift = u32::try_from(layout.tier1_layers)
+        .context("PIR layout tier1_layers does not fit a shift count")?;
+    let rows = 1usize
+        .checked_shl(tier0_shift)
+        .context("PIR layout tier0_layers exceeds platform geometry")?;
+    let leaves = 1usize
+        .checked_shl(tier1_shift)
+        .context("PIR layout tier1_layers exceeds platform geometry")?;
+    let row_bytes = leaves
+        .checked_mul(pir_types::TIER1_LEAF_BYTES)
+        .context("PIR layout Tier 1 row width overflows")?;
+    Ok((rows, row_bytes))
+}
+
 impl PirClient {
-    /// Connect using a caller-provided HTTP transport.
-    pub async fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
+    /// Connect using a caller-provided HTTP transport and configuration layout.
+    pub async fn with_transport(
+        server_url: &str,
+        expected_layout: PirLayout,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Self> {
         let base = server_url.trim_end_matches('/');
 
         // Download Tier 0 data, YPIR params, and root concurrently
@@ -172,14 +215,6 @@ impl PirClient {
             transport.get(&root_url),
         )
         .map_err(|e| anyhow::anyhow!("connect fetch failed: {e}"))?;
-
-        let tier0_bytes = body_for_status(tier0_resp, "GET /tier0 failed")?;
-        log::debug!(
-            "Downloaded Tier 0: {} bytes in {:.1}s",
-            tier0_bytes.len(),
-            t0.elapsed().as_secs_f64()
-        );
-        let tier0 = Tier0Data::from_bytes(tier0_bytes.to_vec())?;
 
         let tier1_scenario: YpirScenario =
             serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
@@ -196,18 +231,48 @@ impl PirClient {
             pir_types::NULLIFIER_POOL,
             pir_types::DATASET_VERSION
         );
+        validate_layout("expected", expected_layout)?;
+        validate_layout("server", root_info.pir_layout)?;
         anyhow::ensure!(
-            root_info.pir_depth == PIR_DEPTH,
-            "server pir_depth {} != expected {}",
-            root_info.pir_depth,
-            PIR_DEPTH
+            expected_layout == root_info.pir_layout,
+            "PIR layout mismatch: expected {:?}, server advertised {:?}",
+            expected_layout,
+            root_info.pir_layout
         );
         anyhow::ensure!(
-            root_info.tier1_rows == TIER1_ROWS
+            expected_layout == COMPILED_PIR_LAYOUT,
+            "PIR layout mismatch: expected {:?}, client compiled {:?}",
+            expected_layout,
+            COMPILED_PIR_LAYOUT
+        );
+        anyhow::ensure!(
+            root_info.pir_layout == COMPILED_PIR_LAYOUT,
+            "PIR layout mismatch: server advertised {:?}, client compiled {:?}",
+            root_info.pir_layout,
+            COMPILED_PIR_LAYOUT
+        );
+        anyhow::ensure!(
+            root_info.pir_depth == root_info.pir_layout.pir_depth,
+            "server pir_depth {} disagrees with advertised layout depth {}",
+            root_info.pir_depth,
+            root_info.pir_layout.pir_depth
+        );
+
+        let (layout_rows, layout_row_bytes) = tier1_geometry(root_info.pir_layout)?;
+        let scenario_item_bits = root_info
+            .tier1_row_bytes
+            .checked_mul(8)
+            .context("server Tier 1 row width overflows bit size")?;
+        anyhow::ensure!(
+            layout_rows == TIER1_ROWS
+                && layout_row_bytes == TIER1_ROW_BYTES
+                && root_info.tier1_rows == TIER1_ROWS
                 && root_info.tier1_row_bytes == TIER1_ROW_BYTES
                 && tier1_scenario.num_items == root_info.tier1_rows
-                && tier1_scenario.item_size_bits == root_info.tier1_row_bytes * 8,
-            "server Tier 1 shape mismatch: /root reports {}x{} bytes and /params reports {} items x {} bits; expected {}x{} bytes",
+                && tier1_scenario.item_size_bits == scenario_item_bits,
+            "server Tier 1 shape mismatch: layout implies {}x{} bytes, /root reports {}x{} bytes, and /params reports {} items x {} bits; expected compiled {}x{} bytes",
+            layout_rows,
+            layout_row_bytes,
             root_info.tier1_rows,
             root_info.tier1_row_bytes,
             tier1_scenario.num_items,
@@ -215,6 +280,15 @@ impl PirClient {
             TIER1_ROWS,
             TIER1_ROW_BYTES
         );
+
+        let tier0_bytes = body_for_status(tier0_resp, "GET /tier0 failed")?;
+        log::debug!(
+            "Downloaded Tier 0: {} bytes in {:.1}s",
+            tier0_bytes.len(),
+            t0.elapsed().as_secs_f64()
+        );
+        let tier0 = Tier0Data::from_bytes(tier0_bytes.to_vec())?;
+
         let root29_bytes = hex::decode(&root_info.root29)?;
         anyhow::ensure!(
             root29_bytes.len() == 32,
@@ -559,10 +633,18 @@ pub struct PirClientBlocking {
 }
 
 impl PirClientBlocking {
-    /// Connect to a PIR server with a caller-provided HTTP transport.
-    pub fn with_transport(server_url: &str, transport: Arc<dyn Transport>) -> Result<Self> {
+    /// Connect with a caller-provided HTTP transport and configuration layout.
+    pub fn with_transport(
+        server_url: &str,
+        expected_layout: PirLayout,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Self> {
         let rt = tokio::runtime::Runtime::new()?;
-        let inner = rt.block_on(PirClient::with_transport(server_url, transport))?;
+        let inner = rt.block_on(PirClient::with_transport(
+            server_url,
+            expected_layout,
+            transport,
+        ))?;
         Ok(Self { inner, rt })
     }
 
@@ -830,6 +912,7 @@ mod tests {
                 root29: hex::encode(tree.root29.to_repr()),
                 root25: hex::encode(tree.root25.to_repr()),
                 num_ranges: tree.ranges.len(),
+                pir_layout: COMPILED_PIR_LAYOUT,
                 pir_depth: PIR_DEPTH,
                 tier1_rows: TIER1_ROWS,
                 tier1_row_bytes: TIER1_ROW_BYTES,
@@ -869,6 +952,14 @@ mod tests {
                 .filter(|hit| hit.as_str() == path)
                 .count()
         }
+
+        fn update_root(&mut self, update: impl FnOnce(&mut serde_json::Value)) {
+            let mut root: serde_json::Value =
+                serde_json::from_slice(&self.gets.get("/root").unwrap().body).unwrap();
+            update(&mut root);
+            self.gets
+                .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+        }
     }
 
     fn response(body: Vec<u8>) -> TransportResponse {
@@ -885,6 +976,13 @@ mod tests {
             .find('/')
             .map(|idx| &without_scheme[idx..])
             .unwrap_or("/")
+    }
+
+    async fn rejected_connect(expected_layout: PirLayout, transport: Arc<MockTransport>) -> String {
+        match PirClient::with_transport("https://pir.example", expected_layout, transport).await {
+            Ok(_) => panic!("layout mismatch must be rejected"),
+            Err(err) => err.to_string(),
+        }
     }
 
     impl Transport for MockTransport {
@@ -916,9 +1014,13 @@ mod tests {
         let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
         let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
         let transport = Arc::new(MockTransport::new(&tree));
-        let client = PirClient::with_transport("https://pir.example", transport.clone())
-            .await
-            .unwrap();
+        let client = PirClient::with_transport(
+            "https://pir.example",
+            COMPILED_PIR_LAYOUT,
+            transport.clone(),
+        )
+        .await
+        .unwrap();
 
         // The mock response is deliberately corrupt; request count is the
         // property under test.
@@ -946,9 +1048,13 @@ mod tests {
         let raw_nfs: Vec<Fp> = (1u64..=20).map(|i| Fp::from(i * 7)).collect();
         let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
         let transport = Arc::new(MockTransport::new(&tree));
-        let client = PirClient::with_transport("https://pir.example", transport.clone())
-            .await
-            .unwrap();
+        let client = PirClient::with_transport(
+            "https://pir.example",
+            COMPILED_PIR_LAYOUT,
+            transport.clone(),
+        )
+        .await
+        .unwrap();
         let values: Vec<Fp> = tree
             .ranges
             .iter()
@@ -958,6 +1064,126 @@ mod tests {
 
         assert!(client.fetch_proofs(&values).await.is_err());
         assert_eq!(transport.count_hits("/tier1/query"), K);
+    }
+
+    #[test]
+    fn rejects_inconsistent_or_out_of_circuit_layout_geometry() {
+        let inconsistent = PirLayout {
+            pir_depth: 19,
+            tier0_layers: 12,
+            tier1_layers: 8,
+        };
+        let err = validate_layout("test", inconsistent)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is inconsistent"), "{err}");
+
+        let too_deep = PirLayout {
+            pir_depth: TREE_DEPTH + 1,
+            tier0_layers: 15,
+            tier1_layers: 15,
+        };
+        let err = validate_layout("test", too_deep).unwrap_err().to_string();
+        assert!(err.contains("exceeds circuit depth"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_layout_metadata_without_query() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        transport.update_root(|root| {
+            root.as_object_mut().unwrap().remove("pir_layout");
+        });
+        transport.gets.insert("/tier0", response(vec![0xff]));
+        let transport = Arc::new(transport);
+
+        let err = rejected_connect(COMPILED_PIR_LAYOUT, transport.clone()).await;
+        assert!(err.contains("parse /root response"), "{err}");
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_config_depth_and_split_mismatches_without_query() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mismatches = [
+            PirLayout {
+                pir_depth: 20,
+                tier0_layers: 12,
+                tier1_layers: 8,
+            },
+            PirLayout {
+                pir_depth: 19,
+                tier0_layers: 11,
+                tier1_layers: 8,
+            },
+        ];
+
+        for expected_layout in mismatches {
+            let transport = Arc::new(MockTransport::new(&tree));
+            let err = rejected_connect(expected_layout, transport.clone()).await;
+            assert!(err.contains("expected") && err.contains("server"), "{err}");
+            assert_eq!(transport.count_hits("/tier1/query"), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_server_depth_and_split_mismatches_without_query() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mismatches = [
+            PirLayout {
+                pir_depth: 20,
+                tier0_layers: 12,
+                tier1_layers: 8,
+            },
+            PirLayout {
+                pir_depth: 19,
+                tier0_layers: 11,
+                tier1_layers: 8,
+            },
+        ];
+
+        for server_layout in mismatches {
+            let mut transport = MockTransport::new(&tree);
+            transport.update_root(|root| {
+                root["pir_layout"] = serde_json::to_value(server_layout).unwrap();
+            });
+            let transport = Arc::new(transport);
+            let err = rejected_connect(COMPILED_PIR_LAYOUT, transport.clone()).await;
+            assert!(err.contains("expected") && err.contains("server"), "{err}");
+            assert_eq!(transport.count_hits("/tier1/query"), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_client_compiled_depth_and_split_mismatches_without_query() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mismatches = [
+            PirLayout {
+                pir_depth: 20,
+                tier0_layers: 12,
+                tier1_layers: 8,
+            },
+            PirLayout {
+                pir_depth: 19,
+                tier0_layers: 11,
+                tier1_layers: 8,
+            },
+        ];
+
+        for negotiated_layout in mismatches {
+            let mut transport = MockTransport::new(&tree);
+            transport.update_root(|root| {
+                root["pir_layout"] = serde_json::to_value(negotiated_layout).unwrap();
+            });
+            let transport = Arc::new(transport);
+            let err = rejected_connect(negotiated_layout, transport.clone()).await;
+            assert!(err.contains("client compiled"), "{err}");
+            assert_eq!(transport.count_hits("/tier1/query"), 0);
+        }
     }
 
     #[tokio::test]
@@ -971,8 +1197,14 @@ mod tests {
         transport
             .gets
             .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+        let transport = Arc::new(transport);
 
-        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            COMPILED_PIR_LAYOUT,
+            transport.clone(),
+        )
+        .await
         {
             Ok(_) => panic!("wrong pool must be rejected"),
             Err(err) => err.to_string(),
@@ -991,13 +1223,20 @@ mod tests {
         transport
             .gets
             .insert("/root", response(serde_json::to_vec(&root).unwrap()));
+        let transport = Arc::new(transport);
 
-        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            COMPILED_PIR_LAYOUT,
+            transport.clone(),
+        )
+        .await
         {
             Ok(_) => panic!("mismatched Tier 1 shape must be rejected"),
             Err(err) => err.to_string(),
         };
         assert!(err.contains("Tier 1 shape mismatch"), "{err}");
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
     }
 
     #[tokio::test]
@@ -1014,7 +1253,12 @@ mod tests {
             .gets
             .insert("/root", response(serde_json::to_vec(&root).unwrap()));
 
-        let err = match PirClient::with_transport("https://pir.example", Arc::new(transport)).await
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            COMPILED_PIR_LAYOUT,
+            Arc::new(transport),
+        )
+        .await
         {
             Ok(_) => panic!("version-one root must be rejected"),
             Err(err) => err.to_string(),
