@@ -22,7 +22,7 @@ const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
 use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState,
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, TIER2_DISABLED_BODY,
 };
 use tracing::info;
 
@@ -30,8 +30,17 @@ use tracing::info;
 struct AppState {
     serving: ServingState,
     data_dir: PathBuf,
+    debug_row_endpoints: bool,
     next_req_id: AtomicU64,
     inflight_requests: AtomicUsize,
+}
+
+/// Whether the plaintext `/tier{n}/row/:idx` debug endpoints are enabled.
+///
+/// Off by default: they expose an unauthenticated disk-read primitive and are
+/// not privacy-preserving. Set `PIR_DEBUG_ROW_ENDPOINTS=1` to enable.
+fn debug_row_endpoints_enabled() -> bool {
+    std::env::var("PIR_DEBUG_ROW_ENDPOINTS").is_ok_and(|v| v == "1")
 }
 
 #[tokio::main]
@@ -57,6 +66,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         serving,
         data_dir: data_dir.clone(),
+        debug_row_endpoints: debug_row_endpoints_enabled(),
         next_req_id: AtomicU64::new(0),
         inflight_requests: AtomicUsize::new(0),
     });
@@ -66,6 +76,9 @@ async fn main() -> Result<()> {
         .route("/params/tier1", get(get_params_tier1))
         .route("/tier1/query", post(post_tier1_query))
         .route("/tier1/row/:idx", get(get_tier1_row))
+        .route("/params/tier2", get(get_params_tier2))
+        .route("/tier2/query", post(post_tier2_query))
+        .route("/tier2/row/:idx", get(get_tier2_row))
         .route("/root", get(get_root))
         .route("/health", get(get_health))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -89,12 +102,12 @@ async fn get_tier0(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    axum::Json(state.serving.tier1_scenario.clone())
+    axum::Json(state.serving.tier1.scenario.clone())
 }
 
 async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
     dispatch_query(
-        &state.serving.tier1,
+        &state.serving.tier1.state,
         "tier1",
         &body,
         &state.next_req_id,
@@ -102,17 +115,60 @@ async fn post_tier1_query(State(state): State<Arc<AppState>>, body: Bytes) -> im
     )
 }
 
+async fn get_params_tier2(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    match &state.serving.tier2 {
+        Some(tier2) => axum::Json(tier2.scenario.clone()).into_response(),
+        None => (StatusCode::NOT_FOUND, TIER2_DISABLED_BODY).into_response(),
+    }
+}
+
+async fn post_tier2_query(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> axum::response::Response {
+    match &state.serving.tier2 {
+        Some(tier2) => dispatch_query(
+            &tier2.state,
+            "tier2",
+            &body,
+            &state.next_req_id,
+            &state.inflight_requests,
+        ),
+        None => (StatusCode::NOT_FOUND, TIER2_DISABLED_BODY).into_response(),
+    }
+}
+
 async fn get_tier1_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
+    let scenario = state.serving.tier1.scenario.clone();
     get_tier_row_inner(
         &state,
         idx,
         "tier1.bin",
-        state.serving.metadata.tier1_rows,
-        state.serving.metadata.tier1_row_bytes,
+        scenario.num_items,
+        scenario.item_size_bits / 8,
     )
+}
+
+async fn get_tier2_row(
+    State(state): State<Arc<AppState>>,
+    Path(idx): Path<usize>,
+) -> axum::response::Response {
+    match &state.serving.tier2 {
+        Some(tier2) => {
+            let scenario = tier2.scenario.clone();
+            get_tier_row_inner(
+                &state,
+                idx,
+                "tier2.bin",
+                scenario.num_items,
+                scenario.item_size_bits / 8,
+            )
+        }
+        None => (StatusCode::NOT_FOUND, TIER2_DISABLED_BODY).into_response(),
+    }
 }
 
 fn get_tier_row_inner(
@@ -122,6 +178,9 @@ fn get_tier_row_inner(
     num_rows: usize,
     row_bytes: usize,
 ) -> axum::response::Response {
+    if !state.debug_row_endpoints {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
     if idx >= num_rows {
         return (StatusCode::NOT_FOUND, "row index out of range").into_response();
     }
@@ -133,11 +192,10 @@ fn get_tier_row_inner(
             row,
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read error: {e}"),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::warn!(filename, error = %e, "tier row read failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "read error").into_response()
+        }
     }
 }
 
@@ -153,6 +211,8 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         pir_depth: state.serving.metadata.pir_depth,
         tier1_rows: state.serving.metadata.tier1_rows,
         tier1_row_bytes: state.serving.metadata.tier1_row_bytes,
+        tier2_rows: state.serving.metadata.tier2_rows,
+        tier2_row_bytes: state.serving.metadata.tier2_row_bytes,
         height: state.serving.metadata.height,
     };
     axum::Json(info)
@@ -161,7 +221,7 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let info = HealthInfo {
         status: "ok".to_string(),
-        tier1_rows: state.serving.tier1_scenario.num_items,
+        tier1_rows: state.serving.metadata.tier1_rows,
         tier1_row_bytes: state.serving.metadata.tier1_row_bytes,
     };
     axum::Json(info)

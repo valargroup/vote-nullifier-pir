@@ -313,10 +313,12 @@ pub async fn run(args: Args) -> Result<()> {
         let export_target_c = export_target;
         let ch_c = ch;
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let layout = sync_pipeline::configured_pir_layout()?;
             if pir_export::tiers_complete_for_height(
                 &pir_dir_c,
                 args.zcash_network,
                 export_target_c,
+                &layout,
             )? {
                 println!("Stage 3/3: PIR tier files already complete at height {export_target_c}");
                 return Ok(());
@@ -342,6 +344,7 @@ pub async fn run(args: Args) -> Result<()> {
                 &pir_dir_c,
                 args.zcash_network,
                 export_target_c,
+                &layout,
                 |msg, _| eprintln!("    {msg}"),
             )?;
             Ok(())

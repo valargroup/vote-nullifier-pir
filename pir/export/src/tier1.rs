@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 
 use imt_tree::tree::PuncturedRange;
 
-use crate::{write_fp, COMPILED_PIR_LAYOUT, PIR_DEPTH, TIER1_LEAF_BYTES};
+use crate::{write_fp, COMPILED_PIR_LAYOUT, TIER1_LEAF_BYTES};
 use pir_types::PirLayout;
 
 pub use pir_types::tier1::Tier1Row;
@@ -34,12 +34,6 @@ pub fn export_layout(
         .validate_split()
         .map_err(anyhow::Error::msg)
         .context("invalid Tier 1 export layout")?;
-    anyhow::ensure!(
-        layout.pir_depth == PIR_DEPTH,
-        "Tier 1 export requires pir_depth {PIR_DEPTH}, got {}",
-        layout.pir_depth
-    );
-
     let num_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
     let leaves = layout.tier1_leaves().map_err(anyhow::Error::msg)?;
     let row_bytes = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;
@@ -54,13 +48,7 @@ pub fn export_layout(
 }
 
 /// Write a single Tier 1 row for subtree index `s`.
-fn write_row(
-    ranges: &[PuncturedRange],
-    s: usize,
-    leaves: usize,
-    row_bytes: usize,
-    buf: &mut [u8],
-) {
+fn write_row(ranges: &[PuncturedRange], s: usize, leaves: usize, row_bytes: usize, buf: &mut [u8]) {
     buf.fill(0);
     let leaf_start = s * leaves;
     let mut offset = 0;

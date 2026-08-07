@@ -17,9 +17,7 @@ use pasta_curves::Fp;
 
 use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 
-use crate::{
-    node_or_empty, subtree_min_key, write_fp, write_internal_nodes, COMPILED_PIR_LAYOUT, PIR_DEPTH,
-};
+use crate::{node_or_empty, subtree_min_key, write_fp, write_internal_nodes, COMPILED_PIR_LAYOUT};
 use pir_types::PirLayout;
 
 pub use pir_types::tier0::{Tier0Data, TIER0_BYTES, TIER0_INTERNAL_NODES};
@@ -51,12 +49,6 @@ pub fn export_layout(
         .validate_split()
         .map_err(anyhow::Error::msg)
         .context("invalid Tier 0 export layout")?;
-    anyhow::ensure!(
-        layout.pir_depth == PIR_DEPTH,
-        "Tier 0 export requires pir_depth {PIR_DEPTH}, got {}",
-        layout.pir_depth
-    );
-
     let tier0_layers = layout.tier0_layers;
     let num_subtrees = layout.tier1_rows().map_err(anyhow::Error::msg)?;
     let expected = layout.tier0_bytes().map_err(anyhow::Error::msg)?;

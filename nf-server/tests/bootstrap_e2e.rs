@@ -671,3 +671,163 @@ async fn unreachable_voting_config_errors() {
         "unexpected error: {s}"
     );
 }
+
+/// Stage a three-tier (12+4+3) snapshot. `include_tier2_file` controls
+/// whether `tier2.bin` is present in the manifest and bucket, so tests can
+/// exercise the layout/manifest consistency check.
+fn stage_three_tier_snapshot(
+    bucket: &MockBucket,
+    height: u64,
+    include_tier2_file: bool,
+) -> BTreeMap<String, Vec<u8>> {
+    let mut blobs = BTreeMap::new();
+    blobs.insert("tier0.bin".to_string(), b"tier0-payload".to_vec());
+    blobs.insert("tier1.bin".to_string(), b"tier1-boundary-payload".to_vec());
+    if include_tier2_file {
+        blobs.insert("tier2.bin".to_string(), b"tier2-terminal-payload".to_vec());
+    }
+    blobs.insert(
+        "pir_root.json".to_string(),
+        serde_json::to_vec(&json!({
+            "zcash_network": TEST_NETWORK,
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
+            "root25": "00",
+            "root29": "00",
+            "num_ranges": 1,
+            "pir_layout": { "pir_depth": 19, "tier0_layers": 12, "tier1_layers": 4, "tier2_layers": 3 },
+            "pir_depth": 19,
+            "tier0_bytes": 0,
+            "tier1_rows": 0,
+            "tier1_row_bytes": 0,
+            "height": height,
+        }))
+        .unwrap(),
+    );
+
+    let mut files_json = serde_json::Map::new();
+    for (name, body) in &blobs {
+        files_json.insert(
+            name.clone(),
+            json!({ "size": body.len() as u64, "sha256": sha256_hex(body) }),
+        );
+    }
+    let manifest = json!({
+        "schema_version": 2,
+        "nullifier_pool": pir_types::NULLIFIER_POOL,
+        "dataset_version": pir_types::DATASET_VERSION,
+        "height": height,
+        "created_at": "2026-01-01T00:00:00Z",
+        "nf_server_sha256": "deadbeef",
+        "publisher": { "git_ref": "main", "git_sha": "abc" },
+        "files": files_json,
+    });
+
+    let prefix = format!("/snapshots/{TEST_NETWORK}/{height}");
+    for (name, body) in &blobs {
+        bucket.put(
+            &format!("{prefix}/{name}"),
+            "application/octet-stream",
+            body.clone(),
+        );
+    }
+    bucket.put(
+        &format!("{prefix}/manifest.json"),
+        "application/json",
+        serde_json::to_vec(&manifest).unwrap(),
+    );
+
+    blobs
+}
+
+#[tokio::test]
+async fn three_tier_bootstrap_installs_tier2_file() {
+    let bucket = MockBucket::default();
+    let h = TEST_HEIGHT;
+    let blobs = stage_three_tier_snapshot(&bucket, h, true);
+    stage_pir_config(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = Config {
+        zcash_network: TEST_NETWORK,
+        pir_config_url: Some(format!("{base}/pir.json")),
+        voting_config_url: String::new(),
+        precomputed_base_url: base,
+        force_snapshot_height: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    assert_eq!(outcome, Outcome::BootstrappedTo(h));
+
+    for (name, expected) in &blobs {
+        let actual = std::fs::read(tmp.path().join(name)).expect(name);
+        assert_eq!(&actual, expected, "{name} contents");
+    }
+    assert!(tmp.path().join("tier2.bin").exists());
+}
+
+#[tokio::test]
+async fn three_tier_snapshot_without_tier2_file_falls_through() {
+    let bucket = MockBucket::default();
+    let h = TEST_HEIGHT + 40;
+    stage_three_tier_snapshot(&bucket, h, false);
+    stage_pir_config(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = Config {
+        zcash_network: TEST_NETWORK,
+        pir_config_url: Some(format!("{base}/pir.json")),
+        voting_config_url: String::new(),
+        precomputed_base_url: base,
+        force_snapshot_height: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    match outcome {
+        Outcome::FellThrough { reason } => {
+            assert!(reason.contains("tier2.bin"), "unexpected reason: {reason}")
+        }
+        other => panic!("expected FellThrough, got {other:?}"),
+    }
+    assert!(!tmp.path().join("pir_root.json").exists());
+}
+
+#[tokio::test]
+async fn two_tier_install_removes_stale_tier2_artifacts() {
+    let bucket = MockBucket::default();
+    let h = TEST_HEIGHT + 60;
+    stage_snapshot(&bucket, h);
+    stage_pir_config(&bucket, h);
+    let (base, _shutdown) = spawn_mock(bucket.clone()).await;
+
+    let tmp = TempDir::new().unwrap();
+    // Simulate a rollback from a previous three-tier snapshot: stale tier2
+    // artifacts must not survive a two-tier install.
+    for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
+        std::fs::write(tmp.path().join(name), b"stale").unwrap();
+    }
+    let cfg = Config {
+        zcash_network: TEST_NETWORK,
+        pir_config_url: Some(format!("{base}/pir.json")),
+        voting_config_url: String::new(),
+        precomputed_base_url: base,
+        force_snapshot_height: None,
+        pir_data_dir: tmp.path().to_path_buf(),
+        http_timeout: Duration::from_secs(5),
+    };
+
+    let outcome = bootstrap::run(&cfg).await.unwrap();
+    assert_eq!(outcome, Outcome::BootstrappedTo(h));
+    for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
+        assert!(
+            !tmp.path().join(name).exists(),
+            "{name} must be removed by a two-tier install"
+        );
+    }
+}

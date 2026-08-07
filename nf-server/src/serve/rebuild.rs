@@ -323,13 +323,20 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
         let nfs = file_store::load_nullifiers_up_to(&dd, byte_offset)?;
         info!(count = nfs.len(), "Nullifiers loaded");
 
-        if !pir_export::tiers_complete_for_height(&pd, state_ref.zcash_network, idx_height)? {
+        let layout = sync_pipeline::configured_pir_layout()?;
+        if !pir_export::tiers_complete_for_height(
+            &pd,
+            state_ref.zcash_network,
+            idx_height,
+            &layout,
+        )? {
             sync_pipeline::export_tree_and_tiers_from_nullifiers(
                 nfs,
                 &dd,
                 &pd,
                 state_ref.zcash_network,
                 idx_height,
+                &layout,
                 |msg, pct| {
                     let overall_pct = 10 + (pct as u16 * 45 / 55).min(45) as u8;
                     if let Ok(mut phase) = state_ref.phase.try_write() {

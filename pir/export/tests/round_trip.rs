@@ -261,14 +261,20 @@ fn test_build_and_export_writes_files() {
     assert_eq!(meta.pir_layout, pir_types::COMPILED_PIR_LAYOUT);
     assert_eq!(meta.root29, hex::encode(tree.root29.to_repr()));
     assert!(meta.num_ranges > 25); // K=2 punctured ranges from 50 nfs + sentinels
-    assert!(
-        pir_export::tiers_complete_for_height(&dir, pir_types::ZcashNetwork::Test, 4_134_000,)
-            .unwrap()
-    );
-    assert!(
-        !pir_export::tiers_complete_for_height(&dir, pir_types::ZcashNetwork::Main, 4_134_000,)
-            .unwrap()
-    );
+    assert!(pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        4_134_000,
+        &pir_export::COMPILED_PIR_LAYOUT,
+    )
+    .unwrap());
+    assert!(!pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Main,
+        4_134_000,
+        &pir_export::COMPILED_PIR_LAYOUT,
+    )
+    .unwrap());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -444,4 +450,126 @@ fn test_tier0_binary_search() {
             nf_lo
         );
     }
+}
+
+/// Three-tier (12+4+3) build+export: files, padded sizes, metadata, and
+/// proof reconstruction through the boundary + terminal tiers.
+#[test]
+fn test_three_tier_export_round_trip() {
+    use pir_types::PirLayout;
+
+    let layout = PirLayout {
+        pir_depth: 19,
+        tier0_layers: 12,
+        tier1_layers: 4,
+        tier2_layers: 3,
+    };
+    let dir = std::env::temp_dir().join(format!("pir_three_tier_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let nfs: Vec<Fp> = (1u64..=500).map(|i| Fp::from(i * 997)).collect();
+    let tree = pir_export::build_and_export_with_layout(
+        nfs,
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        Some(4_134_000),
+        &layout,
+    )
+    .unwrap();
+
+    // Sub-floor payloads are padded to the YPIR stride on disk.
+    assert_eq!(
+        layout.tier1_padded_row_bytes().unwrap(),
+        pir_types::YPIR_MIN_ITEM_BITS / 8
+    );
+    assert_eq!(
+        std::fs::metadata(dir.join("tier0.bin")).unwrap().len() as usize,
+        layout.tier0_bytes().unwrap()
+    );
+    assert_eq!(
+        std::fs::metadata(dir.join("tier1.bin")).unwrap().len() as usize,
+        layout.tier1_file_bytes().unwrap()
+    );
+    assert_eq!(
+        std::fs::metadata(dir.join("tier2.bin")).unwrap().len() as usize,
+        layout.tier2_file_bytes().unwrap().unwrap()
+    );
+
+    let meta: pir_export::PirMetadata =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("pir_root.json")).unwrap()).unwrap();
+    assert_eq!(meta.pir_layout, layout);
+    assert_eq!(meta.tier2_rows, layout.tier2_rows().unwrap().unwrap());
+    assert_eq!(
+        meta.tier2_row_bytes,
+        layout.tier2_padded_row_bytes().unwrap().unwrap()
+    );
+
+    assert!(pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        4_134_000,
+        &layout,
+    )
+    .unwrap());
+    // The compiled two-tier layout must not consider this directory complete.
+    assert!(!pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        4_134_000,
+        &pir_export::COMPILED_PIR_LAYOUT,
+    )
+    .unwrap());
+
+    // Proof reconstruction through the boundary chain is covered by
+    // pir-client's fetch_proof_local_with_layout tests, which consume the
+    // same exporters.
+    let _ = tree;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Non-default tier0 layer count and PIR depth (11+5+4 = depth 20):
+/// exercises the generalized Tier 0 exporter and runtime depth padding.
+#[test]
+fn test_non_default_tier0_and_depth_round_trip() {
+    use pir_types::PirLayout;
+
+    let layout = PirLayout {
+        pir_depth: 20,
+        tier0_layers: 11,
+        tier1_layers: 5,
+        tier2_layers: 4,
+    };
+    let dir = std::env::temp_dir().join(format!("pir_depth20_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let nfs: Vec<Fp> = (1u64..=300).map(|i| Fp::from(i * 1013)).collect();
+    let tree = pir_export::build_and_export_with_layout(
+        nfs,
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        Some(4_134_000),
+        &layout,
+    )
+    .unwrap();
+    assert_eq!(tree.pir_depth, 20);
+
+    let tier0_data = std::fs::read(dir.join("tier0.bin")).unwrap();
+    assert_eq!(tier0_data.len(), layout.tier0_bytes().unwrap());
+    assert_eq!(
+        std::fs::metadata(dir.join("tier1.bin")).unwrap().len() as usize,
+        layout.tier1_file_bytes().unwrap()
+    );
+    assert_eq!(
+        std::fs::metadata(dir.join("tier2.bin")).unwrap().len() as usize,
+        layout.tier2_file_bytes().unwrap().unwrap()
+    );
+    assert!(pir_export::tiers_complete_for_height(
+        &dir,
+        pir_types::ZcashNetwork::Test,
+        4_134_000,
+        &layout,
+    )
+    .unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

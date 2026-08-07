@@ -134,6 +134,7 @@ pub async fn run(args: Args) -> Result<()> {
         serving: RwLock::new(None),
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         pir_data_dir: args.pir_data_dir.clone(),
+        debug_row_endpoints: std::env::var("PIR_DEBUG_ROW_ENDPOINTS").is_ok_and(|v| v == "1"),
         zcash_network: args.zcash_network,
         lwd_urls,
         chain_url,
@@ -148,6 +149,9 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/params/tier1", get(handlers::get_params_tier1))
         .route("/tier1/query", post(handlers::post_tier1_query))
         .route("/tier1/row/:idx", get(handlers::get_tier1_row))
+        .route("/params/tier2", get(handlers::get_params_tier2))
+        .route("/tier2/query", post(handlers::post_tier2_query))
+        .route("/tier2/row/:idx", get(handlers::get_tier2_row))
         .route("/root", get(handlers::get_root))
         .route("/snapshot/prepare", post(rebuild::post_snapshot_prepare))
         .route("/snapshot/status", get(rebuild::get_snapshot_status))

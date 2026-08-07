@@ -62,23 +62,16 @@ impl Drop for Aligned64 {
     }
 }
 
-/// Tier 1 YPIR scenario for the compiled production layout.
+/// Tier 1 YPIR scenario of the compiled default layout (single encrypted tier).
 pub fn tier1_scenario() -> YpirScenario {
     tier1_scenario_for_layout(COMPILED_PIR_LAYOUT).expect("compiled layout YPIR scenario is valid")
 }
 
-/// Derive the Tier 1 YPIR scenario from a negotiated two-tier layout.
+/// Derive the Tier 1 YPIR scenario from a negotiated layout.
 pub fn tier1_scenario_for_layout(layout: PirLayout) -> Result<YpirScenario> {
-    layout
-        .validate_split()
-        .map_err(anyhow::Error::msg)?;
-    layout
-        .validate_ypir_bounds()
-        .map_err(anyhow::Error::msg)?;
-    Ok(YpirScenario {
-        num_items: layout.tier1_rows().map_err(anyhow::Error::msg)?,
-        item_size_bits: layout.tier1_item_bits().map_err(anyhow::Error::msg)?,
-    })
+    layout.validate_split().map_err(anyhow::Error::msg)?;
+    layout.validate_ypir_bounds().map_err(anyhow::Error::msg)?;
+    layout.tier1_scenario().map_err(anyhow::Error::msg)
 }
 
 // ── PIR server state ─────────────────────────────────────────────────────────
@@ -568,14 +561,30 @@ pub fn dispatch_query(
                 error = %e,
                 "pir_request_failed"
             );
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+            // Constant error surface: the same status and body for every
+            // malformed query on every tier, so the response text can never
+            // depend on the input. Detail stays in the warn! log above.
+            (StatusCode::BAD_REQUEST, INVALID_QUERY_BODY).into_response()
         }
     }
 }
 
+/// Fixed body returned for every rejected PIR query, on every tier.
+pub const INVALID_QUERY_BODY: &str = "invalid query";
+
+/// Fixed body returned by Tier 2 endpoints when the served layout has no
+/// Tier 2.
+pub const TIER2_DISABLED_BODY: &str = "tier2 not enabled";
+
 // ── ServingState ─────────────────────────────────────────────────────────────
 
 use axum::body::Bytes;
+
+/// One initialized encrypted tier: its YPIR state and served scenario.
+pub struct EncryptedTier {
+    pub state: OwnedTierState,
+    pub scenario: YpirScenario,
+}
 
 /// All data needed to serve PIR queries for all tiers.
 ///
@@ -588,23 +597,35 @@ use axum::body::Bytes;
 /// (reference-counted) to avoid cloning on each HTTP response.
 pub struct ServingState {
     pub tier0_data: Bytes,
-    pub tier1: OwnedTierState,
-    pub tier1_scenario: YpirScenario,
+    pub tier1: EncryptedTier,
+    /// Second encrypted tier; present iff `metadata.pir_layout.tier2_enabled()`.
+    pub tier2: Option<EncryptedTier>,
     pub metadata: PirMetadata,
 }
 
-/// On-disk file name for the tier-1 plaintext rows.
+impl ServingState {
+    /// The layout this state serves.
+    pub fn layout(&self) -> &PirLayout {
+        &self.metadata.pir_layout
+    }
+}
+
+/// On-disk file name for the tier-1 rows.
 pub const TIER1_FILE: &str = "tier1.bin";
 /// On-disk file name for the tier-1 precompute cache.
 pub const TIER1_PRECOMPUTE_FILE: &str = "tier1.precompute";
+/// On-disk file name for the tier-2 rows (three-tier layouts only).
+pub const TIER2_FILE: &str = "tier2.bin";
+/// On-disk file name for the tier-2 precompute cache.
+pub const TIER2_PRECOMPUTE_FILE: &str = "tier2.precompute";
 
 /// Load tier files from disk, initialize YPIR servers, and return a
 /// ready-to-serve [`ServingState`].
 ///
-/// Reads `tier0.bin`, `tier1.bin`, and `pir_root.json` from
-/// `pir_data_dir`, plus the `tier1.precompute` cache if
-/// present and valid. Cache miss falls back to recompute and writes a
-/// fresh cache for next boot.
+/// Reads `tier0.bin`, `tier1.bin`, `pir_root.json` — and `tier2.bin` when
+/// the metadata layout enables Tier 2 — from `pir_data_dir`, plus the
+/// per-tier `.precompute` caches if present and valid. Cache miss falls
+/// back to recompute and writes a fresh cache for next boot.
 pub fn load_serving_state(
     pir_data_dir: &std::path::Path,
     expected_network: pir_types::ZcashNetwork,
@@ -629,90 +650,129 @@ pub fn load_serving_state(
         pir_types::DATASET_VERSION
     );
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
-    metadata
-        .pir_layout
+
+    let layout = metadata.pir_layout;
+    layout
         .validate_split()
         .map_err(anyhow::Error::msg)
         .context("invalid metadata pir_layout")?;
-    metadata
-        .pir_layout
+    layout
         .validate_ypir_bounds()
         .map_err(anyhow::Error::msg)
         .context("metadata pir_layout fails YPIR bounds")?;
-    let layout_rows = metadata
-        .pir_layout
-        .tier1_rows()
+    let tier1_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
+    let tier1_stride = layout
+        .tier1_padded_row_bytes()
         .map_err(anyhow::Error::msg)?;
-    let layout_row_bytes = metadata
-        .pir_layout
-        .tier1_row_bytes()
+    let tier1_file_bytes = layout.tier1_file_bytes().map_err(anyhow::Error::msg)?;
+    let tier2_rows = layout.tier2_rows().map_err(anyhow::Error::msg)?;
+    let tier2_stride = layout
+        .tier2_padded_row_bytes()
         .map_err(anyhow::Error::msg)?;
-    let expected_tier0_bytes = metadata
-        .pir_layout
-        .tier0_bytes()
-        .map_err(anyhow::Error::msg)?;
+    let tier2_file_bytes = layout.tier2_file_bytes().map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
-        metadata.pir_depth == metadata.pir_layout.pir_depth
-            && metadata.pir_layout.pir_depth == pir_types::PIR_DEPTH
-            && metadata.tier1_rows == layout_rows
-            && metadata.tier1_row_bytes == layout_row_bytes
-            && metadata.tier0_bytes == expected_tier0_bytes,
-        "PIR dataset layout mismatch: metadata depth {} / layout {:?} / tier1 {}x{} bytes / tier0 {} bytes; derived tier1 {}x{} bytes and tier0 {} bytes",
+        metadata.pir_depth == layout.pir_depth
+            && metadata.tier1_rows == tier1_rows
+            && metadata.tier1_row_bytes == tier1_stride
+            && metadata.tier2_rows == tier2_rows.unwrap_or(0)
+            && metadata.tier2_row_bytes == tier2_stride.unwrap_or(0),
+        "PIR dataset layout mismatch: metadata depth {} / tier1 {}x{} / tier2 {}x{} does not \
+         match layout {:?}",
         metadata.pir_depth,
-        metadata.pir_layout,
         metadata.tier1_rows,
         metadata.tier1_row_bytes,
-        metadata.tier0_bytes,
-        layout_rows,
-        layout_row_bytes,
-        expected_tier0_bytes
+        metadata.tier2_rows,
+        metadata.tier2_row_bytes,
+        layout
     );
 
     let tier0_data = Bytes::from(std::fs::read(pir_data_dir.join("tier0.bin"))?);
+    let expected_tier0_bytes = layout.tier0_bytes().map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
-        tier0_data.len() == expected_tier0_bytes,
-        "tier0.bin size mismatch: file has {}; expected {} from metadata pir_layout",
+        metadata.tier0_bytes == expected_tier0_bytes && tier0_data.len() == expected_tier0_bytes,
+        "tier0.bin size mismatch: metadata reports {} bytes and file has {}; expected {}",
+        metadata.tier0_bytes,
         tier0_data.len(),
         expected_tier0_bytes
     );
     info!(bytes = tier0_data.len(), "Tier 0 loaded");
 
-    // Validate tier1.bin size BEFORE attempting cache load. Cache
-    // validation hashes the tier file but doesn't constrain its size; a
-    // malformed tier file must be rejected up front because the server
-    // still serves rows directly from tier{0,1}.bin for some operations.
+    // Validate tier sizes BEFORE attempting cache loads. Cache validation
+    // hashes the tier file but doesn't constrain its size; a malformed tier
+    // file must be rejected up front because the server still serves rows
+    // directly from tier files for some operations.
     let tier1_path = pir_data_dir.join(TIER1_FILE);
     let tier1_size = std::fs::metadata(&tier1_path)?.len() as usize;
-    let expected_tier1_bytes = layout_rows * layout_row_bytes;
-    info!(
-        bytes = tier1_size,
-        rows = layout_rows,
-        "Tier 1 sized"
-    );
+    info!(bytes = tier1_size, rows = tier1_rows, "Tier 1 sized");
     anyhow::ensure!(
-        tier1_size == expected_tier1_bytes,
-        "tier1.bin size mismatch: got {} bytes, expected {} from metadata pir_layout",
+        tier1_size == tier1_file_bytes,
+        "tier1.bin size mismatch: got {} bytes, expected {}",
         tier1_size,
-        expected_tier1_bytes
+        tier1_file_bytes
     );
 
+    let tier2_path = pir_data_dir.join(TIER2_FILE);
+    match tier2_file_bytes {
+        Some(expected) => {
+            let tier2_size = std::fs::metadata(&tier2_path)
+                .with_context(|| format!("tier2.bin required by layout {layout:?}"))?
+                .len() as usize;
+            anyhow::ensure!(
+                tier2_size == expected,
+                "tier2.bin size mismatch: got {} bytes, expected {}",
+                tier2_size,
+                expected
+            );
+        }
+        None => {
+            // A stray tier2.bin under a two-tier layout is a misdeployment;
+            // refuse the ambiguity rather than silently ignoring the file.
+            anyhow::ensure!(
+                !tier2_path.exists(),
+                "tier2.bin present but the dataset layout has no Tier 2; remove it or fix the \
+                 snapshot"
+            );
+        }
+    }
+
     info!("Initializing YPIR servers");
-    let tier1_scenario = tier1_scenario_for_layout(metadata.pir_layout)?;
+    let tier1_scenario = layout.tier1_scenario().map_err(anyhow::Error::msg)?;
     let tier1_cache_path = pir_data_dir.join(TIER1_PRECOMPUTE_FILE);
-    let (tier1, tier1_hit) =
+    let (tier1_state, tier1_hit) =
         OwnedTierState::new_or_load(&tier1_path, tier1_scenario.clone(), &tier1_cache_path)?;
     info!(cache_hit = tier1_hit, "Tier 1 YPIR ready");
+
+    let tier2 = match layout.tier2_scenario().map_err(anyhow::Error::msg)? {
+        Some(tier2_scenario) => {
+            let tier2_cache_path = pir_data_dir.join(TIER2_PRECOMPUTE_FILE);
+            let (tier2_state, tier2_hit) = OwnedTierState::new_or_load(
+                &tier2_path,
+                tier2_scenario.clone(),
+                &tier2_cache_path,
+            )?;
+            info!(cache_hit = tier2_hit, "Tier 2 YPIR ready");
+            Some(EncryptedTier {
+                state: tier2_state,
+                scenario: tier2_scenario,
+            })
+        }
+        None => None,
+    };
 
     info!(
         elapsed_s = format!("{:.1}", t_total.elapsed().as_secs_f64()),
         tier1_cache_hit = tier1_hit,
+        tier2_enabled = tier2.is_some(),
         "Server ready"
     );
 
     Ok(ServingState {
         tier0_data,
-        tier1,
-        tier1_scenario,
+        tier1: EncryptedTier {
+            state: tier1_state,
+            scenario: tier1_scenario,
+        },
+        tier2,
         metadata,
     })
 }
@@ -731,11 +791,13 @@ mod tests {
             root25: "00".to_owned(),
             root29: "00".to_owned(),
             num_ranges: 0,
-            pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
+            pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes: 0,
             tier1_rows: 0,
             tier1_row_bytes: 0,
+            tier2_rows: 0,
+            tier2_row_bytes: 0,
             height: Some(1),
         };
         std::fs::write(
@@ -762,11 +824,13 @@ mod tests {
             root25: "00".to_owned(),
             root29: "00".to_owned(),
             num_ranges: 0,
-            pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
+            pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes: 0,
             tier1_rows: 0,
             tier1_row_bytes: 0,
+            tier2_rows: 0,
+            tier2_row_bytes: 0,
             height: Some(1),
         };
         std::fs::write(
@@ -793,11 +857,13 @@ mod tests {
             root25: "00".to_owned(),
             root29: "00".to_owned(),
             num_ranges: 0,
-            pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
+            pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes: 0,
             tier1_rows: TIER1_ROWS,
             tier1_row_bytes: TIER1_ROW_BYTES,
+            tier2_rows: 0,
+            tier2_row_bytes: 0,
             height: Some(1),
         };
         std::fs::write(
@@ -817,7 +883,7 @@ mod tests {
     #[test]
     fn rejects_old_shaped_tier_file_before_precompute() {
         let dir = tempfile::tempdir().unwrap();
-        let tier0_bytes = COMPILED_PIR_LAYOUT.tier0_bytes().unwrap();
+        let tier0_bytes = ((1usize << pir_types::TIER0_LAYERS) - 1) * 32 + TIER1_ROWS * 64;
         let metadata = PirMetadata {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
@@ -825,11 +891,13 @@ mod tests {
             root25: "00".to_owned(),
             root29: "00".to_owned(),
             num_ranges: 0,
-            pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
+            pir_depth: pir_types::PIR_DEPTH,
             tier0_bytes,
             tier1_rows: TIER1_ROWS,
             tier1_row_bytes: TIER1_ROW_BYTES,
+            tier2_rows: 0,
+            tier2_row_bytes: 0,
             height: Some(1),
         };
         std::fs::write(
@@ -845,5 +913,220 @@ mod tests {
             Err(err) => err.to_string(),
         };
         assert!(err.contains("tier1.bin size mismatch"), "{err}");
+    }
+
+    /// Metadata + zeroed tier files for an arbitrary layout, with all
+    /// derived fields consistent. Tests then perturb one aspect.
+    fn write_layout_dataset(dir: &std::path::Path, layout: PirLayout, with_tier2_file: bool) {
+        let tier1_rows = layout.tier1_rows().unwrap();
+        let tier1_stride = layout.tier1_padded_row_bytes().unwrap();
+        let tier2_rows = layout.tier2_rows().unwrap();
+        let tier2_stride = layout.tier2_padded_row_bytes().unwrap();
+        let metadata = PirMetadata {
+            zcash_network: pir_types::ZcashNetwork::Main,
+            nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
+            dataset_version: pir_types::DATASET_VERSION,
+            root25: "00".to_owned(),
+            root29: "00".to_owned(),
+            num_ranges: 0,
+            pir_layout: layout,
+            pir_depth: layout.pir_depth,
+            tier0_bytes: layout.tier0_bytes().unwrap(),
+            tier1_rows,
+            tier1_row_bytes: tier1_stride,
+            tier2_rows: tier2_rows.unwrap_or(0),
+            tier2_row_bytes: tier2_stride.unwrap_or(0),
+            height: Some(1),
+        };
+        std::fs::write(
+            dir.join("pir_root.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("tier0.bin"),
+            vec![0u8; layout.tier0_bytes().unwrap()],
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(TIER1_FILE),
+            vec![0u8; layout.tier1_file_bytes().unwrap()],
+        )
+        .unwrap();
+        if with_tier2_file {
+            let file_bytes = layout
+                .tier2_file_bytes()
+                .unwrap()
+                .expect("tier2 file only written for three-tier layouts");
+            std::fs::write(dir.join(TIER2_FILE), vec![0u8; file_bytes]).unwrap();
+        }
+    }
+
+    const THREE_TIER: PirLayout = PirLayout {
+        pir_depth: 19,
+        tier0_layers: 12,
+        tier1_layers: 4,
+        tier2_layers: 3,
+    };
+
+    #[test]
+    fn rejects_three_tier_metadata_with_missing_tier2_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout_dataset(dir.path(), THREE_TIER, false);
+
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
+            Ok(_) => panic!("missing tier2.bin must be rejected"),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(err.contains("tier2.bin required"), "{err}");
+    }
+
+    #[test]
+    fn rejects_mis_sized_tier2_file_before_precompute() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout_dataset(dir.path(), THREE_TIER, true);
+        std::fs::write(dir.path().join(TIER2_FILE), [0u8; 64]).unwrap();
+
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
+            Ok(_) => panic!("mis-sized tier2.bin must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("tier2.bin size mismatch"), "{err}");
+    }
+
+    #[test]
+    fn rejects_stray_tier2_file_under_two_tier_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout_dataset(dir.path(), COMPILED_PIR_LAYOUT, false);
+        std::fs::write(dir.path().join(TIER2_FILE), [0u8; 64]).unwrap();
+
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
+            Ok(_) => panic!("stray tier2.bin must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("no Tier 2"), "{err}");
+    }
+
+    #[test]
+    fn rejects_metadata_tier_fields_disagreeing_with_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        write_layout_dataset(dir.path(), THREE_TIER, true);
+        // Perturb tier2_rows away from the derived value.
+        let mut meta: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("pir_root.json")).unwrap(),
+        )
+        .unwrap();
+        meta["tier2_rows"] = serde_json::Value::from(1234);
+        std::fs::write(
+            dir.path().join("pir_root.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
+            Ok(_) => panic!("metadata/layout disagreement must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("layout mismatch"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_layout_in_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = PirLayout {
+            pir_depth: 19,
+            tier0_layers: 10,
+            tier1_layers: 9,
+            tier2_layers: 0,
+        };
+        // Bypass geometry helpers (which validate): write metadata by hand.
+        let metadata = serde_json::json!({
+            "zcash_network": "main",
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
+            "root25": "00", "root29": "00", "num_ranges": 0,
+            "pir_layout": bad,
+            "pir_depth": 19, "tier0_bytes": 0,
+            "tier1_rows": 0, "tier1_row_bytes": 0,
+            "height": 1,
+        });
+        std::fs::write(
+            dir.path().join("pir_root.json"),
+            serde_json::to_vec(&metadata).unwrap(),
+        )
+        .unwrap();
+
+        let err = match load_serving_state(dir.path(), pir_types::ZcashNetwork::Main) {
+            Ok(_) => panic!("invalid layout must be rejected"),
+            Err(err) => format!("{err:#}"),
+        };
+        // tier0_layers 10 gives 1024 Tier 1 rows, under the YPIR row floor.
+        assert!(err.contains("YPIR bounds"), "{err}");
+    }
+
+    #[test]
+    fn malformed_query_surface_is_uniform_across_tiers() {
+        use axum::http::StatusCode;
+        use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+        // Minimal YPIR scenario (floor sizes) keeps this test fast while
+        // exercising the real dispatch path.
+        let scenario = YpirScenario {
+            num_items: pir_types::YPIR_MIN_ROWS,
+            item_size_bits: pir_types::YPIR_MIN_ITEM_BITS,
+        };
+        let data = vec![0u8; scenario.num_items * scenario.item_size_bits / 8];
+        let state = OwnedTierState::new(&data, scenario);
+        let next_req_id = AtomicU64::new(0);
+        let inflight = AtomicUsize::new(0);
+
+        let malformed: [&[u8]; 5] = [
+            b"",
+            &[0u8; 4],
+            &{
+                // pqr_byte_len not a multiple of 8
+                let mut q = 9u64.to_le_bytes().to_vec();
+                q.extend_from_slice(&[0u8; 24]);
+                q
+            }[..],
+            &{
+                // pqr_byte_len exceeds payload
+                let mut q = 64u64.to_le_bytes().to_vec();
+                q.extend_from_slice(&[0u8; 8]);
+                q
+            }[..],
+            &{
+                // empty pub_params section
+                let mut q = 8u64.to_le_bytes().to_vec();
+                q.extend_from_slice(&[0u8; 8]);
+                q
+            }[..],
+        ];
+
+        for tier in ["tier1", "tier2"] {
+            for body in malformed {
+                let response = dispatch_query(&state, tier, body, &next_req_id, &inflight);
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                let bytes = futures_body_bytes(response);
+                assert_eq!(
+                    String::from_utf8_lossy(&bytes),
+                    INVALID_QUERY_BODY,
+                    "error body must be the fixed string for every tier and input"
+                );
+            }
+        }
+    }
+
+    /// Extract a small axum response body synchronously.
+    fn futures_body_bytes(response: axum::response::Response) -> Vec<u8> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap()
+                .to_vec()
+        })
     }
 }

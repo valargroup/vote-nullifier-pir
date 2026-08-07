@@ -78,8 +78,14 @@ pub const PIR_SNAPSHOTS_PATH: &str = "/snapshots";
 /// Files that make up a complete published snapshot, in the order they
 /// must be moved into place. `pir_root.json` is intentionally last so
 /// that its presence at the canonical height implies the tier blobs are
-/// already in place.
+/// already in place. Three-tier snapshots additionally carry
+/// [`OPTIONAL_TIER2_FILE`], installed between the tier blobs and the
+/// metadata.
 const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "pir_root.json"];
+
+/// Optional second encrypted tier blob, present only in snapshots whose
+/// `pir_root.json` layout enables Tier 2.
+const OPTIONAL_TIER2_FILE: &str = "tier2.bin";
 
 /// Dataset identity and height read from `pir_root.json` during bootstrap.
 #[derive(Debug, Deserialize)]
@@ -87,8 +93,15 @@ struct PirRootHeader {
     zcash_network: pir_types::ZcashNetwork,
     nullifier_pool: String,
     dataset_version: u32,
+    /// Tier layout; absent in legacy snapshots (which are always 12+7).
+    #[serde(default = "compiled_layout")]
+    pir_layout: pir_types::PirLayout,
     #[serde(default)]
     height: Option<u64>,
+}
+
+fn compiled_layout() -> pir_types::PirLayout {
+    pir_types::COMPILED_PIR_LAYOUT
 }
 
 /// Per-file integrity entry in `manifest.json`.
@@ -395,7 +408,7 @@ fn validate_pir_root(
     path: &Path,
     expected_network: pir_types::ZcashNetwork,
     expected_height: u64,
-) -> Result<()> {
+) -> Result<PirRootHeader> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let root: PirRootHeader =
         serde_json::from_str(&raw).with_context(|| format!("decode {}", path.display()))?;
@@ -422,7 +435,10 @@ fn validate_pir_root(
         root.height,
         expected_height
     );
-    Ok(())
+    root.pir_layout
+        .validate_split()
+        .map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    Ok(root)
 }
 
 /// Download manifest + tier files for `height`, verify sha256s, and
@@ -477,6 +493,14 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
             bail!("manifest is missing required file {f}");
         }
     }
+    let has_tier2 = manifest.files.contains_key(OPTIONAL_TIER2_FILE);
+
+    // Download tier blobs first, pir_root.json last (see SNAPSHOT_FILES).
+    let mut file_names: Vec<&str> = vec!["tier0.bin", "tier1.bin"];
+    if has_tier2 {
+        file_names.push(OPTIONAL_TIER2_FILE);
+    }
+    file_names.push("pir_root.json");
 
     let staging = cfg.pir_data_dir.join(".bootstrap-staging");
     if staging.exists() {
@@ -487,7 +511,7 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         .with_context(|| format!("create staging dir {}", staging.display()))?;
 
     let mut total_bytes: u64 = 0;
-    for name in SNAPSHOT_FILES {
+    for name in &file_names {
         let entry = &manifest.files[*name];
         let url = format!("{snapshot_dir}/{name}");
         let dest = staging.join(name);
@@ -495,9 +519,17 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
         total_bytes = total_bytes.saturating_add(written);
     }
 
-    validate_pir_root(&staging.join("pir_root.json"), cfg.zcash_network, height)?;
+    let root = validate_pir_root(&staging.join("pir_root.json"), cfg.zcash_network, height)?;
+    // Fail before install rather than at load_serving_state: the snapshot's
+    // advertised layout and its shipped files must agree.
+    anyhow::ensure!(
+        root.pir_layout.tier2_enabled() == has_tier2,
+        "snapshot layout {:?} and manifest disagree on tier2.bin (manifest has it: {})",
+        root.pir_layout,
+        has_tier2
+    );
 
-    install_from_staging(&staging, &cfg.pir_data_dir)?;
+    install_from_staging(&staging, &cfg.pir_data_dir, has_tier2)?;
 
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         warn!(error = %e, dir = %staging.display(), "failed to clean staging dir");
@@ -577,12 +609,17 @@ async fn download_and_verify(
 /// a half-applied install is idempotent — the absent or stale
 /// `pir_root.json` will simply trigger another bootstrap on the next
 /// startup.
-fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
+fn install_from_staging(staging: &Path, pir_data_dir: &Path, has_tier2: bool) -> Result<()> {
     if !pir_data_dir.exists() {
         std::fs::create_dir_all(pir_data_dir)
             .with_context(|| format!("create {}", pir_data_dir.display()))?;
     }
-    for name in SNAPSHOT_FILES {
+    let mut names: Vec<&str> = vec!["tier0.bin", "tier1.bin"];
+    if has_tier2 {
+        names.push(OPTIONAL_TIER2_FILE);
+    }
+    names.push("pir_root.json");
+    for name in &names {
         let from = staging.join(name);
         let to = pir_data_dir.join(name);
         std::fs::rename(&from, &to).map_err(|e| {
@@ -618,19 +655,23 @@ fn install_from_staging(staging: &Path, pir_data_dir: &Path) -> Result<()> {
             }
         }
     }
-    // Dataset v1 stored a second PIR database and cache. They are not part of
-    // v2 manifests, so remove them explicitly after the new metadata has been
-    // installed to avoid leaving gigabytes of unreachable data on upgraded hosts.
-    for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
-        let path = pir_data_dir.join(name);
-        match std::fs::remove_file(&path) {
-            Ok(()) => tracing::info!(legacy = %path.display(), "removed legacy Tier 2 artifact"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(
-                legacy = %path.display(),
-                error = %e,
-                "failed to remove legacy Tier 2 artifact"
-            ),
+    // When the installed snapshot has no Tier 2, remove any tier2 artifacts
+    // left behind — by dataset v1 (which stored a second PIR database) or by
+    // a previous three-tier snapshot that this install rolls back. When the
+    // snapshot ships tier2.bin, its stale precompute caches were already
+    // evicted by the rename loop above.
+    if !has_tier2 {
+        for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
+            let path = pir_data_dir.join(name);
+            match std::fs::remove_file(&path) {
+                Ok(()) => tracing::info!(stale = %path.display(), "removed stale Tier 2 artifact"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(
+                    stale = %path.display(),
+                    error = %e,
+                    "failed to remove stale Tier 2 artifact"
+                ),
+            }
         }
     }
     Ok(())
@@ -767,7 +808,7 @@ mod tests {
         for name in SNAPSHOT_FILES {
             std::fs::write(staging.join(name), name.as_bytes()).unwrap();
         }
-        install_from_staging(&staging, &dest).unwrap();
+        install_from_staging(&staging, &dest, false).unwrap();
         for name in SNAPSHOT_FILES {
             assert!(dest.join(name).exists(), "{name} should be installed");
             assert!(!staging.join(name).exists(), "{name} should be moved");

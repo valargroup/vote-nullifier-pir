@@ -1,5 +1,20 @@
 # Unreleased
 
+- Add an optional second encrypted tier: `PirLayout` gains `tier2_layers`
+  (default 0 = today's two-tier behavior). When enabled, Tier 1 becomes a
+  boundary-index YPIR tier chaining into a terminal punctured-range Tier 2
+  (`tier2_row = tier1_row * 2^tier1_layers + child`). Export, server
+  (`/params/tier2`, `POST /tier2/query`), bootstrap (optional `tier2.bin`),
+  and client all follow the negotiated layout; encrypted rows below YPIR's
+  28,672-bit item floor are zero-padded to the floor stride.
+- Harden the client against error oracles: every proof attempt sends the
+  advertised number of encrypted queries (dummy row 0 on latched failures,
+  `catch_unwind` around all server-byte parsing, fixed-work boundary scans),
+  so request cardinality/order cannot reveal whether reconstruction
+  succeeded. Server query rejections return a constant `invalid query` body;
+  client errors no longer embed row indices or server-controlled bytes; the
+  plaintext `/tier{n}/row/:idx` debug endpoints are gated behind
+  `PIR_DEBUG_ROW_ENDPOINTS=1`.
 - Make two-tier PIR geometry runtime-driven: clients accept any valid
   `PirLayout` that matches `/root` (and passes geometry / YPIR / circuit
   bounds) instead of requiring equality against `COMPILED_PIR_LAYOUT`.

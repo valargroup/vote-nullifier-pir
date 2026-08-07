@@ -35,6 +35,33 @@ struct Args {
     /// If provided, the sync height is embedded in root_info.json.
     #[arg(long)]
     checkpoint: Option<PathBuf>,
+
+    /// Tier split as comma-separated layer counts, e.g. `12,7` (two tiers)
+    /// or `12,4,3` (three tiers). PIR depth is the sum of the parts.
+    /// Defaults to the compiled 12,7 layout.
+    #[arg(long)]
+    tier_split: Option<String>,
+}
+
+fn parse_tier_split(spec: &str) -> Result<pir_types::PirLayout> {
+    let parts: Vec<usize> = spec
+        .split(',')
+        .map(|p| p.trim().parse::<usize>())
+        .collect::<Result<_, _>>()
+        .with_context(|| format!("invalid --tier-split {spec:?}"))?;
+    anyhow::ensure!(
+        parts.len() == 2 || parts.len() == 3,
+        "--tier-split must have 2 or 3 comma-separated layer counts, got {}",
+        parts.len()
+    );
+    let layout = pir_types::PirLayout {
+        pir_depth: parts.iter().sum(),
+        tier0_layers: parts[0],
+        tier1_layers: parts[1],
+        tier2_layers: parts.get(2).copied().unwrap_or(0),
+    };
+    pir_types::validate_pir_layout(&layout).map_err(anyhow::Error::msg)?;
+    Ok(layout)
 }
 
 fn main() -> Result<()> {
@@ -75,7 +102,11 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    pir_export::build_and_export(nfs, &args.output_dir, network, height)?;
+    let layout = match &args.tier_split {
+        Some(spec) => parse_tier_split(spec)?,
+        None => pir_types::COMPILED_PIR_LAYOUT,
+    };
+    pir_export::build_and_export_with_layout(nfs, &args.output_dir, network, height, &layout)?;
 
     eprintln!(
         "\nDone! Total time: {:.1}s",

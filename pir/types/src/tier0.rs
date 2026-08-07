@@ -30,9 +30,7 @@ impl Tier0Data {
 
     /// Parse Tier 0 bytes for a negotiated two-tier layout.
     pub fn from_layout(data: Vec<u8>, layout: PirLayout) -> anyhow::Result<Self> {
-        layout
-            .validate_split()
-            .map_err(anyhow::Error::msg)?;
+        layout.validate_split().map_err(anyhow::Error::msg)?;
         let layers = layout.tier0_layers;
         let num_subtrees = layout.tier1_rows().map_err(anyhow::Error::msg)?;
         let internal_nodes = layout.tier0_internal_nodes().map_err(anyhow::Error::msg)?;
@@ -185,6 +183,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 11,
             tier1_layers: 8,
+            tier2_layers: 0,
         };
         let expected = layout.tier0_bytes().unwrap();
         let tier0 = Tier0Data::from_layout(vec![0u8; expected], layout).unwrap();

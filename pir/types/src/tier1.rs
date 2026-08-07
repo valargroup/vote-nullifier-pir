@@ -4,6 +4,7 @@
 //! client rebuilds the subtree locally to extract siblings. Row width follows
 //! the negotiated [`crate::PirLayout`].
 
+use anyhow::Context as _;
 use pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
@@ -24,12 +25,27 @@ impl<'a> Tier1Row<'a> {
 
     /// Parse a Tier 1 row for a negotiated two-tier layout.
     pub fn from_layout(data: &'a [u8], layout: PirLayout) -> anyhow::Result<Self> {
-        layout
-            .validate_split()
-            .map_err(anyhow::Error::msg)?;
-        let layers = layout.tier1_layers;
-        let leaves = layout.tier1_leaves().map_err(anyhow::Error::msg)?;
-        let expected = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;
+        layout.validate_split().map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            !layout.tier2_enabled(),
+            "Tier 1 rows hold boundary records (not leaves) in a three-tier layout"
+        );
+        Self::from_layers(data, layout.tier1_layers)
+    }
+
+    /// Parse a terminal punctured-range row with an explicit layer count.
+    ///
+    /// Used for Tier 1 rows of a two-tier layout (via [`Self::from_layout`])
+    /// and for Tier 2 rows of a three-tier layout.
+    pub fn from_layers(data: &'a [u8], layers: usize) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            layers > 0 && layers <= 32,
+            "invalid punctured-range layer count {layers}"
+        );
+        let leaves = 1usize << layers;
+        let expected = leaves
+            .checked_mul(TIER1_LEAF_BYTES)
+            .context("punctured-range row width overflows")?;
         anyhow::ensure!(
             data.len() == expected,
             "Tier 1 row size mismatch: got {} bytes, expected {expected}",
@@ -194,6 +210,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 13,
             tier1_layers: 6,
+            tier2_layers: 0,
         };
         let row_bytes = layout.tier1_row_bytes().unwrap();
         let row = vec![0u8; row_bytes];

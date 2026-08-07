@@ -52,26 +52,32 @@ pub struct PirTree {
     pub root25: Fp,
     /// Depth-29 Merkle root (extended with empty hashes for circuit compatibility).
     pub root29: Fp,
-    /// Tree levels (bottom-up): levels[0] = leaf hashes, levels[PIR_DEPTH-1] = root's children.
+    /// Tree levels (bottom-up): levels[0] = leaf hashes, levels[pir_depth-1] = root's children.
     pub levels: Vec<Vec<Fp>>,
     /// Punctured ranges (K=2): each element is `[nf_lo, nf_mid, nf_hi]`.
     pub ranges: Vec<PuncturedRange>,
     /// Precomputed empty hashes for all 29 levels.
     pub empty_hashes: [Fp; TREE_DEPTH],
+    /// Depth this PIR tree was built at (== levels.len()).
+    pub pir_depth: usize,
 }
 
-/// Build a depth-19 PIR tree from punctured ranges (K=2).
+/// Build a PIR tree of the given depth from punctured ranges (K=2).
 ///
 /// The ranges must already be constructed via `build_punctured_ranges`.
 /// This function hashes them into leaf commitments and builds the Merkle
 /// tree, then extends the root to depth 29 for circuit compatibility.
-pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
+pub fn build_pir_tree_with_depth(ranges: Vec<PuncturedRange>, pir_depth: usize) -> Result<PirTree> {
     anyhow::ensure!(
-        ranges.len() <= 1 << PIR_DEPTH,
+        (1..=FULL_DEPTH).contains(&pir_depth),
+        "PIR depth {pir_depth} outside 1..={FULL_DEPTH}"
+    );
+    anyhow::ensure!(
+        ranges.len() <= 1 << pir_depth,
         "too many ranges ({}) for PIR depth {} (max {})",
         ranges.len(),
-        PIR_DEPTH,
-        1 << PIR_DEPTH
+        pir_depth,
+        1 << pir_depth
     );
     verify_punctured_range_spans(&ranges)?;
     let t0 = Instant::now();
@@ -85,14 +91,14 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     let empty_hashes = precompute_empty_hashes();
 
     let t1 = Instant::now();
-    let (root25, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);
+    let (root25, levels) = build_levels(leaves, &empty_hashes, pir_depth);
     info!(
         level_count = levels.len(),
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
         "PIR tree built"
     );
 
-    let root29 = extend_root(root25, &empty_hashes);
+    let root29 = extend_root_from_depth(root25, &empty_hashes, pir_depth);
     info!(root29 = hex::encode(root29.to_repr()), "depth-29 root");
 
     Ok(PirTree {
@@ -101,21 +107,37 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
         levels,
         ranges,
         empty_hashes,
+        pir_depth,
     })
 }
 
-/// Extend the PIR-depth root to a depth-29 root by hashing with empty subtrees.
+/// Build a PIR tree at the compiled default depth ([`PIR_DEPTH`]).
+pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
+    build_pir_tree_with_depth(ranges, PIR_DEPTH)
+}
+
+/// Extend a PIR root at `pir_depth` to a depth-29 root by hashing with empty
+/// subtrees.
 ///
 /// At each extension level, the existing root is the left child and an empty
 /// subtree of the appropriate height is the right child. This produces the
 /// same root as building a depth-29 tree with the same leaves.
-pub fn extend_root(root25: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
+pub fn extend_root_from_depth(
+    pir_root: Fp,
+    empty_hashes: &[Fp; TREE_DEPTH],
+    pir_depth: usize,
+) -> Fp {
     let hasher = PoseidonHasher::new();
-    let mut root = root25;
-    for empty_hash in &empty_hashes[PIR_DEPTH..FULL_DEPTH] {
+    let mut root = pir_root;
+    for empty_hash in &empty_hashes[pir_depth..FULL_DEPTH] {
         root = hasher.hash(root, *empty_hash);
     }
     root
+}
+
+/// Extend the default-depth PIR root to a depth-29 root.
+pub fn extend_root(root25: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
+    extend_root_from_depth(root25, empty_hashes, PIR_DEPTH)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -223,10 +245,19 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
     build_punctured_ranges(&nfs)
 }
 
-/// Sort / sentinel-inject nullifiers and build the depth-19 PIR Merkle structure.
-pub fn build_pir_tree_from_nullifiers(nfs: Vec<Fp>) -> Result<PirTree> {
+/// Sort / sentinel-inject nullifiers and build the PIR Merkle structure at
+/// the given depth.
+pub fn build_pir_tree_from_nullifiers_with_depth(
+    nfs: Vec<Fp>,
+    pir_depth: usize,
+) -> Result<PirTree> {
     let ranges = prepare_nullifiers(nfs);
-    build_pir_tree(ranges)
+    build_pir_tree_with_depth(ranges, pir_depth)
+}
+
+/// Sort / sentinel-inject nullifiers and build the default-depth PIR Merkle structure.
+pub fn build_pir_tree_from_nullifiers(nfs: Vec<Fp>) -> Result<PirTree> {
+    build_pir_tree_from_nullifiers_with_depth(nfs, PIR_DEPTH)
 }
 
 /// Build the tree from nullifiers and write [`save_tree_checkpoint`] to `tree_path`.
@@ -234,6 +265,7 @@ pub fn materialize_tree_checkpoint_with_progress(
     nfs: Vec<Fp>,
     tree_path: &Path,
     chain_height: u64,
+    pir_depth: usize,
     on_progress: impl Fn(&str, u8),
 ) -> Result<PirTree> {
     on_progress("sorting nullifiers", 0);
@@ -246,10 +278,10 @@ pub fn materialize_tree_checkpoint_with_progress(
     );
 
     on_progress("building Merkle tree", 15);
-    info!(depth = PIR_DEPTH, "building PIR tree");
-    let tree = build_pir_tree(ranges)?;
+    info!(depth = pir_depth, "building PIR tree");
+    let tree = build_pir_tree_with_depth(ranges, pir_depth)?;
     info!(
-        depth = PIR_DEPTH,
+        depth = pir_depth,
         root = hex::encode(tree.root25.to_repr()),
         "PIR-depth root"
     );
@@ -264,22 +296,26 @@ pub fn materialize_tree_checkpoint_with_progress(
     Ok(tree)
 }
 
-/// Write `tier*.bin` and `pir_root.json` from an in-memory [`PirTree`].
+/// Write `tier*.bin` and `pir_root.json` from an in-memory [`PirTree`] using
+/// the given tier layout.
 pub fn export_tiers_from_tree(
     tree: &PirTree,
     output_dir: &Path,
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
+    layout: &PirLayout,
 ) -> Result<()> {
-    export_all(tree, output_dir, network, height)
+    export_all_with_layout(tree, output_dir, network, height, layout)
 }
 
-/// Returns `true` when `pir_root.json` lists `expected_height` and tier files
-/// on disk match the expected sizes from layout constants and metadata.
+/// Returns `true` when `pir_root.json` lists `expected_height`, was exported
+/// with `expected_layout`, and tier files on disk match the sizes derived
+/// from that layout.
 pub fn tiers_complete_for_height(
     output_dir: &Path,
     expected_network: pir_types::ZcashNetwork,
     expected_height: u64,
+    expected_layout: &PirLayout,
 ) -> Result<bool> {
     let root_path = output_dir.join("pir_root.json");
     if !root_path.exists() {
@@ -290,26 +326,30 @@ pub fn tiers_complete_for_height(
     ) else {
         return Ok(false);
     };
-    let Ok(()) = meta.pir_layout.validate_split() else {
-        return Ok(false);
-    };
-    let Ok(layout_rows) = meta.pir_layout.tier1_rows() else {
-        return Ok(false);
-    };
-    let Ok(layout_row_bytes) = meta.pir_layout.tier1_row_bytes() else {
-        return Ok(false);
-    };
-    let Ok(expected_tier0_bytes) = meta.pir_layout.tier0_bytes() else {
-        return Ok(false);
-    };
+    let tier1_rows = expected_layout.tier1_rows().map_err(anyhow::Error::msg)?;
+    let tier1_stride = expected_layout
+        .tier1_padded_row_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let tier1_file_bytes = expected_layout
+        .tier1_file_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let tier2_rows = expected_layout.tier2_rows().map_err(anyhow::Error::msg)?;
+    let tier2_stride = expected_layout
+        .tier2_padded_row_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let tier2_file_bytes = expected_layout
+        .tier2_file_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let expected_tier0_bytes = expected_layout.tier0_bytes().map_err(anyhow::Error::msg)?;
     if meta.zcash_network != expected_network
         || meta.height != Some(expected_height)
         || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
-        || meta.pir_depth != meta.pir_layout.pir_depth
-        || meta.pir_layout.pir_depth != PIR_DEPTH
-        || meta.tier1_rows != layout_rows
-        || meta.tier1_row_bytes != layout_row_bytes
-        || meta.tier0_bytes != expected_tier0_bytes
+        || meta.pir_layout != *expected_layout
+        || meta.pir_depth != expected_layout.pir_depth
+        || meta.tier1_rows != tier1_rows
+        || meta.tier1_row_bytes != tier1_stride
+        || meta.tier2_rows != tier2_rows.unwrap_or(0)
+        || meta.tier2_row_bytes != tier2_stride.unwrap_or(0)
     {
         return Ok(false);
     }
@@ -319,18 +359,43 @@ pub fn tiers_complete_for_height(
         return Ok(false);
     }
     let s0 = std::fs::metadata(&t0)?.len() as usize;
-    if s0 != expected_tier0_bytes {
+    if s0 != expected_tier0_bytes || meta.tier0_bytes != expected_tier0_bytes {
         return Ok(false);
     }
-    let exp1 = layout_rows * layout_row_bytes;
-    if std::fs::metadata(&t1)?.len() as usize != exp1 {
+    if std::fs::metadata(&t1)?.len() as usize != tier1_file_bytes {
         return Ok(false);
+    }
+    let t2 = output_dir.join("tier2.bin");
+    match tier2_file_bytes {
+        Some(expected) => {
+            if !t2.exists() || std::fs::metadata(&t2)?.len() as usize != expected {
+                return Ok(false);
+            }
+        }
+        None => {
+            if t2.exists() {
+                return Ok(false);
+            }
+        }
     }
     Ok(true)
 }
 
+/// Validate a layout for export: split geometry plus YPIR bounds.
+fn validate_layout(layout: &PirLayout) -> Result<()> {
+    layout
+        .validate_split()
+        .map_err(anyhow::Error::msg)
+        .context("invalid export layout")?;
+    layout
+        .validate_ypir_bounds()
+        .map_err(anyhow::Error::msg)
+        .context("export layout fails YPIR bounds")?;
+    Ok(())
+}
+
 /// Build a PIR tree from raw nullifiers (sort, sentinel injection, tree build)
-/// and export all tier files.
+/// and export all tier files for the compiled default layout.
 ///
 /// High-level entry point for tests and callers that want one-shot build+export.
 pub fn build_and_export(
@@ -339,7 +404,25 @@ pub fn build_and_export(
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<PirTree> {
-    build_and_export_with_progress(nfs, output_dir, network, height, |_, _| {})
+    build_and_export_with_progress(
+        nfs,
+        output_dir,
+        network,
+        height,
+        &COMPILED_PIR_LAYOUT,
+        |_, _| {},
+    )
+}
+
+/// [`build_and_export`] for an explicit tier layout.
+pub fn build_and_export_with_layout(
+    nfs: Vec<Fp>,
+    output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+    layout: &PirLayout,
+) -> Result<PirTree> {
+    build_and_export_with_progress(nfs, output_dir, network, height, layout, |_, _| {})
 }
 
 /// Build the PIR tree and export tier files, calling `on_progress(message, pct)`
@@ -349,11 +432,13 @@ pub fn build_and_export_with_progress(
     output_dir: &std::path::Path,
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
+    layout: &PirLayout,
     on_progress: impl Fn(&str, u8),
 ) -> Result<PirTree> {
+    validate_layout(layout)?;
     on_progress("sorting nullifiers", 0);
     let t1 = std::time::Instant::now();
-    let tree = build_pir_tree_from_nullifiers(nfs)?;
+    let tree = build_pir_tree_from_nullifiers_with_depth(nfs, layout.pir_depth)?;
     info!(
         count = tree.ranges.len(),
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
@@ -362,7 +447,7 @@ pub fn build_and_export_with_progress(
 
     on_progress("building Merkle tree", 15);
     info!(
-        depth = PIR_DEPTH,
+        depth = layout.pir_depth,
         root = hex::encode(tree.root25.to_repr()),
         "PIR-depth root"
     );
@@ -374,7 +459,7 @@ pub fn build_and_export_with_progress(
 
     on_progress("writing tier files", 40);
     info!(?output_dir, "exporting tier files");
-    export_tiers_from_tree(&tree, output_dir, network, height)?;
+    export_tiers_from_tree(&tree, output_dir, network, height, layout)?;
 
     on_progress("tier files written", 55);
     Ok(tree)
@@ -401,6 +486,112 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
     }
 }
 
+/// Export the boundary-index Tier 1 of a three-tier layout.
+///
+/// Rows correspond to Tier 0 subtrees; each record is a `(subtree_hash,
+/// min_key)` pair for a child node `tier1_layers` levels below. Rows are
+/// zero-padded to the YPIR stride (`layout.tier1_padded_row_bytes()`).
+pub fn export_boundary_tier(
+    tree: &PirTree,
+    layout: &PirLayout,
+    writer: &mut impl Write,
+) -> Result<()> {
+    anyhow::ensure!(
+        layout.tier2_enabled(),
+        "boundary Tier 1 export requires a three-tier layout"
+    );
+    let rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
+    let records_per_row = layout.tier1_leaves().map_err(anyhow::Error::msg)?;
+    let payload_bytes = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;
+    let stride = layout
+        .tier1_padded_row_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let child_depth = layout.tier0_layers + layout.tier1_layers;
+    let bu_level = layout
+        .pir_depth
+        .checked_sub(child_depth)
+        .context("boundary child depth exceeds PIR depth")?;
+    let leaves_per_child = 1usize << bu_level;
+    let mut buf = vec![0u8; stride];
+    for row in 0..rows {
+        buf.fill(0);
+        let mut offset = 0;
+        for r in 0..records_per_row {
+            let child_idx = row * records_per_row + r;
+            let hash = node_or_empty(&tree.levels, bu_level, child_idx, &tree.empty_hashes);
+            write_fp(&mut buf[offset..], hash);
+            offset += 32;
+            let leaf_start = child_idx * leaves_per_child;
+            let mk = subtree_min_key(&tree.ranges, leaf_start);
+            write_fp(&mut buf[offset..], mk);
+            offset += 32;
+        }
+        debug_assert_eq!(offset, payload_bytes);
+        writer.write_all(&buf)?;
+    }
+    Ok(())
+}
+
+/// Export the terminal punctured-range Tier 2 of a three-tier layout.
+/// Rows are zero-padded to the YPIR stride.
+pub fn export_tier2(
+    ranges: &[PuncturedRange],
+    layout: &PirLayout,
+    writer: &mut impl Write,
+) -> Result<()> {
+    let rows = layout
+        .tier2_rows()
+        .map_err(anyhow::Error::msg)?
+        .context("Tier 2 export requires a three-tier layout")?;
+    let records_per_row = layout
+        .tier2_leaves()
+        .map_err(anyhow::Error::msg)?
+        .context("Tier 2 export requires a three-tier layout")?;
+    let payload_bytes = layout
+        .tier2_row_bytes()
+        .map_err(anyhow::Error::msg)?
+        .context("Tier 2 export requires a three-tier layout")?;
+    let stride = layout
+        .tier2_padded_row_bytes()
+        .map_err(anyhow::Error::msg)?
+        .context("Tier 2 export requires a three-tier layout")?;
+    let mut buf = vec![0u8; stride];
+    for row in 0..rows {
+        buf.fill(0);
+        let leaf_start = row * records_per_row;
+        let mut offset = 0;
+        for i in 0..records_per_row {
+            let global_idx = leaf_start + i;
+            if global_idx < ranges.len() {
+                let [nf_lo, nf_mid, nf_hi] = ranges[global_idx];
+                write_fp(&mut buf[offset..], nf_lo);
+                offset += 32;
+                write_fp(&mut buf[offset..], nf_mid);
+                offset += 32;
+                write_fp(&mut buf[offset..], nf_hi);
+                offset += 32;
+            } else {
+                offset += TIER1_LEAF_BYTES; // already zeroed by buf.fill(0)
+            }
+        }
+        debug_assert_eq!(offset, payload_bytes);
+        writer.write_all(&buf)?;
+    }
+    Ok(())
+}
+
+fn write_tier_file(
+    path: &std::path::Path,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> Result<()>,
+) -> Result<()> {
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    write(&mut f)?;
+    f.flush()?;
+    drop(f);
+    evict_stale_precompute(path);
+    Ok(())
+}
+
 /// Export all tier files and metadata to the given directory using the
 /// compiled production layout.
 pub fn export_all(
@@ -409,42 +600,39 @@ pub fn export_all(
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<()> {
-    export_all_with_layout(tree, output_dir, network, height, COMPILED_PIR_LAYOUT)
+    export_all_with_layout(tree, output_dir, network, height, &COMPILED_PIR_LAYOUT)
 }
 
-/// Export tier blobs and metadata for an arbitrary valid two-tier layout.
+/// Export tier blobs and metadata for an arbitrary valid layout.
 pub fn export_all_with_layout(
     tree: &PirTree,
     output_dir: &std::path::Path,
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
-    layout: PirLayout,
+    layout: &PirLayout,
 ) -> Result<()> {
-    layout
-        .validate_split()
-        .map_err(anyhow::Error::msg)
-        .context("invalid export layout")?;
-    layout
-        .validate_ypir_bounds()
-        .map_err(anyhow::Error::msg)
-        .context("export layout fails YPIR bounds")?;
+    validate_layout(layout)?;
     anyhow::ensure!(
-        layout.pir_depth == PIR_DEPTH,
-        "export requires pir_depth {PIR_DEPTH}, got {}",
+        tree.pir_depth == layout.pir_depth,
+        "tree depth {} does not match layout depth {}",
+        tree.pir_depth,
         layout.pir_depth
     );
-
+    let tier2_enabled = layout.tier2_enabled();
     std::fs::create_dir_all(output_dir)?;
-    // Dataset v1 used a second PIR database. Remove its artifacts so a
-    // regenerated v2 directory contains only the current contract.
-    for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
-        let path = output_dir.join(name);
-        match std::fs::remove_file(&path) {
-            Ok(()) => info!(legacy = %path.display(), "removed legacy Tier 2 artifact"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(e)
-                    .with_context(|| format!("remove legacy artifact {}", path.display()));
+    if !tier2_enabled {
+        // Dataset v1 used a second PIR database, and a prior export may have
+        // used a three-tier layout. Remove Tier 2 artifacts so the directory
+        // contains only the current layout's files.
+        for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
+            let path = output_dir.join(name);
+            match std::fs::remove_file(&path) {
+                Ok(()) => info!(legacy = %path.display(), "removed stale Tier 2 artifact"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("remove stale artifact {}", path.display()));
+                }
             }
         }
     }
@@ -456,7 +644,7 @@ pub fn export_all_with_layout(
         &tree.levels,
         &tree.ranges,
         &tree.empty_hashes,
-        layout,
+        *layout,
     )?;
     let tier0_path = output_dir.join("tier0.bin");
     std::fs::write(&tier0_path, &tier0_data)?;
@@ -470,20 +658,30 @@ pub fn export_all_with_layout(
     // Tier 1
     let t1 = Instant::now();
     let tier1_path = output_dir.join("tier1.bin");
-    let mut f1 = std::io::BufWriter::new(std::fs::File::create(&tier1_path)?);
-    tier1::export_layout(&tree.ranges, &mut f1, layout)?;
-    f1.flush()?;
-    drop(f1);
-    evict_stale_precompute(&tier1_path);
+    if tier2_enabled {
+        write_tier_file(&tier1_path, |w| export_boundary_tier(tree, layout, w))?;
+    } else {
+        write_tier_file(&tier1_path, |w| {
+            tier1::export_layout(&tree.ranges, w, *layout)
+        })?;
+    }
     info!(
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
         "Tier 1 exported"
     );
 
-    let tier1_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
-    let tier1_row_bytes = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;
+    // Tier 2 (terminal tier when enabled)
+    if tier2_enabled {
+        let t2 = Instant::now();
+        let tier2_path = output_dir.join("tier2.bin");
+        write_tier_file(&tier2_path, |w| export_tier2(&tree.ranges, layout, w))?;
+        info!(
+            elapsed_s = format!("{:.1}", t2.elapsed().as_secs_f64()),
+            "Tier 2 exported"
+        );
+    }
 
-    // Metadata
+    // Metadata (tier row widths report the padded YPIR stride)
     let metadata = PirMetadata {
         zcash_network: network,
         nullifier_pool: NULLIFIER_POOL.to_owned(),
@@ -491,11 +689,21 @@ pub fn export_all_with_layout(
         root25: hex::encode(tree.root25.to_repr()),
         root29: hex::encode(tree.root29.to_repr()),
         num_ranges: tree.ranges.len(),
+        pir_layout: *layout,
         pir_depth: layout.pir_depth,
-        pir_layout: layout,
         tier0_bytes: tier0_data.len(),
-        tier1_rows,
-        tier1_row_bytes,
+        tier1_rows: layout.tier1_rows().map_err(anyhow::Error::msg)?,
+        tier1_row_bytes: layout
+            .tier1_padded_row_bytes()
+            .map_err(anyhow::Error::msg)?,
+        tier2_rows: layout
+            .tier2_rows()
+            .map_err(anyhow::Error::msg)?
+            .unwrap_or(0),
+        tier2_row_bytes: layout
+            .tier2_padded_row_bytes()
+            .map_err(anyhow::Error::msg)?
+            .unwrap_or(0),
         height,
     };
     let json = serde_json::to_string_pretty(&metadata)?;
@@ -503,20 +711,6 @@ pub fn export_all_with_layout(
     info!("metadata written to pir_root.json");
 
     Ok(())
-}
-
-/// In-memory two-tier export for tests (no filesystem).
-pub fn export_for_layout(tree: &PirTree, layout: PirLayout) -> Result<(Vec<u8>, Vec<u8>)> {
-    let tier0 = tier0::export_layout(
-        &tree.root25,
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        layout,
-    )?;
-    let mut tier1 = Vec::new();
-    tier1::export_layout(&tree.ranges, &mut tier1, layout)?;
-    Ok((tier0, tier1))
 }
 
 // ── Test utilities ───────────────────────────────────────────────────────────
