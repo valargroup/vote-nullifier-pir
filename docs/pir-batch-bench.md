@@ -65,7 +65,7 @@ mise exec -- cargo build --release -p pir-test
 
 - **Endpoints**: production PIR fleet referenced by the dynamic voting config:
   `https://pir.valargroup.org` (primary) and `https://pir-backup.valargroup.org` (backup).
-- **Server snapshot**: height **3,317,500**, 24,962,943 ranges, root29
+- **Server snapshot**: height **3,317,500**, 24,962,943 ranges, circuit root
   `c338a0…3a3f` (verified via `GET /root` on 2026-04-26).
 - **Local nullifier set**: `vote-nullifier-pir/nullifiers.bin` at height
   3,304,638 (49,897,273 nullifiers → 24,948,653 ranges). Production has a

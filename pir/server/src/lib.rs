@@ -69,12 +69,8 @@ pub fn tier1_scenario() -> YpirScenario {
 
 /// Derive the Tier 1 YPIR scenario from a negotiated two-tier layout.
 pub fn tier1_scenario_for_layout(layout: PirLayout) -> Result<YpirScenario> {
-    layout
-        .validate_split()
-        .map_err(anyhow::Error::msg)?;
-    layout
-        .validate_ypir_bounds()
-        .map_err(anyhow::Error::msg)?;
+    layout.validate_split().map_err(anyhow::Error::msg)?;
+    layout.validate_ypir_bounds().map_err(anyhow::Error::msg)?;
     Ok(YpirScenario {
         num_items: layout.tier1_rows().map_err(anyhow::Error::msg)?,
         item_size_bits: layout.tier1_item_bits().map_err(anyhow::Error::msg)?,
@@ -684,11 +680,7 @@ pub fn load_serving_state(
     let tier1_path = pir_data_dir.join(TIER1_FILE);
     let tier1_size = std::fs::metadata(&tier1_path)?.len() as usize;
     let expected_tier1_bytes = layout_rows * layout_row_bytes;
-    info!(
-        bytes = tier1_size,
-        rows = layout_rows,
-        "Tier 1 sized"
-    );
+    info!(bytes = tier1_size, rows = layout_rows, "Tier 1 sized");
     anyhow::ensure!(
         tier1_size == expected_tier1_bytes,
         "tier1.bin size mismatch: got {} bytes, expected {} from metadata pir_layout",
@@ -728,8 +720,8 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: "orchard".to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuit_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
@@ -759,8 +751,8 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Test,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuit_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
@@ -790,8 +782,8 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
             dataset_version: 1,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuit_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,
@@ -822,8 +814,8 @@ mod tests {
             zcash_network: pir_types::ZcashNetwork::Main,
             nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
             dataset_version: pir_types::DATASET_VERSION,
-            root25: "00".to_owned(),
-            root29: "00".to_owned(),
+            pir_root: "00".to_owned(),
+            circuit_root: "00".to_owned(),
             num_ranges: 0,
             pir_depth: pir_types::PIR_DEPTH,
             pir_layout: COMPILED_PIR_LAYOUT,

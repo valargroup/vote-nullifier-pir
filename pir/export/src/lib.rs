@@ -49,9 +49,9 @@ pub const FULL_DEPTH: usize = TREE_DEPTH; // 29
 /// Result of building the PIR tree.
 pub struct PirTree {
     /// PIR-depth Merkle root (PIR tree root for K=2).
-    pub root25: Fp,
+    pub pir_root: Fp,
     /// Depth-29 Merkle root (extended with empty hashes for circuit compatibility).
-    pub root29: Fp,
+    pub circuit_root: Fp,
     /// Tree levels (bottom-up): levels[0] = leaf hashes, levels[PIR_DEPTH-1] = root's children.
     pub levels: Vec<Vec<Fp>>,
     /// Punctured ranges (K=2): each element is `[nf_lo, nf_mid, nf_hi]`.
@@ -85,19 +85,22 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     let empty_hashes = precompute_empty_hashes();
 
     let t1 = Instant::now();
-    let (root25, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);
+    let (pir_root, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);
     info!(
         level_count = levels.len(),
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
         "PIR tree built"
     );
 
-    let root29 = extend_root(root25, &empty_hashes);
-    info!(root29 = hex::encode(root29.to_repr()), "depth-29 root");
+    let circuit_root = extend_root(pir_root, &empty_hashes);
+    info!(
+        circuit_root = hex::encode(circuit_root.to_repr()),
+        "circuit root"
+    );
 
     Ok(PirTree {
-        root25,
-        root29,
+        pir_root,
+        circuit_root,
         levels,
         ranges,
         empty_hashes,
@@ -109,9 +112,9 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
 /// At each extension level, the existing root is the left child and an empty
 /// subtree of the appropriate height is the right child. This produces the
 /// same root as building a depth-29 tree with the same leaves.
-pub fn extend_root(root25: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
+pub fn extend_root(pir_root: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
     let hasher = PoseidonHasher::new();
-    let mut root = root25;
+    let mut root = pir_root;
     for empty_hash in &empty_hashes[PIR_DEPTH..FULL_DEPTH] {
         root = hasher.hash(root, *empty_hash);
     }
@@ -250,13 +253,13 @@ pub fn materialize_tree_checkpoint_with_progress(
     let tree = build_pir_tree(ranges)?;
     info!(
         depth = PIR_DEPTH,
-        root = hex::encode(tree.root25.to_repr()),
+        root = hex::encode(tree.pir_root.to_repr()),
         "PIR-depth root"
     );
     info!(
         depth = FULL_DEPTH,
-        root = hex::encode(tree.root29.to_repr()),
-        "root-29"
+        root = hex::encode(tree.circuit_root.to_repr()),
+        "circuit root"
     );
 
     on_progress("writing tree checkpoint", 35);
@@ -363,13 +366,13 @@ pub fn build_and_export_with_progress(
     on_progress("building Merkle tree", 15);
     info!(
         depth = PIR_DEPTH,
-        root = hex::encode(tree.root25.to_repr()),
+        root = hex::encode(tree.pir_root.to_repr()),
         "PIR-depth root"
     );
     info!(
         depth = FULL_DEPTH,
-        root = hex::encode(tree.root29.to_repr()),
-        "root-29"
+        root = hex::encode(tree.circuit_root.to_repr()),
+        "circuit root"
     );
 
     on_progress("writing tier files", 40);
@@ -452,7 +455,7 @@ pub fn export_all_with_layout(
     // Tier 0
     let t0 = Instant::now();
     let tier0_data = tier0::export_layout(
-        &tree.root25,
+        &tree.pir_root,
         &tree.levels,
         &tree.ranges,
         &tree.empty_hashes,
@@ -488,8 +491,8 @@ pub fn export_all_with_layout(
         zcash_network: network,
         nullifier_pool: NULLIFIER_POOL.to_owned(),
         dataset_version: DATASET_VERSION,
-        root25: hex::encode(tree.root25.to_repr()),
-        root29: hex::encode(tree.root29.to_repr()),
+        pir_root: hex::encode(tree.pir_root.to_repr()),
+        circuit_root: hex::encode(tree.circuit_root.to_repr()),
         num_ranges: tree.ranges.len(),
         pir_depth: layout.pir_depth,
         pir_layout: layout,
@@ -508,7 +511,7 @@ pub fn export_all_with_layout(
 /// In-memory two-tier export for tests (no filesystem).
 pub fn export_for_layout(tree: &PirTree, layout: PirLayout) -> Result<(Vec<u8>, Vec<u8>)> {
     let tier0 = tier0::export_layout(
-        &tree.root25,
+        &tree.pir_root,
         &tree.levels,
         &tree.ranges,
         &tree.empty_hashes,

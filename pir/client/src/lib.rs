@@ -99,7 +99,7 @@ pub struct PirClient {
     tier1_row_bytes: usize,
     num_ranges: usize,
     empty_hashes: [Fp; TREE_DEPTH],
-    root29: Fp,
+    circuit_root: Fp,
 }
 
 /// Return the number of populated leaves in a Tier 1 row, clamped to
@@ -148,7 +148,7 @@ fn process_tier1_and_build(
     nullifier: Fp,
     path: &mut [Fp; TREE_DEPTH],
     empty_hashes: &[Fp; TREE_DEPTH],
-    root29: Fp,
+    circuit_root: Fp,
 ) -> Result<ImtProofData> {
     let hasher = PoseidonHasher::new();
     let tier1 = Tier1Row::from_layout(tier1_row, layout)?;
@@ -178,7 +178,7 @@ fn process_tier1_and_build(
     let (nf_lo, nf_mid, nf_hi) = tier1.leaf_record(leaf_local_idx);
 
     Ok(ImtProofData {
-        root: root29,
+        root: circuit_root,
         nf_bounds: [nf_lo, nf_mid, nf_hi],
         leaf_pos: global_leaf_idx as u32,
         path: *path,
@@ -314,16 +314,16 @@ impl PirClient {
         );
         let tier0 = Tier0Data::from_layout(tier0_bytes.to_vec(), root_info.pir_layout)?;
 
-        let root29_bytes = hex::decode(&root_info.root29)?;
+        let circuit_root_bytes = hex::decode(&root_info.circuit_root)?;
         anyhow::ensure!(
-            root29_bytes.len() == 32,
-            "root29 hex decoded to {} bytes, expected 32",
-            root29_bytes.len()
+            circuit_root_bytes.len() == 32,
+            "circuit_root hex decoded to {} bytes, expected 32",
+            circuit_root_bytes.len()
         );
-        let mut root29_arr = [0u8; 32];
-        root29_arr.copy_from_slice(&root29_bytes);
-        let root29 = Option::from(Fp::from_repr(root29_arr))
-            .ok_or_else(|| anyhow::anyhow!("invalid root29 field element"))?;
+        let mut circuit_root_arr = [0u8; 32];
+        circuit_root_arr.copy_from_slice(&circuit_root_bytes);
+        let circuit_root = Option::from(Fp::from_repr(circuit_root_arr))
+            .ok_or_else(|| anyhow::anyhow!("invalid circuit_root field element"))?;
 
         let empty_hashes = precompute_empty_hashes();
 
@@ -336,7 +336,7 @@ impl PirClient {
             tier1_row_bytes: layout_row_bytes,
             num_ranges: root_info.num_ranges,
             empty_hashes,
-            root29,
+            circuit_root,
         })
     }
 
@@ -413,7 +413,7 @@ impl PirClient {
             nullifier,
             &mut path,
             &self.empty_hashes,
-            self.root29,
+            self.circuit_root,
         )?;
 
         let total_ms = note_start.elapsed().as_secs_f64() * 1000.0;
@@ -686,9 +686,9 @@ impl PirClientBlocking {
         self.rt.block_on(self.inner.fetch_proofs(nullifiers))
     }
 
-    /// The depth-29 root (PIR depth 19 padded to tree depth 29).
-    pub fn root29(&self) -> Fp {
-        self.inner.root29
+    /// The circuit root (the PIR root padded to tree depth 29).
+    pub fn circuit_root(&self) -> Fp {
+        self.inner.circuit_root
     }
 }
 
@@ -704,7 +704,7 @@ pub fn fetch_proof_local(
     num_ranges: usize,
     nullifier: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
-    root29: Fp,
+    circuit_root: Fp,
 ) -> Result<ImtProofData> {
     fetch_proof_local_layout(
         tier0_data,
@@ -713,7 +713,7 @@ pub fn fetch_proof_local(
         num_ranges,
         nullifier,
         empty_hashes,
-        root29,
+        circuit_root,
     )
 }
 
@@ -725,7 +725,7 @@ pub fn fetch_proof_local_layout(
     num_ranges: usize,
     nullifier: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
-    root29: Fp,
+    circuit_root: Fp,
 ) -> Result<ImtProofData> {
     validate_layout("local", layout)?;
     let mut path = [Fp::default(); TREE_DEPTH];
@@ -753,7 +753,7 @@ pub fn fetch_proof_local_layout(
         nullifier,
         &mut path,
         empty_hashes,
-        root29,
+        circuit_root,
     )
 }
 
@@ -771,7 +771,7 @@ mod tests {
         tier1_data: Vec<u8>,
         ranges: Vec<[Fp; 3]>,
         empty_hashes: [Fp; TREE_DEPTH],
-        root29: Fp,
+        circuit_root: Fp,
     }
 
     impl TestFixture {
@@ -790,7 +790,7 @@ mod tests {
                 tier1_data,
                 ranges,
                 empty_hashes: tree.empty_hashes,
-                root29: tree.root29,
+                circuit_root: tree.circuit_root,
             }
         }
     }
@@ -811,7 +811,7 @@ mod tests {
                 fix.ranges.len(),
                 value,
                 &fix.empty_hashes,
-                fix.root29,
+                fix.circuit_root,
             )
             .expect("fetch_proof_local should succeed for a value in range");
             assert!(
@@ -834,11 +834,11 @@ mod tests {
             fix.ranges.len(),
             value,
             &fix.empty_hashes,
-            fix.root29,
+            fix.circuit_root,
         )
         .unwrap();
 
-        assert_eq!(proof.root, fix.root29);
+        assert_eq!(proof.root, fix.circuit_root);
         assert_eq!(proof.path.len(), TREE_DEPTH);
     }
 
@@ -905,12 +905,12 @@ mod tests {
             value,
             &mut path,
             &fix.empty_hashes,
-            fix.root29,
+            fix.circuit_root,
         )
         .unwrap();
 
         assert!(proof.verify(value));
-        assert_eq!(proof.root, fix.root29);
+        assert_eq!(proof.root, fix.circuit_root);
     }
 
     // ── valid_leaves_for_row ──────────────────────────────────────────────
@@ -940,7 +940,7 @@ mod tests {
             fix.ranges.len(),
             fix.ranges[0][0],
             &fix.empty_hashes,
-            fix.root29,
+            fix.circuit_root,
         );
         assert!(result.is_err());
     }
@@ -966,7 +966,7 @@ mod tests {
                     fix.ranges.len(),
                     value,
                     &fix.empty_hashes,
-                    fix.root29,
+                    fix.circuit_root,
                 )
                 .unwrap_or_else(|e| panic!("reconstruct {t0}+{t1} failed: {e}"));
                 assert!(
@@ -999,8 +999,8 @@ mod tests {
                 zcash_network: pir_types::ZcashNetwork::Test,
                 nullifier_pool: pir_types::NULLIFIER_POOL.to_owned(),
                 dataset_version: pir_types::DATASET_VERSION,
-                root29: hex::encode(tree.root29.to_repr()),
-                root25: hex::encode(tree.root25.to_repr()),
+                circuit_root: hex::encode(tree.circuit_root.to_repr()),
+                pir_root: hex::encode(tree.pir_root.to_repr()),
                 num_ranges: tree.ranges.len(),
                 pir_layout: layout,
                 pir_depth: layout.pir_depth,

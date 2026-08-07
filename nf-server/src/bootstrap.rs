@@ -669,8 +669,8 @@ mod tests {
             "zcash_network": TEST_NETWORK,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "root25": "00",
-            "root29": "00",
+            "pir_root": "00",
+            "circuit_root": "00",
             "num_ranges": 1,
             "pir_depth": layout.pir_depth,
             "pir_layout": layout,
@@ -752,7 +752,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("pir_root.json"),
-            format!(r#"{{"height":{TEST_HEIGHT},"root25":"00"}}"#),
+            format!(r#"{{"height":{TEST_HEIGHT},"pir_root":"00"}}"#),
         )
         .unwrap();
         assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);

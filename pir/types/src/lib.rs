@@ -59,10 +59,7 @@ impl PirLayout {
     /// Ensure `pir_depth == tier0_layers + tier1_layers` with non-zero tiers.
     pub fn validate_split(self) -> Result<(), String> {
         if self.tier0_layers == 0 || self.tier1_layers == 0 {
-            return Err(format!(
-                "PIR layout tiers must be non-zero: {:?}",
-                self
-            ));
+            return Err(format!("PIR layout tiers must be non-zero: {:?}", self));
         }
         let split = self
             .tier0_layers
@@ -236,12 +233,11 @@ pub struct PirMetadata {
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
     /// Hex-encoded PIR-depth Merkle root (PIR tree root for K=2).
-    ///
-    /// The `root25` field name is retained as a legacy wire/API name; in
-    /// dataset version 2 it contains the depth-19 root.
-    pub root25: String,
-    /// Hex-encoded depth-29 Merkle root (circuit-compatible).
-    pub root29: String,
+    #[serde(alias = "root25")]
+    pub pir_root: String,
+    /// Hex-encoded depth-29 Merkle root consumed by the circuit.
+    #[serde(alias = "root29")]
+    pub circuit_root: String,
     /// Number of populated leaf ranges in the tree.
     pub num_ranges: usize,
     /// PIR tree depth.
@@ -282,9 +278,12 @@ pub struct RootInfo {
     pub nullifier_pool: String,
     /// Version of the nullifier dataset contract.
     pub dataset_version: u32,
-    pub root29: String,
-    /// Legacy wire name for the PIR-depth root; depth 19 in dataset version 2.
-    pub root25: String,
+    /// Hex-encoded depth-29 Merkle root consumed by the circuit.
+    #[serde(alias = "root29")]
+    pub circuit_root: String,
+    /// Hex-encoded root at the advertised PIR depth.
+    #[serde(alias = "root25")]
+    pub pir_root: String,
     pub num_ranges: usize,
     /// Explicit depth and tier split advertised by the serving snapshot.
     pub pir_layout: PirLayout,
@@ -427,8 +426,8 @@ mod tests {
             "zcash_network":"main",
             "nullifier_pool":"ironwood",
             "dataset_version":2,
-            "root25":"00",
-            "root29":"00",
+            "pir_root":"00",
+            "circuit_root":"00",
             "num_ranges":0,
             "pir_depth":19,
             "tier0_bytes":0,
@@ -442,8 +441,8 @@ mod tests {
             "zcash_network":"main",
             "nullifier_pool":"ironwood",
             "dataset_version":2,
-            "root25":"00",
-            "root29":"00",
+            "pir_root":"00",
+            "circuit_root":"00",
             "num_ranges":0,
             "pir_depth":19,
             "pir_layout":{"pir_depth":19,"tier0_layers":12,"tier1_layers":7},
