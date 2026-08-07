@@ -365,7 +365,7 @@ fn test_proof_with_empty_tier1_sibling() {
 
     // Find the last populated range — its sibling leaf slot is empty padding.
     let last_idx = ranges.len() - 1;
-    let is_even_idx = last_idx % 2 == 0;
+    let is_even_idx = last_idx.is_multiple_of(2);
     // An even-indexed leaf has sibling at idx+1 (odd), which is empty if it's
     // the last populated leaf. Pick the value to query accordingly.
     let target_idx = if is_even_idx { last_idx } else { last_idx - 1 };

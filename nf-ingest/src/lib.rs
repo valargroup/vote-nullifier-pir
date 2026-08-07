@@ -12,11 +12,11 @@
 //! - [`sync_nullifiers`] — Incremental chain sync engine.
 //! - [`rpc`] — Auto-generated protobuf types for the compact transaction streamer.
 
-#[path = "./cash.z.wallet.sdk.rpc.rs"]
-pub mod rpc;
 pub mod config;
 pub mod download;
 pub mod file_store;
+#[path = "./cash.z.wallet.sdk.rpc.rs"]
+pub mod rpc;
 pub mod sync_nullifiers;
 
 #[cfg(test)]

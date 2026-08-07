@@ -357,8 +357,8 @@ impl PirClient {
         // Serialize query. `query.0` is the SimplePIR query vector
         // (per-query); `query.1` is `pack_pub_params` (depends only on
         // the client's `client_seed`).
-        let upload_q_bytes = query.0.as_slice().len() * std::mem::size_of::<u64>();
-        let upload_pp_bytes = query.1.as_slice().len() * std::mem::size_of::<u64>();
+        let upload_q_bytes = std::mem::size_of_val(query.0.as_slice());
+        let upload_pp_bytes = std::mem::size_of_val(query.1.as_slice());
         let payload = serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
         let upload_bytes = payload.len();
 
@@ -922,7 +922,10 @@ mod tests {
 
         // The mock response is deliberately corrupt; request count is the
         // property under test.
-        assert!(client.fetch_proof(tree.ranges[0][0] + Fp::one()).await.is_err());
+        assert!(client
+            .fetch_proof(tree.ranges[0][0] + Fp::one())
+            .await
+            .is_err());
         assert_eq!(transport.count_hits("/tier1/query"), 1);
         assert_eq!(
             transport

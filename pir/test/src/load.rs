@@ -166,7 +166,7 @@ impl StatsCollector {
             Self::stage_summary("end-to-end", &self.end_to_end),
             Self::stage_summary("tier1_rtt", &self.tier1_rtt),
         ];
-        if self.tier1_server.len() > 0 {
+        if !self.tier1_server.is_empty() {
             stages.push(Self::stage_summary("tier1_srvr", &self.tier1_server));
         }
 
@@ -178,7 +178,7 @@ impl StatsCollector {
                 count,
             })
             .collect();
-        error_classes.sort_by(|a, b| b.count.cmp(&a.count));
+        error_classes.sort_by_key(|entry| std::cmp::Reverse(entry.count));
 
         LoadSummary {
             url: url.to_string(),

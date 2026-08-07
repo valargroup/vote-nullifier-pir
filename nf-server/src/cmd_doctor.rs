@@ -59,7 +59,8 @@ pub fn run(args: Args) -> Result<()> {
 fn check_precompute_cache(pir_data_dir: &Path) {
     println!();
     println!("Precompute cache:");
-    for (label, name) in [("tier 1", "tier1.precompute")] {
+    {
+        let (label, name) = ("tier 1", "tier1.precompute");
         let p = pir_data_dir.join(name);
         match std::fs::metadata(&p) {
             Ok(m) => {
