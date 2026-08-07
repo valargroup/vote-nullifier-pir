@@ -4,6 +4,9 @@
   PIR upgrades can publish tag-scoped artifacts without changing installer
   aliases early, then promote every alias without permitting a stale rollback.
   Ordinary stable releases become Latest only after those aliases are published.
+- Reject incomplete or non-contiguous lightwalletd block streams before
+  checkpointing, preventing skipped ranges from producing incomplete nullifier
+  snapshots.
 
 # pir-types 0.3.0-rc.3 and pir-client 0.4.0-rc.3
 

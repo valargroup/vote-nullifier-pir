@@ -112,11 +112,81 @@ async fn require_ironwood_tree_state(
 
 /// Stream blocks `[start, end]` from a single server and return collected
 /// `(height, nullifier)` pairs.
+fn observe_range_height(
+    start: u64,
+    end: u64,
+    next_expected: &mut u64,
+    completed: &mut bool,
+    height: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        !*completed,
+        "received extra block {} after completing requested range [{}..={}]",
+        height,
+        start,
+        end
+    );
+    anyhow::ensure!(
+        (start..=end).contains(&height),
+        "received out-of-range block {} for requested range [{}..={}]",
+        height,
+        start,
+        end
+    );
+    anyhow::ensure!(
+        height == *next_expected,
+        "non-contiguous block stream for range [{}..={}]: expected {}, got {}",
+        start,
+        end,
+        *next_expected,
+        height
+    );
+
+    if height == end {
+        *completed = true;
+    } else {
+        *next_expected += 1;
+    }
+    Ok(())
+}
+
+fn ensure_range_complete(
+    start: u64,
+    end: u64,
+    completed: bool,
+    last_seen: Option<u64>,
+) -> Result<()> {
+    if completed {
+        return Ok(());
+    }
+
+    match last_seen {
+        Some(height) => anyhow::bail!(
+            "incomplete block stream for range [{}..={}]: stream ended at {}",
+            start,
+            end,
+            height
+        ),
+        None => anyhow::bail!(
+            "incomplete block stream for range [{}..={}]: server returned no blocks",
+            start,
+            end
+        ),
+    }
+}
+
 async fn fetch_block_range(
     client: &mut CompactTxStreamerClient<Channel>,
     start: u64,
     end: u64,
 ) -> Result<Vec<(u64, Vec<u8>)>> {
+    anyhow::ensure!(
+        start <= end,
+        "invalid block range: start {} is greater than end {}",
+        start,
+        end
+    );
+
     let mut stream = client
         .get_block_range(Request::new(BlockRange {
             start: Some(BlockId {
@@ -133,9 +203,15 @@ async fn fetch_block_range(
         .into_inner();
 
     let mut nf_buffer: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut next_expected = start;
+    let mut completed = false;
+    let mut last_seen = None;
     while let Some(block) = stream.message().await? {
+        observe_range_height(start, end, &mut next_expected, &mut completed, block.height)?;
+        last_seen = Some(block.height);
         nf_buffer.extend(extract_ironwood_nullifiers(block)?);
     }
+    ensure_range_complete(start, end, completed, last_seen)?;
     Ok(nf_buffer)
 }
 
@@ -389,6 +465,72 @@ mod tests {
 
         let err = extract_ironwood_nullifiers(block).unwrap_err().to_string();
         assert!(err.contains("31 bytes"), "{err}");
+    }
+
+    #[test]
+    fn range_coverage_accepts_exact_contiguous_sequence() {
+        let start = 100;
+        let end = 103;
+        let mut next_expected = start;
+        let mut completed = false;
+        let mut last_seen = None;
+
+        for height in start..=end {
+            observe_range_height(start, end, &mut next_expected, &mut completed, height).unwrap();
+            last_seen = Some(height);
+        }
+        ensure_range_complete(start, end, completed, last_seen).unwrap();
+    }
+
+    #[test]
+    fn range_coverage_rejects_empty_response() {
+        let err = ensure_range_complete(100, 103, false, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("server returned no blocks"), "{err}");
+    }
+
+    #[test]
+    fn range_coverage_rejects_incomplete_response() {
+        let err = ensure_range_complete(100, 103, false, Some(101))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("stream ended at 101"), "{err}");
+    }
+
+    #[test]
+    fn range_coverage_rejects_gap_duplicate_and_out_of_order() {
+        for (actual, expected_message) in [
+            (102, "expected 101, got 102"),
+            (100, "expected 101, got 100"),
+            (103, "expected 101, got 103"),
+        ] {
+            let mut next_expected = 100;
+            let mut completed = false;
+            observe_range_height(100, 103, &mut next_expected, &mut completed, 100).unwrap();
+            let err = observe_range_height(100, 103, &mut next_expected, &mut completed, actual)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(expected_message), "{err}");
+        }
+    }
+
+    #[test]
+    fn range_coverage_rejects_out_of_range_and_extra_blocks() {
+        let mut next_expected = 100;
+        let mut completed = false;
+        let err = observe_range_height(100, 103, &mut next_expected, &mut completed, 99)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("out-of-range block 99"), "{err}");
+
+        let mut next_expected = 103;
+        let mut completed = false;
+        observe_range_height(103, 103, &mut next_expected, &mut completed, 103).unwrap();
+        let err = observe_range_height(103, 103, &mut next_expected, &mut completed, 104)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("received extra block 104"), "{err}");
     }
 
     #[test]
