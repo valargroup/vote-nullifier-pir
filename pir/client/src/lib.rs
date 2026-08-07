@@ -1261,6 +1261,9 @@ mod tests {
 
         let err = rejected_connect(COMPILED_PIR_LAYOUT, transport.clone()).await;
         assert!(err.contains("parse /root response"), "{err}");
+        assert_eq!(transport.count_hits("/root"), 1);
+        assert_eq!(transport.count_hits("/tier0"), 0);
+        assert_eq!(transport.count_hits("/params/tier1"), 0);
         assert_eq!(transport.count_hits("/tier1/query"), 0);
     }
 
@@ -1285,6 +1288,9 @@ mod tests {
             let transport = Arc::new(MockTransport::new(&tree));
             let err = rejected_connect(expected_layout, transport.clone()).await;
             assert!(err.contains("expected") && err.contains("server"), "{err}");
+            assert_eq!(transport.count_hits("/root"), 1);
+            assert_eq!(transport.count_hits("/tier0"), 0);
+            assert_eq!(transport.count_hits("/params/tier1"), 0);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
     }
@@ -1314,6 +1320,9 @@ mod tests {
             let transport = Arc::new(transport);
             let err = rejected_connect(COMPILED_PIR_LAYOUT, transport.clone()).await;
             assert!(err.contains("expected") && err.contains("server"), "{err}");
+            assert_eq!(transport.count_hits("/root"), 1);
+            assert_eq!(transport.count_hits("/tier0"), 0);
+            assert_eq!(transport.count_hits("/params/tier1"), 0);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
     }
@@ -1357,6 +1366,9 @@ mod tests {
         let transport = Arc::new(MockTransport::new_layout(&tree, server_layout));
         let err = rejected_connect(expected, transport.clone()).await;
         assert!(err.contains("PIR layout mismatch"), "{err}");
+        assert_eq!(transport.count_hits("/root"), 1);
+        assert_eq!(transport.count_hits("/tier0"), 0);
+        assert_eq!(transport.count_hits("/params/tier1"), 0);
         assert_eq!(transport.count_hits("/tier1/query"), 0);
     }
 
