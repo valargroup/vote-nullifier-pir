@@ -9,7 +9,7 @@ avx512 = ["ypir/explicit_avx512"]
 rayon = ["ypir/rayon"]
 
 [dependencies]
-pir-types  = { path = "../types" }
+pir-types  = { path = "../types", features = ["reader"] }
 ypir = { version = "0.1.4", package = "valar-ypir", default-features = false, features = ["server"] }
 spiral-rs = { version = "0.5", package = "valar-spiral-rs" }
 axum = "0.7"
@@ -22,6 +22,7 @@ tracing-subscriber = "0.3"
 ff = "0.13"
 pasta_curves = "0.5"
 blake3 = "1"
+hex = "0.4.3"
 
 [dev-dependencies]
 tempfile = "3"

@@ -223,8 +223,14 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
 
     // Connect
     eprintln!("  Connecting to PIR server...");
-    let client =
-        Arc::new(PirClient::with_transport(&cfg.url, Arc::new(HyperTransport::new())).await?);
+    let client = Arc::new(
+        PirClient::with_transport(
+            &cfg.url,
+            pir_types::COMPILED_PIR_LAYOUT,
+            Arc::new(HyperTransport::new()),
+        )
+        .await?,
+    );
     eprintln!("  Connected.\n");
 
     // Warmup: a single proof to verify connectivity

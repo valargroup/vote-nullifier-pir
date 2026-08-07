@@ -212,12 +212,15 @@ After install, verify end-to-end without a real client:
 ```bash
 curl -fsS http://127.0.0.1:3000/ready                                   # 200 OK
 curl -fsS http://127.0.0.1:3000/health | jq -r '.status'                # ok (starting / rebuilding / error while warming)
-curl -fsS http://127.0.0.1:3000/root   | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_depth, tier1_rows, tier1_row_bytes, num_ranges}'
+curl -fsS http://127.0.0.1:3000/root   | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_layout, pir_depth, tier1_rows, tier1_row_bytes, num_ranges}'
 ```
 
 `GET /health` returns a stable `status` string derived from the internal server phase. For a structured `phase` object (e.g. `{ "phase": "Starting", ... }`), probe `GET /ready` while the server is still warming — it returns **503** with that JSON body until the process reaches `Serving`.
 
-Confirm `/root` reports the configured network, `nullifier_pool: "ironwood"`, `dataset_version: 2`, `pir_depth: 19`, `tier1_rows: 4096`, and `tier1_row_bytes: 12288`.
+Confirm `/root` reports the configured network, `nullifier_pool: "ironwood"`,
+`dataset_version: 2`, `pir_layout: { pir_depth: 19, tier0_layers: 12,
+tier1_layers: 7 }`, `pir_depth: 19`, `tier1_rows: 4096`, and
+`tier1_row_bytes: 12288`.
 Its `height` should match `snapshot_height` from the environment's published
 `pir.json` while bootstrap is enabled.
 

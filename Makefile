@@ -28,6 +28,7 @@ NF_RELEASE_BIN := $(ROOT)/target/release/nf-server
 # Single on-disk root for nullifiers, tree checkpoint, and tier files (`SVOTE_PIR_DATA_DIR`).
 PIR_DATA_DIR ?= pir-data
 LWD_URL       ?= https://us.zec.stardust.rest:443
+ZCASH_NETWORK ?= main
 PORT          ?= 3000
 SYNC_HEIGHT   ?=
 
@@ -47,7 +48,7 @@ else
   _MAX_HEIGHT_FLAG :=
 endif
 
-_SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
+_SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
 
 # ── Targets ──────────────────────────────────────────────────────────
 
@@ -72,10 +73,10 @@ sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
 	$(_SYNC_CMD)
 
 sync-invalidate: ## Same as sync with `--invalidate-after-blocks` (rebuild tree/tiers when new blocks synced)
-	cd $(NF_DIR) && cargo run --release -- sync --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
+	cd $(NF_DIR) && cargo run --release -- sync --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
 
 serve: ## Start the PIR HTTP server
-	cd $(NF_DIR) && cargo run --release --features serve -- serve --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT)
+	cd $(NF_DIR) && cargo run --release --features serve -- serve --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT)
 
 test: ## Run unit tests for all subcrates
 	cd $(IMT_DIR) && cargo test --lib

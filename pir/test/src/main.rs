@@ -356,10 +356,10 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
     let t1 = Instant::now();
     let tree = build_pir_tree(ranges.clone())?;
     eprintln!(
-        "  PIR tree built in {:.1}s (pir_root={}, root29={})",
+        "  PIR tree built in {:.1}s (pir_root={}, circuit_root={})",
         t1.elapsed().as_secs_f64(),
-        &hex::encode(tree.root25.to_repr())[..16],
-        &hex::encode(tree.root29.to_repr())[..16],
+        &hex::encode(tree.pir_root.to_repr())[..16],
+        &hex::encode(tree.circuit_root.to_repr())[..16],
     );
 
     let t2 = Instant::now();
@@ -396,7 +396,7 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
             ranges.len(),
             value,
             &tree.empty_hashes,
-            tree.root29,
+            tree.circuit_root,
         );
 
         match result {
@@ -451,6 +451,7 @@ async fn run_server(
     // Connect to server
     let client = pir_client::PirClient::with_transport(
         &url,
+        pir_types::COMPILED_PIR_LAYOUT,
         std::sync::Arc::new(transport::HyperTransport::new()),
     )
     .await?;
@@ -942,8 +943,12 @@ fn format_ms(ms: f64) -> String {
 
 /// Export both tier data blobs from a built PIR tree.
 fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>)> {
-    let tier0_data =
-        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+    );
     eprintln!("  Tier 0: {} bytes", tier0_data.len());
 
     let mut tier1_data = Vec::new();

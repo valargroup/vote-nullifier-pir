@@ -11,9 +11,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
-use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES,
-};
+use pir_server::{dispatch_query, read_tier_row, HealthInfo, RootInfo};
 
 use super::state::{AppState, ServerPhase};
 
@@ -62,7 +60,23 @@ pub(crate) async fn get_tier1_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    get_tier_row(&state, idx, "tier1.bin", TIER1_ROWS, TIER1_ROW_BYTES).await
+    let guard = state.serving.read().await;
+    let (rows, row_bytes) = match guard.as_ref() {
+        Some(s) => (s.metadata.tier1_rows, s.metadata.tier1_row_bytes),
+        None => {
+            drop(guard);
+            let phase = state.phase.read().await;
+            let body = serde_json::to_string(&*phase).unwrap_or_default();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+        }
+    };
+    drop(guard);
+    get_tier_row(&state, idx, "tier1.bin", rows, row_bytes).await
 }
 
 /// Shared handler for raw tier row reads. Validates index bounds and reads
@@ -117,9 +131,10 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
         zcash_network: s.metadata.zcash_network,
         nullifier_pool: s.metadata.nullifier_pool.clone(),
         dataset_version: s.metadata.dataset_version,
-        root29: s.metadata.root29.clone(),
-        root25: s.metadata.root25.clone(),
+        circuit_root: s.metadata.circuit_root.clone(),
+        pir_root: s.metadata.pir_root.clone(),
         num_ranges: s.metadata.num_ranges,
+        pir_layout: s.metadata.pir_layout,
         pir_depth: s.metadata.pir_depth,
         tier1_rows: s.metadata.tier1_rows,
         tier1_row_bytes: s.metadata.tier1_row_bytes,
@@ -146,7 +161,10 @@ pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoR
     let info = HealthInfo {
         status: status.to_string(),
         tier1_rows,
-        tier1_row_bytes: TIER1_ROW_BYTES,
+        tier1_row_bytes: serving
+            .as_ref()
+            .map(|s| s.metadata.tier1_row_bytes)
+            .unwrap_or(0),
     };
     axum::Json(info)
 }

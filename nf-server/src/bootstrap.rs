@@ -81,16 +81,6 @@ pub const PIR_SNAPSHOTS_PATH: &str = "/snapshots";
 /// already in place.
 const SNAPSHOT_FILES: &[&str] = &["tier0.bin", "tier1.bin", "pir_root.json"];
 
-/// Dataset identity and height read from `pir_root.json` during bootstrap.
-#[derive(Debug, Deserialize)]
-struct PirRootHeader {
-    zcash_network: pir_types::ZcashNetwork,
-    nullifier_pool: String,
-    dataset_version: u32,
-    #[serde(default)]
-    height: Option<u64>,
-}
-
 /// Per-file integrity entry in `manifest.json`.
 #[derive(Debug, Deserialize)]
 struct ManifestFile {
@@ -380,24 +370,15 @@ fn read_local_height(
     expected_network: pir_types::ZcashNetwork,
 ) -> Option<u64> {
     let path = pir_data_dir.join("pir_root.json");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let meta: PirRootHeader = serde_json::from_str(&raw).ok()?;
-    if meta.zcash_network == expected_network
-        && pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
-    {
-        meta.height
-    } else {
-        None
-    }
+    validate_pir_metadata(&path, expected_network).ok()?.height
 }
 
-fn validate_pir_root(
+fn validate_pir_metadata(
     path: &Path,
     expected_network: pir_types::ZcashNetwork,
-    expected_height: u64,
-) -> Result<()> {
+) -> Result<pir_types::PirMetadata> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let root: PirRootHeader =
+    let root: pir_types::PirMetadata =
         serde_json::from_str(&raw).with_context(|| format!("decode {}", path.display()))?;
     anyhow::ensure!(
         root.zcash_network == expected_network,
@@ -415,6 +396,33 @@ fn validate_pir_root(
         pir_types::NULLIFIER_POOL,
         pir_types::DATASET_VERSION
     );
+    root.pir_layout
+        .validate_supported()
+        .map_err(anyhow::Error::msg)
+        .context("invalid metadata pir_layout")?;
+    let layout_rows = root.pir_layout.tier1_rows().map_err(anyhow::Error::msg)?;
+    let layout_row_bytes = root
+        .pir_layout
+        .tier1_row_bytes()
+        .map_err(anyhow::Error::msg)?;
+    let layout_tier0_bytes = root.pir_layout.tier0_bytes().map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        root.pir_depth == root.pir_layout.pir_depth
+            && root.tier1_rows == layout_rows
+            && root.tier1_row_bytes == layout_row_bytes
+            && root.tier0_bytes == layout_tier0_bytes,
+        "{} has inconsistent PIR layout metadata",
+        path.display()
+    );
+    Ok(root)
+}
+
+fn validate_pir_root(
+    path: &Path,
+    expected_network: pir_types::ZcashNetwork,
+    expected_height: u64,
+) -> Result<()> {
+    let root = validate_pir_metadata(path, expected_network)?;
     anyhow::ensure!(
         root.height == Some(expected_height),
         "{} height {:?} does not match requested snapshot height {}",
@@ -651,17 +659,19 @@ mod tests {
 
     fn write_pir_root(dir: &Path, height: Option<u64>) {
         // Mirrors the on-disk shape written by `pir-export`.
+        let layout = pir_types::COMPILED_PIR_LAYOUT;
         let mut m = serde_json::json!({
             "zcash_network": TEST_NETWORK,
             "nullifier_pool": pir_types::NULLIFIER_POOL,
             "dataset_version": pir_types::DATASET_VERSION,
-            "root25": "00",
-            "root29": "00",
+            "pir_root": "00",
+            "circuit_root": "00",
             "num_ranges": 1,
-            "pir_depth": 1,
-            "tier0_bytes": 0,
-            "tier1_rows": 0,
-            "tier1_row_bytes": 0,
+            "pir_depth": layout.pir_depth,
+            "pir_layout": layout,
+            "tier0_bytes": layout.tier0_bytes().unwrap(),
+            "tier1_rows": layout.tier1_rows().unwrap(),
+            "tier1_row_bytes": layout.tier1_row_bytes().unwrap(),
         });
         if let Some(h) = height {
             m["height"] = serde_json::Value::from(h);
@@ -716,11 +726,28 @@ mod tests {
     }
 
     #[test]
+    fn read_local_height_rejects_root_without_layout() {
+        let tmp = TempDir::new().unwrap();
+        write_pir_root(tmp.path(), Some(TEST_HEIGHT));
+        let path = tmp.path().join("pir_root.json");
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        root.as_object_mut().unwrap().remove("pir_layout");
+        std::fs::write(path, serde_json::to_vec(&root).unwrap()).unwrap();
+
+        assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
+        assert!(
+            validate_pir_root(&tmp.path().join("pir_root.json"), TEST_NETWORK, TEST_HEIGHT)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn read_local_height_rejects_legacy_dataset() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("pir_root.json"),
-            format!(r#"{{"height":{TEST_HEIGHT},"root25":"00"}}"#),
+            format!(r#"{{"height":{TEST_HEIGHT},"pir_root":"00"}}"#),
         )
         .unwrap();
         assert_eq!(read_local_height(tmp.path(), TEST_NETWORK), None);
