@@ -1,5 +1,7 @@
 # Unreleased
 
+- Accept `-alpha.N` release tags as prereleases without updating GitHub Latest
+  or mutable installer aliases.
 - Always issue a Tier 1 PIR request when Tier 0 routing fails or panics,
   preventing malicious routing metadata from leaking nullifier ranks through
   request counts.
