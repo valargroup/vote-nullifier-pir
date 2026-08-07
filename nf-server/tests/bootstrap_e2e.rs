@@ -121,6 +121,7 @@ fn stage_snapshot_with_network(
     root_network: pir_types::ZcashNetwork,
     height: u64,
 ) -> BTreeMap<String, Vec<u8>> {
+    let layout = pir_types::COMPILED_PIR_LAYOUT;
     let mut blobs = BTreeMap::new();
     blobs.insert("tier0.bin".to_string(), b"tier0-payload".to_vec());
     blobs.insert("tier1.bin".to_string(), b"tier1-payload".to_vec());
@@ -133,10 +134,11 @@ fn stage_snapshot_with_network(
             "root25": "00",
             "root29": "00",
             "num_ranges": 1,
-            "pir_depth": 1,
-            "tier0_bytes": 0,
-            "tier1_rows": 0,
-            "tier1_row_bytes": 0,
+            "pir_depth": layout.pir_depth,
+            "pir_layout": layout,
+            "tier0_bytes": layout.tier0_bytes().unwrap(),
+            "tier1_rows": layout.tier1_rows().unwrap(),
+            "tier1_row_bytes": layout.tier1_row_bytes().unwrap(),
             "height": height,
         }))
         .unwrap(),
@@ -238,6 +240,7 @@ fn stage_rounds_snapshot_height(bucket: &MockBucket, snapshot_height: u64) {
 }
 
 fn write_local_pir_root(dir: &std::path::Path, height: u64) {
+    let layout = pir_types::COMPILED_PIR_LAYOUT;
     std::fs::write(
         dir.join("pir_root.json"),
         serde_json::to_vec(&json!({
@@ -247,10 +250,11 @@ fn write_local_pir_root(dir: &std::path::Path, height: u64) {
             "root25": "00",
             "root29": "00",
             "num_ranges": 0,
-            "pir_depth": 0,
-            "tier0_bytes": 0,
-            "tier1_rows": 0,
-            "tier1_row_bytes": 0,
+            "pir_depth": layout.pir_depth,
+            "pir_layout": layout,
+            "tier0_bytes": layout.tier0_bytes().unwrap(),
+            "tier1_rows": layout.tier1_rows().unwrap(),
+            "tier1_row_bytes": layout.tier1_row_bytes().unwrap(),
             "height": height,
         }))
         .unwrap(),
@@ -518,9 +522,23 @@ async fn legacy_local_root_is_replaced_at_the_same_height() {
     stage_voting_config(&bucket, &base, Some(h));
 
     let tmp = TempDir::new().unwrap();
+    let layout = pir_types::COMPILED_PIR_LAYOUT;
     std::fs::write(
         tmp.path().join("pir_root.json"),
-        serde_json::to_vec(&json!({ "height": h, "root25": "legacy" })).unwrap(),
+        serde_json::to_vec(&json!({
+            "zcash_network": TEST_NETWORK,
+            "nullifier_pool": pir_types::NULLIFIER_POOL,
+            "dataset_version": pir_types::DATASET_VERSION,
+            "root25": "legacy",
+            "root29": "00",
+            "num_ranges": 1,
+            "pir_depth": layout.pir_depth,
+            "tier0_bytes": layout.tier0_bytes().unwrap(),
+            "tier1_rows": layout.tier1_rows().unwrap(),
+            "tier1_row_bytes": layout.tier1_row_bytes().unwrap(),
+            "height": h,
+        }))
+        .unwrap(),
     )
     .unwrap();
     let cfg = Config {
