@@ -16,6 +16,8 @@
   any private query.
 - Rename the depth-specific `root25` and `root29` fields to `pir_root` and
   `circuit_root`; legacy metadata field names remain accepted as aliases.
+- Accept `-alpha.N` release tags as prereleases without updating GitHub Latest
+  or mutable installer aliases.
 - Always issue a Tier 1 PIR request when Tier 0 routing fails or panics,
   preventing malicious routing metadata from leaking nullifier ranks through
   request counts.

@@ -16,15 +16,18 @@ fail() {
 }
 
 [ "$($channel_script v0.0.41)" = "stable" ] || fail "stable tag classification"
+[ "$($channel_script v0.0.42-alpha.1)" = "alpha" ] || fail "alpha tag classification"
 [ "$($channel_script v0.0.41-rc.1)" = "rc" ] || fail "RC tag classification"
-for tag in v0.0 v0.0.41-rc v0.0.41-beta.1 v0.0.41.1; do
+for tag in v0.0 v0.0.41-alpha v0.0.41-rc v0.0.41-beta.1 v0.0.41.1; do
   if "$channel_script" "$tag" >/dev/null 2>&1; then
     fail "invalid tag accepted: $tag"
   fi
 done
 
-expected_rc_metadata=$'prerelease=true\nmake_latest=false\nalready_latest=false\npublish_mutable_pointers=false'
-[ "$($metadata_script v0.0.41-rc.1 v0.0.41-rc.1)" = "$expected_rc_metadata" ] \
+expected_prerelease_metadata=$'prerelease=true\nmake_latest=false\nalready_latest=false\npublish_mutable_pointers=false'
+[ "$($metadata_script v0.0.42-alpha.1 v0.0.42-alpha.1 v0.0.42-alpha.1)" = "$expected_prerelease_metadata" ] \
+  || fail "held alpha was not kept as a prerelease"
+[ "$($metadata_script v0.0.41-rc.1 v0.0.41-rc.1)" = "$expected_prerelease_metadata" ] \
   || fail "held RC was not kept as a prerelease"
 expected_held_metadata=$'prerelease=false\nmake_latest=false\nalready_latest=false\npublish_mutable_pointers=false'
 [ "$($metadata_script v0.0.41 v0.0.41)" = "$expected_held_metadata" ] \
@@ -95,6 +98,9 @@ fi
 if "$channel_update_script" v0.0.41-rc.1 v0.0.41 >/dev/null 2>&1; then
   fail "RC release accepted for stable channel update"
 fi
+if "$channel_update_script" v0.0.42-alpha.1 v0.0.41 >/dev/null 2>&1; then
+  fail "alpha release accepted for stable channel update"
+fi
 
 [ "$($promotion_script v0.0.41 v0.0.41 v0.0.40)" = "v0.0.41" ] \
   || fail "held stable release promotion validation"
@@ -110,6 +116,9 @@ if "$promotion_script" v1.0.0 v1.0.0 v10.0.0 >/dev/null 2>&1; then
 fi
 if "$promotion_script" v0.0.41-rc.1 v0.0.41-rc.1 >/dev/null 2>&1; then
   fail "RC release promotion accepted"
+fi
+if "$promotion_script" v0.0.42-alpha.1 v0.0.42-alpha.1 >/dev/null 2>&1; then
+  fail "alpha release promotion accepted"
 fi
 if "$promotion_script" v0.0.41 v0.0.42 >/dev/null 2>&1; then
   fail "promotion tag did not match hold"
@@ -136,6 +145,12 @@ chmod +x "${tmp_dir}/s3cmd"
 export S3CMD_BIN="${tmp_dir}/s3cmd"
 export S3CMD_LOG="${tmp_dir}/uploads.log"
 export PIR_CONFIG_URL="file://${tmp_dir}/pir.json"
+
+"$pointer_script" v0.0.42-alpha.1 "${tmp_dir}/s3cfg" \
+  "${tmp_dir}/start_pir.sh" "${tmp_dir}/update_pir.sh" \
+  "${tmp_dir}/published-height"
+[ ! -s "$S3CMD_LOG" ] || fail "alpha release updated mutable pointers"
+[ ! -e "${tmp_dir}/published-height" ] || fail "alpha release reported a published height"
 
 "$pointer_script" v0.0.41-rc.1 "${tmp_dir}/s3cfg" \
   "${tmp_dir}/start_pir.sh" "${tmp_dir}/update_pir.sh" \
