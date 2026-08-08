@@ -18,10 +18,11 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 
-const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_PORT: u16 = 3001;
 
-use pir_server::{dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState};
+use pir_server::{
+    dispatch_query, read_tier_row, HealthInfo, RootInfo, ServingState, MAX_QUERY_BODY_BYTES,
+};
 use tracing::info;
 
 /// Shared application state: loaded tier data plus per-process counters.
@@ -66,7 +67,7 @@ async fn main() -> Result<()> {
         .route("/tier1/row/:idx", get(get_tier1_row))
         .route("/root", get(get_root))
         .route("/health", get(get_health))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(MAX_QUERY_BODY_BYTES))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");
