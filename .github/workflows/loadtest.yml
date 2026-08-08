@@ -81,7 +81,7 @@ jobs:
           fi
           curl -fsSL --retry 3 "${PIR_URL%/}/root" -o pir-root.json
           if ! jq -e --arg network "$SVOTE_ZCASH_NETWORK" --arg height "$SNAPSHOT_HEIGHT" \
-            '.zcash_network == $network and (.height | tostring) == $height and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            '.zcash_network == $network and (.height | tostring) == $height and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             pir-root.json >/dev/null; then
             echo "PIR endpoint is not serving the expected $SVOTE_ZCASH_NETWORK dataset" >&2
             exit 1
@@ -106,7 +106,7 @@ jobs:
           SNAPSHOT_BASE="$SNAPSHOTS_BASE/$SVOTE_ZCASH_NETWORK/$HEIGHT"
           curl -fsSL --retry 3 "$SNAPSHOT_BASE/manifest.json" -o manifest.json
           if ! jq -e \
-            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            '.schema_version == 2 and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             manifest.json >/dev/null; then
             echo "ERROR: snapshot manifest is not Ironwood dataset version 1 with schema version 2"
             exit 1
@@ -144,7 +144,7 @@ jobs:
           download_and_verify nullifiers.dataset.json
           if ! jq -e \
             --arg network "$SVOTE_ZCASH_NETWORK" \
-            '.zcash_network == $network and .nullifier_pool == "ironwood" and .dataset_version == 1' \
+            '.zcash_network == $network and .nullifier_pool == "ironwood" and .dataset_version == 2' \
             nullifiers.dataset.json >/dev/null; then
             echo "ERROR: nullifiers.dataset.json has the wrong dataset identity"
             exit 1

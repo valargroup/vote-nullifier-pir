@@ -11,10 +11,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
-use pir_server::{
-    dispatch_query, read_tier_row, HealthInfo, RootInfo, TIER1_ROWS, TIER1_ROW_BYTES, TIER2_ROWS,
-    TIER2_ROW_BYTES,
-};
+use pir_server::{dispatch_query, read_tier_row, HealthInfo, RootInfo};
 
 use super::state::{AppState, ServerPhase};
 
@@ -38,13 +35,6 @@ pub(crate) async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl
     axum::Json(s.tier1_scenario.clone()).into_response()
 }
 
-/// `GET /params/tier2` — Return the Tier 2 YPIR scenario parameters as JSON.
-pub(crate) async fn get_params_tier2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let guard = require_serving!(state);
-    let s = guard.as_ref().expect("guaranteed Some by require_serving");
-    axum::Json(s.tier2_scenario.clone()).into_response()
-}
-
 // ── YPIR query endpoints ─────────────────────────────────────────────────────
 
 /// `POST /tier1/query` — Process an encrypted YPIR query against Tier 1.
@@ -63,22 +53,6 @@ pub(crate) async fn post_tier1_query(
     )
 }
 
-/// `POST /tier2/query` — Process an encrypted YPIR query against Tier 2.
-pub(crate) async fn post_tier2_query(
-    State(state): State<Arc<AppState>>,
-    body: Bytes,
-) -> impl IntoResponse {
-    let guard = require_serving!(state);
-    let s = guard.as_ref().expect("guaranteed Some by require_serving");
-    dispatch_query(
-        &s.tier2,
-        "tier2",
-        &body,
-        &state.next_req_id,
-        &state.inflight_requests,
-    )
-}
-
 // ── Tier row endpoints (raw row reads for debugging) ─────────────────────────
 
 /// `GET /tier1/row/:idx` — Read a raw Tier 1 row from disk (for debugging).
@@ -86,15 +60,23 @@ pub(crate) async fn get_tier1_row(
     State(state): State<Arc<AppState>>,
     Path(idx): Path<usize>,
 ) -> impl IntoResponse {
-    get_tier_row(&state, idx, "tier1.bin", TIER1_ROWS, TIER1_ROW_BYTES).await
-}
-
-/// `GET /tier2/row/:idx` — Read a raw Tier 2 row from disk (for debugging).
-pub(crate) async fn get_tier2_row(
-    State(state): State<Arc<AppState>>,
-    Path(idx): Path<usize>,
-) -> impl IntoResponse {
-    get_tier_row(&state, idx, "tier2.bin", TIER2_ROWS, TIER2_ROW_BYTES).await
+    let guard = state.serving.read().await;
+    let (rows, row_bytes) = match guard.as_ref() {
+        Some(s) => (s.metadata.tier1_rows, s.metadata.tier1_row_bytes),
+        None => {
+            drop(guard);
+            let phase = state.phase.read().await;
+            let body = serde_json::to_string(&*phase).unwrap_or_default();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response();
+        }
+    };
+    drop(guard);
+    get_tier_row(&state, idx, "tier1.bin", rows, row_bytes).await
 }
 
 /// Shared handler for raw tier row reads. Validates index bounds and reads
@@ -149,10 +131,13 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
         zcash_network: s.metadata.zcash_network,
         nullifier_pool: s.metadata.nullifier_pool.clone(),
         dataset_version: s.metadata.dataset_version,
-        root29: s.metadata.root29.clone(),
-        root25: s.metadata.root25.clone(),
+        circuit_root: s.metadata.circuit_root.clone(),
+        pir_root: s.metadata.pir_root.clone(),
         num_ranges: s.metadata.num_ranges,
+        pir_layout: s.metadata.pir_layout,
         pir_depth: s.metadata.pir_depth,
+        tier1_rows: s.metadata.tier1_rows,
+        tier1_row_bytes: s.metadata.tier1_row_bytes,
         height: s.metadata.height,
     };
     axum::Json(info).into_response()
@@ -162,9 +147,9 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
 pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let phase = state.phase.read().await;
     let serving = state.serving.read().await;
-    let (tier1_rows, tier2_rows) = match serving.as_ref() {
-        Some(s) => (s.tier1_scenario.num_items, s.tier2_scenario.num_items),
-        None => (0, 0),
+    let tier1_rows = match serving.as_ref() {
+        Some(s) => s.tier1_scenario.num_items,
+        None => 0,
     };
     let status = match &*phase {
         ServerPhase::Starting { .. } => "starting",
@@ -176,9 +161,10 @@ pub(crate) async fn get_health(State(state): State<Arc<AppState>>) -> impl IntoR
     let info = HealthInfo {
         status: status.to_string(),
         tier1_rows,
-        tier2_rows,
-        tier1_row_bytes: TIER1_ROW_BYTES,
-        tier2_row_bytes: TIER2_ROW_BYTES,
+        tier1_row_bytes: serving
+            .as_ref()
+            .map(|s| s.metadata.tier1_row_bytes)
+            .unwrap_or(0),
     };
     axum::Json(info)
 }

@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Rust formatting and Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   test:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -41,6 +59,7 @@ jobs:
         run: |
           cargo test --lib -p imt-tree
           cargo test --lib -p nf-ingest
+          cargo test -p pir-types -p pir-export -p pir-client
           # nf-server is a binary crate; run its unit tests + the
           # bootstrap_e2e integration suite under the `serve` feature
           # (the only build configuration in which the bootstrap and

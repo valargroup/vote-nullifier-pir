@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tonic::transport::Channel;
 use tonic::Request;
-use tracing::info;
+use tracing::{info, warn};
 
 use pir_types::ZcashNetwork;
 
@@ -24,9 +24,7 @@ const BLOCK_ALIGNMENT: u64 = 10;
 /// of the chain tip as reported by the server.
 pub async fn fetch_chain_tip(lwd_url: &str) -> Result<u64> {
     let mut client = connect_lwd(lwd_url).await?;
-    let latest = client
-        .get_latest_block(Request::new(ChainSpec {}))
-        .await?;
+    let latest = client.get_latest_block(Request::new(ChainSpec {})).await?;
     Ok(latest.into_inner().height)
 }
 
@@ -196,9 +194,25 @@ pub async fn sync(
     file_store::ensure_ironwood_dataset(dir, network)?;
 
     let mut clients = Vec::with_capacity(lwd_urls.len());
+    let mut connected_urls = Vec::with_capacity(lwd_urls.len());
+    let mut connection_errors = Vec::new();
     for url in lwd_urls {
-        clients.push(connect_lwd(url).await?);
+        match connect_lwd(url).await {
+            Ok(client) => {
+                clients.push(client);
+                connected_urls.push(url.as_str());
+            }
+            Err(error) => {
+                warn!(%url, %error, "skipping unavailable lightwalletd");
+                connection_errors.push(format!("{url}: {error:#}"));
+            }
+        }
     }
+    anyhow::ensure!(
+        !clients.is_empty(),
+        "failed to connect to any lightwalletd endpoint: {}",
+        connection_errors.join("; ")
+    );
     let n = clients.len();
 
     let latest = clients[0]
@@ -211,7 +225,7 @@ pub async fn sync(
     let existing = file_store::nullifier_count(dir)?;
     let target = resolve_target(start, max_height, chain_tip);
 
-    for (url, client) in lwd_urls.iter().zip(clients.iter_mut()) {
+    for (url, client) in connected_urls.iter().zip(clients.iter_mut()) {
         require_ironwood_tree_state(client, url, network, target).await?;
     }
 
@@ -226,7 +240,11 @@ pub async fn sync(
     if let Some(h) = max_height {
         info!(max_height = h, chain_tip, "max height set");
     }
-    info!(target, blocks_remaining = target.saturating_sub(start), "sync target");
+    info!(
+        target,
+        blocks_remaining = target.saturating_sub(start),
+        "sync target"
+    );
 
     if start >= target {
         return Ok(SyncResult {
@@ -311,8 +329,7 @@ mod tests {
     fn resume_height_discards_uncheckpointed_first_batch() {
         let dir = temp_dir("fresh_partial");
         file_store::ensure_ironwood_dataset(&dir, ZcashNetwork::Main).unwrap();
-        file_store::append_nullifiers(&dir, &[(MAINNET_ACTIVATION, vec![1u8; 32])])
-            .unwrap();
+        file_store::append_nullifiers(&dir, &[(MAINNET_ACTIVATION, vec![1u8; 32])]).unwrap();
 
         assert_eq!(
             resume_height(&dir, ZcashNetwork::Main).unwrap(),

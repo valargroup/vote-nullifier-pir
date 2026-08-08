@@ -26,7 +26,7 @@ on:
         type: boolean
         default: false
       reset_dataset:
-        description: "One-time migration only: wipe the publisher dataset and rebuild it as Ironwood."
+        description: "One-time migration only: wipe and rebuild the publisher dataset for the current dataset version."
         required: false
         type: boolean
         default: false
@@ -132,7 +132,7 @@ jobs:
             export SVOTE_PIR_VOTING_CONFIG_URL=
             export SVOTE_PIR_DATA_DIR="${{ env.DEPLOY_PATH }}/pir-data/${SVOTE_ZCASH_NETWORK}"
             EXPECTED_NULLIFIER_POOL=ironwood
-            EXPECTED_DATASET_VERSION=1
+            EXPECTED_DATASET_VERSION=2
             if ! DATASET_INFO=$(./nf-server dataset-info 2>/dev/null) || ! jq -e \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
@@ -172,9 +172,10 @@ jobs:
               --arg network "$SVOTE_ZCASH_NETWORK" \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version' \
+              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version
+               and .pir_depth == 19 and .tier1_rows == 4096 and .tier1_row_bytes == 12288' \
               "$STAGE/pir_root.json" >/dev/null; then
-              echo "ERROR: pir_root.json is not the expected Ironwood dataset version" >&2
+              echo "ERROR: pir_root.json is not the expected Ironwood dataset version and 12+7 layout" >&2
               exit 1
             fi
             if [ ! -f "$DATASET_MARKER" ] || ! jq -e \
@@ -205,7 +206,7 @@ jobs:
             CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             TIER_JSON=$(
               cd "$STAGE"
-              for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+              for f in tier0.bin tier1.bin pir_root.json; do
                 size=$(stat -c%s "$f")
                 sha=$(sha256sum "$f" | awk '{print $1}')
                 jq -n --arg name "$f" --argjson size "$size" --arg sha "$sha" \
@@ -261,7 +262,7 @@ jobs:
             cat "$STAGE/manifest.json"
 
             echo "==> Upload data files to s3://$BUCKET/$PREFIX/$H/ (manifest last)"
-            for f in tier0.bin tier1.bin tier2.bin pir_root.json; do
+            for f in tier0.bin tier1.bin pir_root.json; do
               echo "  - $f"
               s3cmd -c "$S3CFG" put "$STAGE/$f" "s3://$BUCKET/$PREFIX/$H/$f" \
                 --acl-public --force --no-progress
@@ -279,7 +280,7 @@ jobs:
               --add-header="Cache-Control:no-cache, max-age=0"
 
             echo "==> Enforce public-read ACL on all uploaded files"
-            ACL_FILES="tier0.bin tier1.bin tier2.bin pir_root.json"
+            ACL_FILES="tier0.bin tier1.bin pir_root.json"
             if [ "${{ inputs.include_nullifier_artifacts }}" = "true" ]; then
               ACL_FILES="$ACL_FILES nullifiers.bin nullifiers.checkpoint nullifiers.tree nullifiers.dataset.json"
             fi
@@ -316,9 +317,10 @@ jobs:
               --arg network "$SVOTE_ZCASH_NETWORK" \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version' \
+              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version
+               and .pir_depth == 19 and .tier1_rows == 4096 and .tier1_row_bytes == 12288' \
               "$VERIFY_DIR/pir_root.json" >/dev/null; then
-              echo "ERROR: remote pir_root.json has the wrong dataset identity"
+              echo "ERROR: remote pir_root.json has the wrong dataset identity or tier shape"
               exit 1
             fi
             if [ "$REMOTE_ROOT_HEIGHT" != "$H" ]; then

@@ -19,8 +19,8 @@ pub const fn nu6_3_activation_height(network: ZcashNetwork) -> u64 {
 /// Default lightwalletd gRPC endpoints used when no override is provided.
 pub const DEFAULT_LWD_URLS: &[&str] = &[
     "https://us.zec.stardust.rest:443",
-    "https://eu2.zec.stardust.rest:443",
     "https://eu.zec.stardust.rest:443",
+    "https://zec.rocks:443",
 ];
 
 /// The default single URL used in CLI `--lwd-url` defaults.
@@ -30,16 +30,11 @@ const DEFAULT_SINGLE_LWD_URL: &str = "https://us.zec.stardust.rest:443";
 
 /// Tree checkpoint files under the nullifier root to remove when forcing a rebuild
 /// after new blocks were synced from lightwalletd (`--invalidate-after-blocks`).
-pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] =
-    &["nullifiers.tree", "nullifiers.tree.tmp"];
+pub const INVALIDATE_AFTER_BLOCKS_TREE_FILES: &[&str] = &["nullifiers.tree", "nullifiers.tree.tmp"];
 
 /// PIR tier files under the tier output directory for the same invalidation pass.
-pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] = &[
-    "tier0.bin",
-    "tier1.bin",
-    "tier2.bin",
-    "pir_root.json",
-];
+pub const INVALIDATE_AFTER_BLOCKS_TIER_FILES: &[&str] =
+    &["tier0.bin", "tier1.bin", "pir_root.json"];
 
 /// Validate that `height` is a legal export target: at or above NU6.3 activation
 /// and a multiple of 10 (the ingestion block-alignment granularity).

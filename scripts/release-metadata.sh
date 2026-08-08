@@ -12,7 +12,7 @@ if [ "$channel" = "stable" ] && [ -n "$latest_tag" ] && [ "$tag" = "$latest_tag"
   already_latest=true
 fi
 
-if [ "$channel" = "rc" ]; then
+if [ "$channel" = "alpha" ] || [ "$channel" = "rc" ]; then
   prerelease=true
   make_latest=false
   publish_mutable_pointers=false

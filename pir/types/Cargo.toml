@@ -1,6 +1,6 @@
 [package]
 name = "pir-types"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.4"
 edition = "2021"
 description = "Shared wire types and tier-layout constants for Ironwood nullifier non-membership proofs."
 license = "MIT OR Apache-2.0"

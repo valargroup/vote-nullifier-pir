@@ -34,7 +34,7 @@ snapshot. There is no harm in running it again.
 | `height` | *(empty)* | Optional forced DO snapshot height. Must be numeric, a multiple of 10, and already published under the environment's `SNAPSHOTS_BASE_URL`. |
 
 When `height` is set, the workflow first validates the DO snapshot manifest and
-the required tier objects (`tier0.bin`, `tier1.bin`, `tier2.bin`,
+the required tier objects (`tier0.bin`, `tier1.bin`,
 `pir_root.json`) before touching any host. Only use schema 2 snapshots whose
 manifest identifies Ironwood dataset version 1 and the root identifies the selected Zcash network. Each host then gets a temporary
 systemd drop-in:
@@ -123,11 +123,11 @@ public endpoints once the workflow is green:
 ```bash
 for host in pir-primary pir-backup; do
     echo "=== $host ==="
-    curl -s "https://$host.valargroup.org/root" | jq '{zcash_network, nullifier_pool, dataset_version, height, root25}'
+    curl -s "https://$host.valargroup.org/root" | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_root}'
 done
 ```
 
-Both should report the expected `zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 1`, and identical heights and roots.
+Both should report the expected `zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 2`, and identical heights and roots.
 
 ## Failure modes
 

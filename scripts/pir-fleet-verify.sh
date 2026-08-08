@@ -48,7 +48,10 @@ verify_one() {
     echo "$ROOT"
     grep -Eq "\"nullifier_pool\"[[:space:]]*:[[:space:]]*\"ironwood\"" <<<"$ROOT" || { echo "FAIL: /root nullifier_pool" >&2; exit 1; }
     grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"${NETWORK}\"" <<<"$ROOT" || { echo "FAIL: /root zcash_network" >&2; exit 1; }
-    grep -Eq "\"dataset_version\"[[:space:]]*:[[:space:]]*1[[:space:]]*([,}])" <<<"$ROOT" || { echo "FAIL: /root dataset_version" >&2; exit 1; }
+    grep -Eq "\"dataset_version\"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])" <<<"$ROOT" || { echo "FAIL: /root dataset_version" >&2; exit 1; }
+    grep -Eq "\"pir_depth\"[[:space:]]*:[[:space:]]*19[[:space:]]*([,}])" <<<"$ROOT" || { echo "FAIL: /root pir_depth" >&2; exit 1; }
+    grep -Eq "\"tier1_rows\"[[:space:]]*:[[:space:]]*4096[[:space:]]*([,}])" <<<"$ROOT" || { echo "FAIL: /root tier1_rows" >&2; exit 1; }
+    grep -Eq "\"tier1_row_bytes\"[[:space:]]*:[[:space:]]*12288[[:space:]]*([,}])" <<<"$ROOT" || { echo "FAIL: /root tier1_row_bytes" >&2; exit 1; }
     echo "--- metrics heights ---"
     curl -sfS --max-time 5 http://127.0.0.1:3000/metrics | awk "\$1==\"nf_snapshot_served_height\" || \$1==\"nf_snapshot_expected_height\" {print}"
   '

@@ -1,5 +1,11 @@
 # PIR batch query — production baseline (Phase 0)
 
+> Historical dataset-version-1 record. These measurements and Tier 2 design
+> notes describe the retired depth-25, two-query layout. Dataset version 2
+> uses the single-query 12+7 layout in
+> [pir-tree-spec.md](pir-tree-spec.md); the current benchmark JSON schema
+> reports Tier 1 only.
+
 This document is the **pre-rollout baseline** for the PIR batch-query work
 described in the rollout plan. Every later phase (HTTP/wire batching,
 server-side batched matmul) reports a delta against the numbers below.
@@ -59,7 +65,7 @@ mise exec -- cargo build --release -p pir-test
 
 - **Endpoints**: production PIR fleet referenced by the dynamic voting config:
   `https://pir.valargroup.org` (primary) and `https://pir-backup.valargroup.org` (backup).
-- **Server snapshot**: height **3,317,500**, 24,962,943 ranges, root29
+- **Server snapshot**: height **3,317,500**, 24,962,943 ranges, circuit root
   `c338a0…3a3f` (verified via `GET /root` on 2026-04-26).
 - **Local nullifier set**: `vote-nullifier-pir/nullifiers.bin` at height
   3,304,638 (49,897,273 nullifiers → 24,948,653 ranges). Production has a

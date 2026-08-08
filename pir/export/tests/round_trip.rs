@@ -1,6 +1,6 @@
 //! Integration test: full PIR round-trip without YPIR.
 //!
-//! Builds a depth-25 punctured-range tree (K=2) from synthetic nullifiers,
+//! Builds a depth-19 punctured-range tree (K=2) from synthetic nullifiers,
 //! exports tier data, parses it back, constructs proofs, and verifies them.
 
 use ff::{Field, PrimeField as _};
@@ -12,21 +12,19 @@ use imt_tree::ImtProofData;
 
 use pir_export::tier0::Tier0Data;
 use pir_export::tier1::Tier1Row;
-use pir_export::tier2::Tier2Row;
 use pir_export::{
-    build_pir_tree, build_ranges_with_sentinels, PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS,
-    TIER1_LEAVES, TIER1_ROW_BYTES, TIER2_LEAVES, TIER2_ROW_BYTES,
+    build_pir_tree, build_ranges_with_sentinels, PIR_DEPTH, TIER0_LAYERS, TIER1_LEAVES,
+    TIER1_ROW_BYTES,
 };
 
 /// Perform local proof construction from tier data (mirrors pir_client::fetch_proof_local).
 fn construct_proof(
     tier0_data: &[u8],
     tier1_data: &[u8],
-    tier2_data: &[u8],
     num_ranges: usize,
     value: Fp,
     empty_hashes: &[Fp; TREE_DEPTH],
-    root29: Fp,
+    circuit_root: Fp,
 ) -> Option<ImtProofData> {
     let hasher = PoseidonHasher::new();
     let tier0 = Tier0Data::from_bytes(tier0_data.to_vec()).ok()?;
@@ -44,33 +42,22 @@ fn construct_proof(
     let tier1_row = &tier1_data[t1_offset..t1_offset + TIER1_ROW_BYTES];
     let tier1 = Tier1Row::from_bytes(tier1_row).ok()?;
 
-    let s2 = tier1.find_sub_subtree(value)?;
-
-    let tier1_siblings = tier1.extract_siblings(s2, &hasher);
+    let valid_leaves = num_ranges
+        .saturating_sub(s1 * TIER1_LEAVES)
+        .min(TIER1_LEAVES);
+    let leaf_idx = tier1.find_leaf(value, valid_leaves)?;
+    let tier1_siblings = tier1.extract_siblings(leaf_idx, valid_leaves, &hasher);
     for (i, &sib) in tier1_siblings.iter().enumerate() {
-        path[PIR_DEPTH - TIER0_LAYERS - TIER1_LAYERS + i] = sib;
-    }
-
-    let t2_row_idx = s1 * TIER1_LEAVES + s2;
-    let t2_offset = t2_row_idx * TIER2_ROW_BYTES;
-    let tier2_row = &tier2_data[t2_offset..t2_offset + TIER2_ROW_BYTES];
-    let tier2 = Tier2Row::from_bytes(tier2_row).ok()?;
-    let valid_leaves = num_ranges.saturating_sub(t2_row_idx * TIER2_LEAVES).min(TIER2_LEAVES);
-
-    let leaf_idx = tier2.find_leaf(value, valid_leaves)?;
-
-    let tier2_siblings = tier2.extract_siblings(leaf_idx, valid_leaves, &hasher);
-    for (i, &sib) in tier2_siblings.iter().enumerate() {
         path[i] = sib;
     }
 
     path[PIR_DEPTH..TREE_DEPTH].copy_from_slice(&empty_hashes[PIR_DEPTH..TREE_DEPTH]);
 
-    let global_leaf_idx = t2_row_idx * TIER2_LEAVES + leaf_idx;
-    let (nf_lo, nf_mid, nf_hi) = tier2.leaf_record(leaf_idx);
+    let global_leaf_idx = s1 * TIER1_LEAVES + leaf_idx;
+    let (nf_lo, nf_mid, nf_hi) = tier1.leaf_record(leaf_idx);
 
     Some(ImtProofData {
-        root: root29,
+        root: circuit_root,
         nf_bounds: [nf_lo, nf_mid, nf_hi],
         leaf_pos: global_leaf_idx as u32,
         path,
@@ -87,26 +74,24 @@ fn test_small_tree_round_trip() {
     eprintln!("  Ranges: {}", ranges.len());
 
     let tree = build_pir_tree(ranges.clone()).unwrap();
-    eprintln!("  Root25: {}", hex::encode(tree.root25.to_repr()));
-    eprintln!("  Root29: {}", hex::encode(tree.root29.to_repr()));
+    eprintln!("  PIR root: {}", hex::encode(tree.pir_root.to_repr()));
+    eprintln!(
+        "  Circuit root: {}",
+        hex::encode(tree.circuit_root.to_repr())
+    );
 
     // Export tier data
-    let tier0_data =
-        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
-
-    let mut tier1_data = Vec::new();
-    pir_export::tier1::export(
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
         &tree.levels,
         &tree.ranges,
         &tree.empty_hashes,
-        &mut tier1_data,
-    )
-    .unwrap();
+    );
 
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
+    let mut tier1_data = Vec::new();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_data).unwrap();
 
-    eprintln!("  Tier sizes: {} / {} / {}", tier0_data.len(), tier1_data.len(), tier2_data.len());
+    eprintln!("  Tier sizes: {} / {}", tier0_data.len(), tier1_data.len());
 
     // Test multiple values
     let mut passed = 0;
@@ -116,11 +101,10 @@ fn test_small_tree_round_trip() {
         let proof = construct_proof(
             &tier0_data,
             &tier1_data,
-            &tier2_data,
             ranges.len(),
             value,
             &tree.empty_hashes,
-            tree.root29,
+            tree.circuit_root,
         );
 
         match proof {
@@ -155,8 +139,8 @@ fn test_root_extension_is_deterministic() {
     let ranges2 = build_ranges_with_sentinels(&raw_nfs);
     let tree2 = build_pir_tree(ranges2).unwrap();
 
-    assert_eq!(tree1.root25, tree2.root25);
-    assert_eq!(tree1.root29, tree2.root29);
+    assert_eq!(tree1.pir_root, tree2.pir_root);
+    assert_eq!(tree1.circuit_root, tree2.circuit_root);
 }
 
 #[test]
@@ -167,13 +151,14 @@ fn test_pir_proof_verifies_independently() {
     let ranges = build_ranges_with_sentinels(&raw_nfs);
     let tree = build_pir_tree(ranges.clone()).unwrap();
 
-    let tier0_data =
-        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+    );
     let mut tier1_data = Vec::new();
-    pir_export::tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut tier1_data)
-        .unwrap();
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_data).unwrap();
 
     for &[nf_lo, _, _] in ranges.iter().take(50) {
         let value = nf_lo + Fp::one();
@@ -181,16 +166,83 @@ fn test_pir_proof_verifies_independently() {
         let proof_pir = construct_proof(
             &tier0_data,
             &tier1_data,
-            &tier2_data,
             ranges.len(),
             value,
             &tree.empty_hashes,
-            tree.root29,
+            tree.circuit_root,
         )
         .expect("PIR proof construction failed");
 
         assert!(proof_pir.verify(value), "PIR proof verification failed");
     }
+}
+
+#[test]
+fn test_pir_proofs_across_all_populated_tier1_rows() {
+    // Approximate the production dataset size with deterministic, well-spaced
+    // nullifiers. This produces more than 100 Tier 1 rows and ensures that the
+    // local-to-global leaf index conversion is exercised with non-zero rows.
+    let raw_nfs: Vec<Fp> = (1u64..=31_000).map(|i| Fp::from(i * 1_000)).collect();
+    let ranges = build_ranges_with_sentinels(&raw_nfs);
+    let tree = build_pir_tree(ranges.clone()).unwrap();
+
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+    );
+    let mut tier1_data = Vec::new();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_data).unwrap();
+
+    for (row_idx, row) in ranges.chunks(TIER1_LEAVES).enumerate() {
+        let mut local_indices = vec![0, 1, row.len() - 1];
+        local_indices.sort_unstable();
+        local_indices.dedup();
+
+        for local_idx in local_indices {
+            let expected_idx = row_idx * TIER1_LEAVES + local_idx;
+            let expected_bounds = ranges[expected_idx];
+            let value = expected_bounds[0] + Fp::one();
+            let proof = construct_proof(
+                &tier0_data,
+                &tier1_data,
+                ranges.len(),
+                value,
+                &tree.empty_hashes,
+                tree.circuit_root,
+            )
+            .unwrap_or_else(|| {
+                panic!("proof construction failed for row {row_idx}, local leaf {local_idx}")
+            });
+
+            assert!(
+                proof.verify(value),
+                "proof failed for row {row_idx}, local leaf {local_idx}"
+            );
+            assert_eq!(proof.root, tree.circuit_root);
+            assert_eq!(proof.leaf_pos as usize, expected_idx);
+            assert_eq!(proof.nf_bounds, expected_bounds);
+        }
+    }
+
+    // The first row probe covers the lower endpoint at value 1. Also query
+    // p - 2 to cover the opposite end of the final punctured range.
+    let value = Fp::from(2u64).neg();
+    let expected_idx = ranges.len() - 1;
+    let proof = construct_proof(
+        &tier0_data,
+        &tier1_data,
+        ranges.len(),
+        value,
+        &tree.empty_hashes,
+        tree.circuit_root,
+    )
+    .expect("proof construction failed near the field maximum");
+    assert!(proof.verify(value));
+    assert_eq!(proof.root, tree.circuit_root);
+    assert_eq!(proof.leaf_pos as usize, expected_idx);
+    assert_eq!(proof.nf_bounds, ranges[expected_idx]);
 }
 
 /// Test the `build_and_export` convenience function (used by the serve rebuild path).
@@ -200,50 +252,48 @@ fn test_pir_proof_verifies_independently() {
 /// records the correct height.
 #[test]
 fn test_build_and_export_writes_files() {
-    let dir = std::env::temp_dir().join(format!(
-        "pir_build_export_test_{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("pir_build_export_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let nfs: Vec<Fp> = (1u64..=50).map(|i| Fp::from(i * 997)).collect();
-    let tree = pir_export::build_and_export(
-        nfs,
-        &dir,
-        pir_types::ZcashNetwork::Test,
-        Some(4_134_000),
-    )
-    .unwrap();
+    let tree =
+        pir_export::build_and_export(nfs, &dir, pir_types::ZcashNetwork::Test, Some(4_134_000))
+            .unwrap();
 
     // Verify files exist
     assert!(dir.join("tier0.bin").exists());
     assert!(dir.join("tier1.bin").exists());
-    assert!(dir.join("tier2.bin").exists());
     assert!(dir.join("pir_root.json").exists());
 
     // Verify metadata
     let meta: pir_export::PirMetadata =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("pir_root.json")).unwrap())
-            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(dir.join("pir_root.json")).unwrap()).unwrap();
     assert_eq!(meta.zcash_network, pir_types::ZcashNetwork::Test);
     assert_eq!(meta.height, Some(4_134_000));
     assert_eq!(meta.nullifier_pool, pir_types::NULLIFIER_POOL);
     assert_eq!(meta.dataset_version, pir_types::DATASET_VERSION);
     assert_eq!(meta.pir_depth, pir_export::PIR_DEPTH);
-    assert_eq!(meta.root29, hex::encode(tree.root29.to_repr()));
+    assert_eq!(meta.pir_layout, pir_types::COMPILED_PIR_LAYOUT);
+    assert_eq!(meta.circuit_root, hex::encode(tree.circuit_root.to_repr()));
     assert!(meta.num_ranges > 25); // K=2 punctured ranges from 50 nfs + sentinels
-    assert!(pir_export::tiers_complete_for_height(
-        &dir,
-        pir_types::ZcashNetwork::Test,
-        4_134_000,
-    )
-    .unwrap());
-    assert!(!pir_export::tiers_complete_for_height(
-        &dir,
-        pir_types::ZcashNetwork::Main,
-        4_134_000,
-    )
-    .unwrap());
+    assert!(
+        pir_export::tiers_complete_for_height(&dir, pir_types::ZcashNetwork::Test, 4_134_000,)
+            .unwrap()
+    );
+    assert!(
+        !pir_export::tiers_complete_for_height(&dir, pir_types::ZcashNetwork::Main, 4_134_000,)
+            .unwrap()
+    );
+
+    // Equal-sized Tier 0 data from another snapshot must not be accepted
+    // alongside this snapshot's metadata.
+    let mut torn_tier0 = std::fs::read(dir.join("tier0.bin")).unwrap();
+    torn_tier0[..32].copy_from_slice(&Fp::zero().to_repr());
+    std::fs::write(dir.join("tier0.bin"), torn_tier0).unwrap();
+    assert!(
+        !pir_export::tiers_complete_for_height(&dir, pir_types::ZcashNetwork::Test, 4_134_000,)
+            .unwrap()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -269,41 +319,35 @@ fn test_subset_export_produces_different_root() {
 
     // Roots must differ (different nullifier sets produce different trees)
     assert_ne!(
-        full_tree.root29, subset_tree.root29,
+        full_tree.circuit_root, subset_tree.circuit_root,
         "subset root must differ from full root"
     );
 
     // Export the subset tree and verify it round-trips correctly
     let tier0_data = pir_export::tier0::export(
-        &subset_tree.root25,
+        &subset_tree.pir_root,
         &subset_tree.levels,
         &subset_tree.ranges,
         &subset_tree.empty_hashes,
     );
     let mut tier1_data = Vec::new();
-    pir_export::tier1::export(
-        &subset_tree.levels,
-        &subset_tree.ranges,
-        &subset_tree.empty_hashes,
-        &mut tier1_data,
-    )
-    .unwrap();
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&subset_tree.ranges, &mut tier2_data).unwrap();
+    pir_export::tier1::export(&subset_tree.ranges, &mut tier1_data).unwrap();
 
     // Verify proofs for the subset tree work
     for &[nf_lo, _, _] in subset_ranges.iter().take(20) {
         let proof = construct_proof(
             &tier0_data,
             &tier1_data,
-            &tier2_data,
             subset_ranges.len(),
             nf_lo + Fp::one(),
             &subset_tree.empty_hashes,
-            subset_tree.root29,
+            subset_tree.circuit_root,
         )
         .expect("subset proof construction failed");
-        assert!(proof.verify(nf_lo + Fp::one()), "subset proof verification failed");
+        assert!(
+            proof.verify(nf_lo + Fp::one()),
+            "subset proof verification failed"
+        );
     }
 }
 
@@ -317,69 +361,41 @@ fn test_export_deterministic() {
 
     // Export tier1 twice
     let mut tier1_a = Vec::new();
-    pir_export::tier1::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier1_a,
-    )
-    .unwrap();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_a).unwrap();
 
     let mut tier1_b = Vec::new();
-    pir_export::tier1::export(
-        &tree.levels,
-        &tree.ranges,
-        &tree.empty_hashes,
-        &mut tier1_b,
-    )
-    .unwrap();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_b).unwrap();
 
     assert_eq!(
         tier1_a, tier1_b,
         "tier1 parallel export must be deterministic"
     );
-
-    // Export tier2 twice
-    let mut tier2_a = Vec::new();
-    pir_export::tier2::export(&tree.ranges, &mut tier2_a).unwrap();
-
-    let mut tier2_b = Vec::new();
-    pir_export::tier2::export(&tree.ranges, &mut tier2_b).unwrap();
-
-    assert_eq!(
-        tier2_a, tier2_b,
-        "tier2 parallel export must be deterministic"
-    );
 }
 
 #[test]
-/// Regression test: a leaf whose tier-2 sibling is an empty padding slot must
+/// Regression test: a leaf whose tier-1 sibling is an empty padding slot must
 /// still produce a valid proof. Before the K=2 empty-hash fix, `extract_siblings`
 /// used `hash3(0,0,0)` while `build_levels` padded with `hash(0,0)`, causing a
 /// Merkle-path mismatch.
-fn test_proof_with_empty_tier2_sibling() {
-    // 3 nullifiers + sentinels → very few ranges. Most tier-2 leaf slots are
+fn test_proof_with_empty_tier1_sibling() {
+    // 3 nullifiers + sentinels → very few ranges. Most tier-1 leaf slots are
     // empty padding, so the LAST populated leaf in its row has an empty sibling.
     let raw_nfs: Vec<Fp> = vec![Fp::from(100u64), Fp::from(200u64), Fp::from(300u64)];
     let ranges = build_ranges_with_sentinels(&raw_nfs);
     let tree = build_pir_tree(ranges.clone()).unwrap();
 
-    let tier0_data =
-        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
-    let mut tier1_data = Vec::new();
-    pir_export::tier1::export(
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
         &tree.levels,
         &tree.ranges,
         &tree.empty_hashes,
-        &mut tier1_data,
-    )
-    .unwrap();
-    let mut tier2_data = Vec::new();
-    pir_export::tier2::export(&tree.ranges, &mut tier2_data).unwrap();
+    );
+    let mut tier1_data = Vec::new();
+    pir_export::tier1::export(&tree.ranges, &mut tier1_data).unwrap();
 
     // Find the last populated range — its sibling leaf slot is empty padding.
     let last_idx = ranges.len() - 1;
-    let is_even_idx = last_idx % 2 == 0;
+    let is_even_idx = last_idx.is_multiple_of(2);
     // An even-indexed leaf has sibling at idx+1 (odd), which is empty if it's
     // the last populated leaf. Pick the value to query accordingly.
     let target_idx = if is_even_idx { last_idx } else { last_idx - 1 };
@@ -389,17 +405,16 @@ fn test_proof_with_empty_tier2_sibling() {
     let proof = construct_proof(
         &tier0_data,
         &tier1_data,
-        &tier2_data,
         ranges.len(),
         value,
         &tree.empty_hashes,
-        tree.root29,
+        tree.circuit_root,
     )
     .expect("proof construction should succeed for leaf with empty sibling");
 
     assert!(
         proof.verify(value),
-        "proof with empty tier-2 sibling should verify \
+        "proof with empty tier-1 sibling should verify \
          (regression for K=2 empty-hash mismatch)"
     );
 }
@@ -445,13 +460,21 @@ fn test_tier0_binary_search() {
     let ranges = build_ranges_with_sentinels(&raw_nfs);
     let tree = build_pir_tree(ranges.clone()).unwrap();
 
-    let tier0_data =
-        pir_export::tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let tier0_data = pir_export::tier0::export(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+    );
     let tier0 = Tier0Data::from_bytes(tier0_data).unwrap();
 
     // Test that values within ranges are found
     for &[nf_lo, _, _] in ranges.iter().take(10) {
         let result = tier0.find_subtree(nf_lo + Fp::one());
-        assert!(result.is_some(), "find_subtree failed for nf_lo={:?}", nf_lo);
+        assert!(
+            result.is_some(),
+            "find_subtree failed for nf_lo={:?}",
+            nf_lo
+        );
     }
 }

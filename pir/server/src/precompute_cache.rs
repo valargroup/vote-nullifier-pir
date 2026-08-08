@@ -15,11 +15,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use pir_types::YpirScenario;
+use spiral_rs::params::Params;
+use tracing::{debug, info, warn};
 use ypir::serialize::CacheError as YpirCacheError;
 use ypir::serialize::OfflinePrecomputedValues;
 use ypir::server::YServer;
-use spiral_rs::params::Params;
-use tracing::{debug, info, warn};
 
 /// `SVOTE PreCompute v1`. Header magic; bumped on incompatible header layout
 /// changes.
@@ -143,7 +143,11 @@ pub fn target_hash() -> [u8; 32] {
     hasher.update(b"|");
     hasher.update(std::env::consts::OS.as_bytes());
     hasher.update(b"|");
-    hasher.update(if cfg!(target_endian = "little") { b"le" } else { b"be" });
+    hasher.update(if cfg!(target_endian = "little") {
+        b"le"
+    } else {
+        b"be"
+    });
     hasher.update(b"|");
     hasher.update(format!("ptr={}", std::mem::size_of::<usize>()).as_bytes());
     // Hash relevant CPU feature gates too: not all features affect layout
@@ -554,8 +558,6 @@ mod test {
     fn cache_path_naming() {
         let p = Path::new("/data/tier1.bin");
         assert_eq!(cache_path_for_tier(p), Path::new("/data/tier1.precompute"));
-        let p = Path::new("/data/tier2.bin");
-        assert_eq!(cache_path_for_tier(p), Path::new("/data/tier2.precompute"));
     }
 
     #[test]
@@ -606,7 +608,10 @@ mod test {
         let mut r = std::io::Cursor::new(&buf);
         assert!(matches!(
             CacheHeader::read_from(&mut r),
-            Err(CacheLoadError::SchemaMismatch { found: 1, expected: 2 })
+            Err(CacheLoadError::SchemaMismatch {
+                found: 1,
+                expected: 2
+            })
         ));
     }
 
@@ -715,8 +720,9 @@ mod test {
     fn build_fixture(dir: &Path) -> Fixture {
         let num_items: u64 = 1 << 14;
         let item_size_bits: u64 = 16384 * 8;
-        let params: &'static spiral_rs::params::Params =
-            Box::leak(Box::new(params_for_scenario_simplepir(num_items, item_size_bits)));
+        let params: &'static spiral_rs::params::Params = Box::leak(Box::new(
+            params_for_scenario_simplepir(num_items, item_size_bits),
+        ));
 
         // Deterministic plaintext so re-running gives the same fixture.
         let db_size = (1usize << 14) * (params.instances * params.poly_len);
@@ -797,7 +803,10 @@ mod test {
         // this.
         let mut bytes = std::fs::read(&fix.cache_path).expect("read cache");
         let target = HEADER_BYTES as usize + 1000;
-        assert!(target < bytes.len(), "cache too small to corrupt mid-payload");
+        assert!(
+            target < bytes.len(),
+            "cache too small to corrupt mid-payload"
+        );
         bytes[target] ^= 0xFF;
         std::fs::write(&fix.cache_path, &bytes).expect("rewrite mutated cache");
 
@@ -865,8 +874,7 @@ mod test {
             &fix.server,
             &fix.offline,
         )
-        .err()
-        .expect("write_cache should fail when final target is a directory");
+        .expect_err("write_cache should fail when final target is a directory");
 
         assert!(
             err.to_string().contains("rename"),

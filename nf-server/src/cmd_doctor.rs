@@ -17,7 +17,10 @@ const RECOMMENDED_CPU: u32 = 4;
 /// Recommended minimum system RAM (GiB).
 const RECOMMENDED_RAM_GIB: u64 = 32;
 /// Recommended minimum free space on the PIR data volume (GiB).
-const RECOMMENDED_FREE_DISK_GIB: u64 = 65;
+///
+/// The sole PIR database is 48 MiB, while atomic precompute-cache replacement
+/// peaks at approximately 2.9 GiB with the measured 1.44 GiB cache.
+const RECOMMENDED_FREE_DISK_GIB: u64 = 3;
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -49,17 +52,15 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Report whether each tier's precompute cache file is present and how big.
+/// Report whether the PIR tier's precompute cache file is present and how big.
 /// Doesn't validate the header (would require loading YPIR params); presence
 /// is enough for an operator to triage warm-start regressions ("did the cache
 /// disappear?"). A stale cache will be rejected by hash on next load.
 fn check_precompute_cache(pir_data_dir: &Path) {
     println!();
     println!("Precompute cache:");
-    for (label, name) in [
-        ("tier 1", "tier1.precompute"),
-        ("tier 2", "tier2.precompute"),
-    ] {
+    {
+        let (label, name) = ("tier 1", "tier1.precompute");
         let p = pir_data_dir.join(name);
         match std::fs::metadata(&p) {
             Ok(m) => {

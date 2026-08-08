@@ -1,242 +1,172 @@
 # PIR Parameters
 
-How YPIR cryptographic parameters are chosen, where they live in the
-codebase, and how they flow from tree constants to lattice parameters.
+This document derives the concrete tree and YPIR parameters for the
+depth-19, 12+7 Ironwood layout.
 
-**Contents**
+## Parameter flow
 
-- [PIR Parameters](#pir-parameters)
-  - [Overview](#overview)
-  - [Tree-layout constants](#tree-layout-constants)
-    - [Tree depth and layers](#tree-depth-and-layers)
-    - [Database dimensions](#database-dimensions)
-  - [Scenario construction](#scenario-construction)
-  - [YPIR lattice parameters](#ypir-lattice-parameters)
-    - [Step-by-step derivation](#step-by-step-derivation)
-    - [Fixed cryptographic constants](#fixed-cryptographic-constants)
-    - [Summary: concrete values per tier](#summary-concrete-values-per-tier)
-  - [Client-side reconstruction](#client-side-reconstruction)
-  - [Upstream references](#upstream-references)
-
----
-
-## Overview
-
-Parameters flow through four stages:
-
-```
-pir-export              tree constants (TIER{1,2}_ROWS, TIER{1,2}_ITEM_BITS)
-    │
-    ▼
-pir-server              tier1_scenario() / tier2_scenario()
-    │                   → YpirScenario { num_items, item_size_bits }
-    │
-    ▼
-ypir crate              params_for_scenario_simplepir()
-    │                   → spiral_rs::params::Params (full lattice config)
-    │
-    ▼
-TierServer              server-side PIR engine (precompute + answer queries)
-
-
-    ─── GET /params/tier{1,2}  (JSON) ───▶  pir-client
-
-
-pir-client              YPIRClient::from_db_sz(num_items, item_size_bits, true)
-                        → reconstructs identical Params locally
+```text
+pir/types
+  PIR_DEPTH, TIER0_LAYERS, TIER1_LAYERS
+  TIER1_ROWS, TIER1_ROW_BYTES, TIER1_ITEM_BITS
+        │
+        ▼
+pir/server::tier1_scenario()
+  YpirScenario { num_items, item_size_bits }
+        │
+        ├──► YPIR server: params_for_scenario_simplepir()
+        │
+        └──► GET /params/tier1
+                 │
+                 ▼
+             PIR client: YPIRClient::from_db_sz(...)
 ```
 
----
+The server and client derive the same lattice parameters from the two
+scenario integers. `/root` advertises the explicit depth and tier split plus
+the row count and byte width. Client construction receives the expected layout
+from dynamic voting configuration and requires that config match the server
+advertisement before parsing Tier 0 or issuing a query. Within the two-tier
+envelope, any split that satisfies YPIR minima and circuit depth is accepted;
+`COMPILED_PIR_LAYOUT` (12+7) remains the production default identity for
+export and server advertise, not a connect-time gate.
 
-## Tree-layout constants
+## Tree constants
 
-> **File:** `pir/types/src/lib.rs`
+The constants in `pir/types/src/lib.rs` are the production default:
 
-These constants define the Merkle tree tier structure. They determine the
-number of rows and bytes-per-row that YPIR must support.
+- `PIR_DEPTH = 19`;
+- `TIER0_LAYERS = 12`;
+- `TIER1_LAYERS = 7`;
+- `TIER1_ROWS = 1 << 12 = 4,096`;
+- `TIER1_LEAVES = 1 << 7 = 128`;
+- `TIER1_LEAF_BYTES = 3 * 32 = 96`;
+- `TIER1_ROW_BYTES = 128 * 96 = 12,288`;
+- `TIER1_ITEM_BITS = 12,288 * 8 = 98,304`.
 
-### Tree depth and layers
+Alternate two-tier splits such as 11+8 and 13+6 are valid when advertised
+consistently in config and `/root` and when they meet YPIR minima
+(`rows >= 2048`, item bits `>= 28,672`).
 
-| Constant | Value | Meaning |
-|:--|--:|:--|
-| `PIR_DEPTH` | 25 | Total tree depth (2^25 leaf slots) |
-| `TIER0_LAYERS` | 11 | Plaintext tier (not PIR-fetched) |
-| `TIER1_LAYERS` | 7 | Layers per Tier 1 subtree |
-| `TIER2_LAYERS` | 7 | Layers per Tier 2 subtree |
+The following invariants are compile-time assertions:
 
-### Database dimensions
+```text
+19 == 12 + 7
+4,096 >= 2,048 YPIR minimum rows
+98,304 >= 28,672 YPIR minimum item bits
+```
 
-| Constant | Tier 1 | Tier 2 | How derived |
-|:--|--:|--:|:--|
-| Rows | 2,048 | 262,144 | `1 << TIER0_LAYERS`, `1 << (TIER0_LAYERS + TIER1_LAYERS)` |
-| Leaves/row | 128 | 128 | `1 << TIER{n}_LAYERS` |
-| Internal nodes/row | 0 | 0 | Leaf-only rows; client rebuilds subtree locally |
-| Row bytes | 8,192 | 12,288 | Tier 1: `leaves × 64`; Tier 2: `leaves × 96` |
-| Item bits | 65,536 | 98,304 | `row_bytes × 8` |
+No logical or physical row padding is required.
 
----
+## Plaintext dimensions
 
-## Scenario construction
+Tier 0 contains every internal node above depth 12 plus one subtree record
+per Tier 1 row:
 
-> **File:** `pir/server/src/lib.rs` — `tier1_scenario()` / `tier2_scenario()`
+```text
+internal_nodes = 2^12 - 1 = 4,095
+internal_bytes = 4,095 * 32 = 131,040
+record_bytes   = 4,096 * (32-byte hash + 32-byte min_key)
+               = 262,144
+tier0_bytes    = 393,184
+```
 
-Each tier packs the two values YPIR needs into a `YpirScenario`:
+## YPIR scenario
+
+`pir/server::tier1_scenario()` returns:
 
 ```rust
-// pir/types/src/lib.rs
-pub struct YpirScenario {
-    pub num_items: usize,
-    pub item_size_bits: usize,
+YpirScenario {
+    num_items: 4_096,
+    item_size_bits: 98_304,
 }
 ```
 
-| Tier | `num_items` | `item_size_bits` |
-|:--|--:|--:|
-| 1 | 2,048 | 65,536 |
-| 2 | 262,144 | 98,304 |
+The scenario is served at `GET /params/tier1`. There is no second scenario or
+second PIR endpoint.
 
-The server uses these in two ways:
+## SimplePIR matrix derivation
 
-1. Passed to `OwnedTierState::new()` to initialize the YPIR engine.
-2. Served as JSON at `GET /params/tier1` and `GET /params/tier2` so the
-   client can reconstruct identical lattice parameters.
+The local YPIR implementation uses:
 
----
-
-## YPIR lattice parameters
-
-> **File:** `ypir/src/params.rs` — `params_for_scenario_simplepir()`
-
-This function takes `(num_items, item_size_bits)` and produces a full
-Spiral `Params` struct.
-
-### Step-by-step derivation
-
-**1. Minimum size guard**
-
-```
-item_size_bits >= 2048 × 14 = 28,672
+```text
+poly_len = 2,048
+p        = 2^14
+bits_per_polynomial = 2,048 * 14 = 28,672
 ```
 
-Each SimplePIR column holds one polynomial of 2048 coefficients with 14
-plaintext bits each.
+The database matrix is therefore:
 
-**2. Database matrix shape**
-
-```
+```text
 db_rows = num_items
+        = 4,096
+
 db_cols = ceil(item_size_bits / 28,672)
+        = ceil(98,304 / 28,672)
+        = 4
 ```
 
-| | Tier 1 | Tier 2 |
-|:--|--:|--:|
-| `db_rows` | 2,048 | 262,144 |
-| `db_cols` | 3 | 4 |
+The row dimension exponent is:
 
-**3. Ring dimension exponent**
-
-```
-nu_1 = log2(next_power_of_two(db_rows)) − 11
+```text
+nu_1 = log2(next_power_of_two(db_rows)) - 11
+     = 12 - 11
+     = 1
 ```
 
-The `−11` accounts for `poly_len = 2048 = 2^11`. Padded row count is
-`2^(nu_1 + 11)`.
+SimplePIR uses `nu_2 = 1`. The database width is
+`instances = db_cols = 4`.
 
-| | Tier 1 | Tier 2 |
-|:--|--:|--:|
-| `nu_1` | 0 | 7 |
+Concrete scenario summary:
 
-**4. Second dimension**
+- `num_items = 4,096`;
+- `item_size_bits = 98,304`;
+- `db_rows = 4,096`;
+- `db_cols = 4`;
+- `nu_1 = 1`;
+- `nu_2 = 1`;
+- `instances = 4`;
+- source database bytes = `4,096 * 12,288 = 50,331,648` (48 MiB).
 
-`nu_2 = 1`. SimplePIR is one-dimensional (no second folding pass).
+## Fixed cryptographic constants
 
-**5. Database width (`instances`)**
-
-`params.instances = db_cols`. This sets the number of polynomial-width
-column groups in the database matrix. The client sends a **single**
-encrypted row-selector query (length `db_rows`). The server computes
-**one** matrix-vector product across all `db_cols = instances × poly_len`
-columns simultaneously, then ring-packs the results into `instances`
-RLWE ciphertexts. The client decrypts all of them to recover the full row.
-
-### Fixed cryptographic constants
-
-Hardcoded in `params_for_scenario_simplepir` and `internal_params_for`.
-These correspond to the YPIR+SP variant described in
-[YPIR: High-Throughput Single-Server PIR with Silent Preprocessing](https://eprint.iacr.org/2024/270.pdf)
-(Menon & Wu, 2024). Our system uses YPIR+SP (SimplePIR-based packing)
-because each tier row is a large record (~12 KB), matching the
-"large record" setting from Section 4.6 of the paper.
-
-The values below are set by the ypir crate. For reference, the paper's
-Table 1 lists the full YPIR parameter set chosen for 128-bit security
-and correctness error δ ≤ 2⁻⁴⁰:
-
-| | SimplePIR params | DoublePIR params |
-|:--|:--|:--|
-| Ring dim (d) | 2^10 = 1,024 | 2^11 = 2,048 |
-| Noise (σ) | 11√(2π) | 6.4√(2π) |
-| Plaintext mod (N / p) | 2^8 | 2^15 |
-| Encoding mod (q) | 2^32 | ≈ 2^56 (product of two 28-bit NTT primes) |
-| Reduced mod (q̃) | 2^28 | 2^28 (q̃₂,₁), 2^20 (q̃₂,₂) |
-| Decomp. base (z) | — | 2^19 |
-
-Our codebase only uses the SimplePIR side of these parameters (the
-YPIR+SP variant). The concrete values hardcoded in the ypir crate's
+These values remain selected by the YPIR crate's
 `params_for_scenario_simplepir` and `internal_params_for`:
 
-| Parameter | Value | Purpose |
-|:--|:--|:--|
-| `p` | 16,384 (2^14) | Plaintext modulus — bits of data per coefficient |
-| `q2_bits` | 28 | Ciphertext compression modulus bit-width |
-| `moduli` | [268369921, 249561089] | NTT-friendly CRT primes for the ciphertext ring |
-| `poly_len` | 2,048 | Ring polynomial degree (d₂ from Table 1) |
-| `noise_width` | 16.042421 | Gaussian noise standard deviation (σ) |
-| `n` | 1 | RLWE rank (rank-1 = standard RLWE) |
-| `t_gsw` | 3 | GSW decomposition base |
-| `t_conv` | 4 | Key-switching decomposition parameter |
-| `t_exp_left` | 3 | Regev-to-GSW expansion (left half) |
-| `t_exp_right` | 2 | Regev-to-GSW expansion (right half) |
+- plaintext modulus `p = 16,384` (`2^14`);
+- ciphertext compression width `q2_bits = 28`;
+- NTT moduli `[268369921, 249561089]`;
+- polynomial length `2,048`;
+- Gaussian noise width `16.042421`;
+- RLWE rank `n = 1`;
+- `t_gsw = 3`;
+- `t_conv = 4`;
+- `t_exp_left = 3`;
+- `t_exp_right = 2`.
 
-### Summary: concrete values per tier
+The client passes `true` to `YPIRClient::from_db_sz`, selecting the
+SimplePIR-backed YPIR+SP path.
 
-| Parameter | Tier 1 | Tier 2 |
-|:--|--:|--:|
-| `num_items` | 2,048 | 262,144 |
-| `item_size_bits` | 65,536 | 98,304 |
-| `db_rows` | 2,048 | 262,144 |
-| `db_cols` (instances) | 3 | 4 |
-| `nu_1` | 0 | 7 |
-| `nu_2` | 1 | 1 |
+## Reconstruction parameters
 
----
+The client obtains:
 
-## Client-side reconstruction
+- 12 siblings from the public Tier 0;
+- 7 siblings by rebuilding the returned 128-leaf Tier 1 row;
+- 10 empty-hash siblings from the fixed circuit padding.
 
-> **File:** `pir/client/src/lib.rs` — `ypir_query()`
+This gives the 29-element authentication path expected by `ImtProofData`:
 
-The client receives the `YpirScenario` JSON from the server, then calls:
-
-```rust
-YPIRClient::from_db_sz(scenario.num_items, scenario.item_size_bits, true)
+```text
+7 + 12 + 10 = 29
 ```
 
-This internally calls `params_for_scenario_simplepir` with the same
-arguments, producing identical `Params`. The `true` flag selects SimplePIR
-mode.
-
----
+The leaf position fits in 19 bits. The exporter enforces at most `2^19`
+punctured ranges, corresponding to approximately 1.05 million K=2 nullifier
+boundaries.
 
 ## Upstream references
 
-**Paper:**
-[YPIR: High-Throughput Single-Server PIR with Silent Preprocessing](https://eprint.iacr.org/2024/270.pdf)
-(Samir Jordan Menon, David J. Wu — USENIX Security 2024).
-Table 1 lists the full parameter set. Section 4.6 describes YPIR+SP
-(the SimplePIR-based variant we use for large-record retrieval).
-
-**Code:**
-[github.com/menonsamir/ypir](https://github.com/menonsamir/ypir)
-(branch `artifact`, commit `b980152`).
-Parameter selection logic:
-[`src/params.rs`](https://github.com/menonsamir/ypir/blob/artifact/src/params.rs)
+- [YPIR: High-Throughput Single-Server PIR with Silent Preprocessing](https://eprint.iacr.org/2024/270.pdf)
+- [menonsamir/ypir](https://github.com/menonsamir/ypir), artifact branch
+  parameter selection in `src/params.rs`

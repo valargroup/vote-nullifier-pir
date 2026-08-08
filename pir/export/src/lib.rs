@@ -1,19 +1,15 @@
 //! PIR tree builder and tier data exporter.
 //!
-//! Builds a depth-25 Merkle tree from punctured-range leaves (K=2) and exports
-//! the three tier files consumed by `pir-server`:
+//! Builds a depth-19 Merkle tree from punctured-range leaves (K=2) and exports
+//! the two tier files consumed by `pir-server`:
 //!
-//! - **Tier 0** (~49 KB): plaintext internal nodes + subtree records.
-//! - **Tier 1** (~8 MB): TIER1_YPIR_ROWS rows × TIER1_ROW_BYTES. Each row
-//!   contains TIER1_LEAVES leaf records (hash + min_key). No internal nodes;
-//!   the client rebuilds the subtree locally.
-//! - **Tier 2** (~3 GB): TIER2_ROWS rows × TIER2_ROW_BYTES. Each row contains
-//!   TIER2_LEAVES punctured-range leaf records (nf_lo + nf_mid + nf_hi). No
+//! - **Tier 0** (~384 KB): plaintext internal nodes + subtree records.
+//! - **Tier 1** (48 MiB): TIER1_ROWS rows × TIER1_ROW_BYTES. Each row contains
+//!   TIER1_LEAVES punctured-range leaf records (nf_lo + nf_mid + nf_hi). No
 //!   internal nodes; the client rebuilds the subtree locally.
 
 pub mod tier0;
 pub mod tier1;
-pub mod tier2;
 
 mod tree_checkpoint;
 
@@ -40,10 +36,9 @@ use imt_tree::tree::{
 // Re-export tier-layout constants and PirMetadata from pir-types so that
 // existing consumers (tier submodules, tests, downstream crates) keep working.
 pub use pir_types::{
-    PirMetadata, DATASET_VERSION, NULLIFIER_POOL, PIR_DEPTH, TIER0_LAYERS, TIER1_ITEM_BITS,
-    TIER1_LAYERS, TIER1_LEAVES, TIER1_ROWS, TIER1_ROW_BYTES, TIER1_YPIR_ROWS,
-    TIER2_ITEM_BITS, TIER2_LAYERS, TIER2_LEAF_BYTES, TIER2_LEAVES, TIER2_ROWS,
-    TIER2_ROW_BYTES,
+    PirLayout, PirMetadata, COMPILED_PIR_LAYOUT, DATASET_VERSION, NULLIFIER_POOL, PIR_DEPTH,
+    TIER0_LAYERS, TIER1_ITEM_BITS, TIER1_LAYERS, TIER1_LEAF_BYTES, TIER1_LEAVES, TIER1_ROWS,
+    TIER1_ROW_BYTES,
 };
 
 /// Depth of the full circuit tree (unchanged from existing system).
@@ -53,10 +48,10 @@ pub const FULL_DEPTH: usize = TREE_DEPTH; // 29
 
 /// Result of building the PIR tree.
 pub struct PirTree {
-    /// Depth-25 Merkle root (PIR tree root for K=2).
-    pub root25: Fp,
+    /// PIR-depth Merkle root (PIR tree root for K=2).
+    pub pir_root: Fp,
     /// Depth-29 Merkle root (extended with empty hashes for circuit compatibility).
-    pub root29: Fp,
+    pub circuit_root: Fp,
     /// Tree levels (bottom-up): levels[0] = leaf hashes, levels[PIR_DEPTH-1] = root's children.
     pub levels: Vec<Vec<Fp>>,
     /// Punctured ranges (K=2): each element is `[nf_lo, nf_mid, nf_hi]`.
@@ -65,7 +60,7 @@ pub struct PirTree {
     pub empty_hashes: [Fp; TREE_DEPTH],
 }
 
-/// Build a depth-25 PIR tree from punctured ranges (K=2).
+/// Build a depth-19 PIR tree from punctured ranges (K=2).
 ///
 /// The ranges must already be constructed via `build_punctured_ranges`.
 /// This function hashes them into leaf commitments and builds the Merkle
@@ -74,7 +69,9 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     anyhow::ensure!(
         ranges.len() <= 1 << PIR_DEPTH,
         "too many ranges ({}) for PIR depth {} (max {})",
-        ranges.len(), PIR_DEPTH, 1 << PIR_DEPTH
+        ranges.len(),
+        PIR_DEPTH,
+        1 << PIR_DEPTH
     );
     verify_punctured_range_spans(&ranges)?;
     let t0 = Instant::now();
@@ -88,19 +85,22 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     let empty_hashes = precompute_empty_hashes();
 
     let t1 = Instant::now();
-    let (root25, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);
+    let (pir_root, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);
     info!(
         level_count = levels.len(),
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
         "PIR tree built"
     );
 
-    let root29 = extend_root(root25, &empty_hashes);
-    info!(root29 = hex::encode(root29.to_repr()), "depth-29 root");
+    let circuit_root = extend_root(pir_root, &empty_hashes);
+    info!(
+        circuit_root = hex::encode(circuit_root.to_repr()),
+        "circuit root"
+    );
 
     Ok(PirTree {
-        root25,
-        root29,
+        pir_root,
+        circuit_root,
         levels,
         ranges,
         empty_hashes,
@@ -112,9 +112,9 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
 /// At each extension level, the existing root is the left child and an empty
 /// subtree of the appropriate height is the right child. This produces the
 /// same root as building a depth-29 tree with the same leaves.
-pub fn extend_root(root25: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
+pub fn extend_root(pir_root: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
     let hasher = PoseidonHasher::new();
-    let mut root = root25;
+    let mut root = pir_root;
     for empty_hash in &empty_hashes[PIR_DEPTH..FULL_DEPTH] {
         root = hasher.hash(root, *empty_hash);
     }
@@ -207,7 +207,9 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
 
     nfs.sort();
     let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
-    let mut sentinels: Vec<Fp> = (0u64..=SENTINEL_COUNT).map(|k| step * Fp::from(k)).collect();
+    let mut sentinels: Vec<Fp> = (0u64..=SENTINEL_COUNT)
+        .map(|k| step * Fp::from(k))
+        .collect();
     // Close the tail: p-1 ensures the last punctured range extends to the
     // end of the field, so values above the largest real nullifier are covered.
     sentinels.push(Fp::one().neg()); // p - 1
@@ -217,14 +219,14 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
     // K=2 requires an odd number of sorted nullifiers. If even, insert 2
     // right after sentinel 0. A real nullifier at exactly 2 has probability
     // ~2^{-254}, so this slot is effectively always free.
-    if nfs.len() % 2 == 0 {
+    if nfs.len().is_multiple_of(2) {
         debug_assert_eq!(nfs[0], Fp::zero(), "sentinel 0 must be first");
         nfs.insert(1, Fp::from(2u64));
     }
     build_punctured_ranges(&nfs)
 }
 
-/// Sort / sentinel-inject nullifiers and build the depth-25 PIR Merkle structure.
+/// Sort / sentinel-inject nullifiers and build the depth-19 PIR Merkle structure.
 pub fn build_pir_tree_from_nullifiers(nfs: Vec<Fp>) -> Result<PirTree> {
     let ranges = prepare_nullifiers(nfs);
     build_pir_tree(ranges)
@@ -249,11 +251,15 @@ pub fn materialize_tree_checkpoint_with_progress(
     on_progress("building Merkle tree", 15);
     info!(depth = PIR_DEPTH, "building PIR tree");
     let tree = build_pir_tree(ranges)?;
-    info!(depth = PIR_DEPTH, root = hex::encode(tree.root25.to_repr()), "root-25");
+    info!(
+        depth = PIR_DEPTH,
+        root = hex::encode(tree.pir_root.to_repr()),
+        "PIR-depth root"
+    );
     info!(
         depth = FULL_DEPTH,
-        root = hex::encode(tree.root29.to_repr()),
-        "root-29"
+        root = hex::encode(tree.circuit_root.to_repr()),
+        "circuit root"
     );
 
     on_progress("writing tree checkpoint", 35);
@@ -287,28 +293,56 @@ pub fn tiers_complete_for_height(
     ) else {
         return Ok(false);
     };
+    let Ok(()) = meta.pir_layout.validate_supported() else {
+        return Ok(false);
+    };
+    let Ok(layout_rows) = meta.pir_layout.tier1_rows() else {
+        return Ok(false);
+    };
+    let Ok(layout_row_bytes) = meta.pir_layout.tier1_row_bytes() else {
+        return Ok(false);
+    };
+    let Ok(expected_tier0_bytes) = meta.pir_layout.tier0_bytes() else {
+        return Ok(false);
+    };
     if meta.zcash_network != expected_network
         || meta.height != Some(expected_height)
         || !pir_types::is_current_dataset(&meta.nullifier_pool, meta.dataset_version)
+        || meta.pir_depth != meta.pir_layout.pir_depth
+        || meta.tier1_rows != layout_rows
+        || meta.tier1_row_bytes != layout_row_bytes
+        || meta.tier0_bytes != expected_tier0_bytes
     {
         return Ok(false);
     }
     let t0 = output_dir.join("tier0.bin");
     let t1 = output_dir.join("tier1.bin");
-    let t2 = output_dir.join("tier2.bin");
-    if !t0.exists() || !t1.exists() || !t2.exists() {
+    if !t0.exists() || !t1.exists() {
         return Ok(false);
     }
     let s0 = std::fs::metadata(&t0)?.len() as usize;
-    if s0 != meta.tier0_bytes {
+    if s0 != expected_tier0_bytes {
         return Ok(false);
     }
-    let exp1 = TIER1_YPIR_ROWS * TIER1_ROW_BYTES;
+    let Ok(tier0) = tier0::Tier0Data::from_layout(std::fs::read(&t0)?, meta.pir_layout) else {
+        return Ok(false);
+    };
+    let Ok(pir_root_bytes) = hex::decode(&meta.pir_root) else {
+        return Ok(false);
+    };
+    if pir_root_bytes.len() != 32 {
+        return Ok(false);
+    }
+    let mut pir_root_repr = [0u8; 32];
+    pir_root_repr.copy_from_slice(&pir_root_bytes);
+    let Some(metadata_pir_root) = Option::<Fp>::from(Fp::from_repr(pir_root_repr)) else {
+        return Ok(false);
+    };
+    if tier0.root() != metadata_pir_root {
+        return Ok(false);
+    }
+    let exp1 = layout_rows * layout_row_bytes;
     if std::fs::metadata(&t1)?.len() as usize != exp1 {
-        return Ok(false);
-    }
-    let exp2 = TIER2_ROWS * TIER2_ROW_BYTES;
-    if std::fs::metadata(&t2)?.len() as usize != exp2 {
         return Ok(false);
     }
     Ok(true)
@@ -346,11 +380,15 @@ pub fn build_and_export_with_progress(
     );
 
     on_progress("building Merkle tree", 15);
-    info!(depth = PIR_DEPTH, root = hex::encode(tree.root25.to_repr()), "root-25");
+    info!(
+        depth = PIR_DEPTH,
+        root = hex::encode(tree.pir_root.to_repr()),
+        "PIR-depth root"
+    );
     info!(
         depth = FULL_DEPTH,
-        root = hex::encode(tree.root29.to_repr()),
-        "root-29"
+        root = hex::encode(tree.circuit_root.to_repr()),
+        "circuit root"
     );
 
     on_progress("writing tier files", 40);
@@ -382,57 +420,92 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
     }
 }
 
-/// Export all tier files and metadata to the given directory.
+/// Export all tier files and metadata to the given directory using the
+/// compiled production layout.
 pub fn export_all(
     tree: &PirTree,
     output_dir: &std::path::Path,
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<()> {
+    export_all_with_layout(tree, output_dir, network, height, COMPILED_PIR_LAYOUT)
+}
+
+/// Export tier blobs and metadata for a supported two-tier layout.
+pub fn export_all_with_layout(
+    tree: &PirTree,
+    output_dir: &std::path::Path,
+    network: pir_types::ZcashNetwork,
+    height: Option<u64>,
+    layout: PirLayout,
+) -> Result<()> {
+    layout
+        .validate_supported()
+        .map_err(anyhow::Error::msg)
+        .context("invalid export layout")?;
+
     std::fs::create_dir_all(output_dir)?;
+    // Dataset v1 used a second PIR database. Remove its artifacts so a
+    // regenerated v2 directory contains only the current contract.
+    for name in ["tier2.bin", "tier2.precompute", "tier2.precompute.tmp"] {
+        let path = output_dir.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => info!(legacy = %path.display(), "removed legacy Tier 2 artifact"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("remove legacy artifact {}", path.display()));
+            }
+        }
+    }
 
     // Tier 0
     let t0 = Instant::now();
-    let tier0_data = tier0::export(&tree.root25, &tree.levels, &tree.ranges, &tree.empty_hashes);
+    let tier0_data = tier0::export_layout(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        layout,
+    )?;
     let tier0_path = output_dir.join("tier0.bin");
     std::fs::write(&tier0_path, &tier0_data)?;
     evict_stale_precompute(&tier0_path);
-    info!(bytes = tier0_data.len(), elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()), "Tier 0 exported");
+    info!(
+        bytes = tier0_data.len(),
+        elapsed_s = format!("{:.1}", t0.elapsed().as_secs_f64()),
+        "Tier 0 exported"
+    );
 
     // Tier 1
     let t1 = Instant::now();
     let tier1_path = output_dir.join("tier1.bin");
     let mut f1 = std::io::BufWriter::new(std::fs::File::create(&tier1_path)?);
-    tier1::export(&tree.levels, &tree.ranges, &tree.empty_hashes, &mut f1)?;
+    tier1::export_layout(&tree.ranges, &mut f1, layout)?;
     f1.flush()?;
     drop(f1);
     evict_stale_precompute(&tier1_path);
-    info!(elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()), "Tier 1 exported");
+    info!(
+        elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
+        "Tier 1 exported"
+    );
 
-    // Tier 2
-    let t2 = Instant::now();
-    let tier2_path = output_dir.join("tier2.bin");
-    let mut f2 = std::io::BufWriter::new(std::fs::File::create(&tier2_path)?);
-    tier2::export(&tree.ranges, &mut f2)?;
-    f2.flush()?;
-    drop(f2);
-    evict_stale_precompute(&tier2_path);
-    info!(elapsed_s = format!("{:.1}", t2.elapsed().as_secs_f64()), "Tier 2 exported");
+    let tier1_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
+    let tier1_row_bytes = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;
 
     // Metadata
     let metadata = PirMetadata {
         zcash_network: network,
         nullifier_pool: NULLIFIER_POOL.to_owned(),
         dataset_version: DATASET_VERSION,
-        root25: hex::encode(tree.root25.to_repr()),
-        root29: hex::encode(tree.root29.to_repr()),
+        pir_root: hex::encode(tree.pir_root.to_repr()),
+        circuit_root: hex::encode(tree.circuit_root.to_repr()),
         num_ranges: tree.ranges.len(),
-        pir_depth: PIR_DEPTH,
+        pir_depth: layout.pir_depth,
+        pir_layout: layout,
         tier0_bytes: tier0_data.len(),
-        tier1_rows: TIER1_ROWS,
-        tier1_row_bytes: TIER1_ROW_BYTES,
-        tier2_rows: TIER2_ROWS,
-        tier2_row_bytes: TIER2_ROW_BYTES,
+        tier1_rows,
+        tier1_row_bytes,
         height,
     };
     let json = serde_json::to_string_pretty(&metadata)?;
@@ -440,6 +513,20 @@ pub fn export_all(
     info!("metadata written to pir_root.json");
 
     Ok(())
+}
+
+/// In-memory two-tier export for tests (no filesystem).
+pub fn export_for_layout(tree: &PirTree, layout: PirLayout) -> Result<(Vec<u8>, Vec<u8>)> {
+    let tier0 = tier0::export_layout(
+        &tree.pir_root,
+        &tree.levels,
+        &tree.ranges,
+        &tree.empty_hashes,
+        layout,
+    )?;
+    let mut tier1 = Vec::new();
+    tier1::export_layout(&tree.ranges, &mut tier1, layout)?;
+    Ok((tier0, tier1))
 }
 
 // ── Test utilities ───────────────────────────────────────────────────────────
@@ -452,12 +539,14 @@ pub fn export_all(
 pub fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<PuncturedRange> {
     use ff::Field as _;
     let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
-    let mut all_nfs: Vec<Fp> = (0u64..=SENTINEL_COUNT).map(|k| step * Fp::from(k)).collect();
+    let mut all_nfs: Vec<Fp> = (0u64..=SENTINEL_COUNT)
+        .map(|k| step * Fp::from(k))
+        .collect();
     all_nfs.push(Fp::one().neg()); // p - 1
     all_nfs.extend_from_slice(raw_nfs);
     all_nfs.sort();
     all_nfs.dedup();
-    if all_nfs.len() % 2 == 0 {
+    if all_nfs.len().is_multiple_of(2) {
         debug_assert_eq!(all_nfs[0], Fp::zero(), "sentinel 0 must be first");
         all_nfs.insert(1, Fp::from(2u64));
     }

@@ -48,7 +48,12 @@ pub fn validate_fp_bytes(buf: &[u8]) -> anyhow::Result<()> {
 pub fn validate_all_fp_chunks(data: &[u8], tier_label: &str) -> anyhow::Result<()> {
     for (i, chunk) in data.chunks_exact(32).enumerate() {
         validate_fp_bytes(chunk).map_err(|e| {
-            anyhow::anyhow!("{} invalid field element at 32-byte chunk {}: {}", tier_label, i, e)
+            anyhow::anyhow!(
+                "{} invalid field element at 32-byte chunk {}: {}",
+                tier_label,
+                i,
+                e
+            )
         })?;
     }
     Ok(())
@@ -81,5 +86,9 @@ pub fn binary_search_records(
             hi = mid;
         }
     }
-    if lo == 0 { None } else { Some(lo - 1) }
+    if lo == 0 {
+        None
+    } else {
+        Some(lo - 1)
+    }
 }
