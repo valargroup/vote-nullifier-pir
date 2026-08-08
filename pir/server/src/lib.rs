@@ -92,16 +92,11 @@ impl Aligned64 {
     }
 }
 
-struct QuerySections<'a> {
-    pqr: &'a [u8],
-    pub_params: &'a [u8],
-}
-
 fn validate_query_layout(
     query_bytes: &[u8],
     expected_pqr_u64_len: usize,
     expected_pub_params_u64_len: usize,
-) -> Result<QuerySections<'_>> {
+) -> Result<(&[u8], &[u8])> {
     let expected_pqr_byte_len = expected_pqr_u64_len
         .checked_mul(U64_BYTES)
         .context("expected pqr byte length overflow")?;
@@ -120,10 +115,11 @@ fn validate_query_layout(
         expected_query_byte_len
     );
 
-    let mut prefix = [0u8; U64_BYTES];
-    prefix.copy_from_slice(&query_bytes[..U64_BYTES]);
-    let declared_pqr_byte_len = usize::try_from(u64::from_le_bytes(prefix))
-        .context("declared pqr byte length does not fit usize")?;
+    let (prefix, payload) = query_bytes.split_at(U64_BYTES);
+    let declared_pqr_byte_len = usize::try_from(u64::from_le_bytes(
+        prefix.try_into().expect("prefix length is exact"),
+    ))
+    .context("declared pqr byte length does not fit usize")?;
     anyhow::ensure!(
         declared_pqr_byte_len == expected_pqr_byte_len,
         "declared pqr length is {} bytes; expected {}",
@@ -131,11 +127,7 @@ fn validate_query_layout(
         expected_pqr_byte_len
     );
 
-    let pqr_end = U64_BYTES + expected_pqr_byte_len;
-    Ok(QuerySections {
-        pqr: &query_bytes[U64_BYTES..pqr_end],
-        pub_params: &query_bytes[pqr_end..],
-    })
+    Ok(payload.split_at(expected_pqr_byte_len))
 }
 
 impl Drop for Aligned64 {
@@ -297,7 +289,7 @@ impl<'a> TierServer<'a> {
             .checked_mul(self._params.t_exp_left)
             .and_then(|len| len.checked_mul(self._params.poly_len))
             .context("expected YPIR pub_params length overflow")?;
-        let sections = validate_query_layout(
+        let (pqr_bytes, pub_params_bytes) = validate_query_layout(
             query_bytes,
             self._params.db_rows_padded_simplepir(),
             expected_pub_params_u64_len,
@@ -306,8 +298,8 @@ impl<'a> TierServer<'a> {
 
         // Copy into 64-byte aligned memory for AVX-512 operations.
         let decode_start = Instant::now();
-        let pqr = Aligned64::try_from_le_bytes(sections.pqr)?;
-        let pub_params = Aligned64::try_from_le_bytes(sections.pub_params)?;
+        let pqr = Aligned64::try_from_le_bytes(pqr_bytes)?;
+        let pub_params = Aligned64::try_from_le_bytes(pub_params_bytes)?;
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
         // Run the YPIR online computation (returns Vec<u8> directly)
@@ -806,9 +798,9 @@ mod tests {
     #[test]
     fn query_layout_accepts_only_exact_dimensions() {
         let payload = pir_types::serialize_ypir_query(&[1, 2], &[3, 4, 5]);
-        let sections = validate_query_layout(&payload, 2, 3).unwrap();
-        assert_eq!(sections.pqr.len(), 2 * U64_BYTES);
-        assert_eq!(sections.pub_params.len(), 3 * U64_BYTES);
+        let (pqr, pub_params) = validate_query_layout(&payload, 2, 3).unwrap();
+        assert_eq!(pqr.len(), 2 * U64_BYTES);
+        assert_eq!(pub_params.len(), 3 * U64_BYTES);
 
         let short = &payload[..payload.len() - U64_BYTES];
         assert!(validate_query_layout(short, 2, 3).is_err());
@@ -844,7 +836,9 @@ mod tests {
             .layer(DefaultBodyLimit::max(1))
             .layer(Extension(permits));
 
-        let request = Request::post("/query").body(Body::from("too large")).unwrap();
+        let request = Request::post("/query")
+            .body(Body::from("too large"))
+            .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
