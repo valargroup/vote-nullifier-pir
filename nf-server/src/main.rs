@@ -71,32 +71,6 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
             release,
             environment: Some(Cow::Owned(environment)),
             sample_rate: 1.0,
-            // Only trace known API routes. SentryHttpLayer names transactions as
-            // "METHOD /path" (raw URI) at sampling time, so unmatched paths such
-            // as GET /favicon.ico are visible here and can be dropped.
-            traces_sampler: Some(std::sync::Arc::new(|ctx: &sentry::TransactionContext| {
-                let name = ctx.name();
-                // Allow the startup trace and all registered API routes.
-                // /metrics is intentionally excluded: Prometheus scrapes
-                // would otherwise dominate Sentry transactions.
-                let known: &[&str] = &[
-                    "server-startup",
-                    "GET /tier0",
-                    "GET /params/tier1",
-                    "POST /tier1/query",
-                    "GET /tier1/row/",
-                    "GET /root",
-                    "GET /health",
-                    "GET /ready",
-                    "POST /snapshot/prepare",
-                    "GET /snapshot/status",
-                ];
-                if known.iter().any(|&r| name.starts_with(r)) {
-                    1.0
-                } else {
-                    0.0
-                }
-            })),
             attach_stacktrace: true,
             ..Default::default()
         },

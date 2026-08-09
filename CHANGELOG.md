@@ -1,5 +1,8 @@
 # v0.0.42-alpha.1
 
+- Disable Sentry tracing in `nf-server` so proxy-added client identity headers,
+  request timing, and PIR request cardinality are not exported. Process error
+  reporting and explicit startup/watchdog messages remain enabled.
 - Make two-tier PIR geometry runtime-driven: clients accept any valid
   `PirLayout` that matches `/root` (and passes geometry / YPIR / circuit
   bounds) instead of requiring equality against `COMPILED_PIR_LAYOUT`.
