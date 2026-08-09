@@ -556,8 +556,9 @@ pub fn dispatch_query(
     // it to a bounded response keeps one malformed request from aborting the
     // task (or the whole process under `panic = "abort"`). Mirrors the
     // `catch_unwind` the client already wraps its YPIR calls in.
-    let answer =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tier_state.server().answer_query(body)));
+    let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tier_state.server().answer_query(body)
+    }));
 
     match answer {
         Ok(Ok(answer)) => {
