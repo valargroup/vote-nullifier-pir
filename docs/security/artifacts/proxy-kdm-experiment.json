@@ -1,0 +1,876 @@
+{
+  "experiment": "proxy-dimension KDM coset-structure primal-attack comparison",
+  "sigma": 6.4,
+  "attack": "primal uSVP, Kannan embedding, BKZ-15 with LLL fallback (fpylll 0.6.4, subprocess-isolated)",
+  "configs": [
+    {
+      "d": 64,
+      "m_rings": 2,
+      "trials": 10,
+      "logq_grid": [
+        40,
+        48,
+        56
+      ]
+    },
+    {
+      "d": 128,
+      "m_rings": 2,
+      "trials": 4,
+      "logq_grid": [
+        40,
+        48
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trials": 10,
+      "successful_attacks": 10,
+      "success_fraction": 1.0,
+      "algorithm_mix": {
+        "bkz15": 4,
+        "lll": 6
+      },
+      "failed_trials": 0,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trials": 10,
+      "successful_attacks": 10,
+      "success_fraction": 1.0,
+      "algorithm_mix": {
+        "bkz15": 6,
+        "lll": 4
+      },
+      "failed_trials": 0,
+      "max_rank_deficit": 0
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trials": 10,
+      "successful_attacks": 2,
+      "success_fraction": 1.0,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 2
+      },
+      "failed_trials": 8,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trials": 10,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 10,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trials": 10,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 10,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trials": 10,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 10,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "std",
+      "trials": 4,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 4,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "kdm",
+      "trials": 4,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 4,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "std",
+      "trials": 4,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 4,
+      "max_rank_deficit": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "kdm",
+      "trials": 4,
+      "successful_attacks": 0,
+      "success_fraction": null,
+      "algorithm_mix": {
+        "bkz15": 0,
+        "lll": 0
+      },
+      "failed_trials": 4,
+      "max_rank_deficit": null
+    }
+  ],
+  "trials": [
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 0,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 185.9,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 1,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 96.72,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 2,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 199.79,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 3,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 148.17,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 4,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 209.15,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 5,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 235.41,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 6,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 204.45,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 7,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 179.75,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 8,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 167.35,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "std",
+      "trial": 9,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 212.43,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 0,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 229.82,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 1,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 109.31,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 2,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 220.81,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 3,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 214.34,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 4,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 158.08,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 5,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 246.23,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 6,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 312.47,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 7,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 224.99,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 8,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 543.12,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 9,
+      "recovered": true,
+      "rank_deficits": [
+        0
+      ],
+      "seconds": 519.34,
+      "algorithm": "bkz15",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 0,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 224.43,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 1,
+      "recovered": true,
+      "rank_deficits": [],
+      "seconds": 194.33,
+      "algorithm": "lll",
+      "status": "ok"
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 4,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 5,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 6,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 7,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 8,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "std",
+      "trial": 9,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 4,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 5,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 6,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 7,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 8,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 9,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 4,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 5,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 6,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 7,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 8,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "std",
+      "trial": 9,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 4,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 5,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 6,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 7,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 8,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 64,
+      "logq": 56,
+      "variant": "kdm",
+      "trial": 9,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "std",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "std",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "std",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "std",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 40,
+      "variant": "kdm",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "std",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "std",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "std",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "std",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 0,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 1,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 2,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    },
+    {
+      "d": 128,
+      "logq": 48,
+      "variant": "kdm",
+      "trial": 3,
+      "status": "failed_all_algorithms",
+      "algorithm": null
+    }
+  ],
+  "runtime_seconds": 2152.0,
+  "observations": {
+    "max_success_fraction_gap_std_vs_kdm": 0.0,
+    "max_rank_deficit_any_instance": 0,
+    "failed_trial_count": 54
+  },
+  "caveats": [
+    "m_rings=2 exercises one packing operator (r=0, u=0 => k=d+1, B^0) per instance; the coset-structure question is insensitive to the particular (k, u) beyond the signed-permutation shape.",
+    "Toy dimensions (d <= 128): a negative result does not prove the n=2048 instance safe; it falsifies structural shortcuts that would already appear at this scale (rank defects, reduced blocksize requirement, shifted success crossover).",
+    "Success fraction is measured against the secret known to the experiment; the attack itself is keyless.",
+    "BKZ blocksize 15 and LLL are far weaker than the beta ~ 350 reduction required at production parameters; absolute numbers do not extrapolate."
+  ]
+}
