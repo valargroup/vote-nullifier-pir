@@ -241,10 +241,25 @@ impl<'a> TierServer<'a> {
             remaining,
             U64_BYTES
         );
-        let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
-
         let pqr_u64_len = pqr_byte_len / U64_BYTES;
         let pp_u64_len = remaining / U64_BYTES;
+
+        // Bind the framed dimensions to this tier's YPIR scenario before any
+        // allocation or computation. `perform_online_computation_simplepir`
+        // asserts `first_dim_queries_packed.len() == db_rows_padded_simplepir()`
+        // and performs dimension-dependent slicing on the public parameters, so
+        // a well-framed but wrong-shaped query would otherwise panic inside the
+        // dependency and unwind past the `Result`-based error path. Reject the
+        // exact query-vector length here so a mismatch becomes a bounded error.
+        let expected_pqr_u64 = self._params.db_rows_padded_simplepir();
+        anyhow::ensure!(
+            pqr_u64_len == expected_pqr_u64,
+            "pqr length {} u64s does not match expected query dimension {}",
+            pqr_u64_len,
+            expected_pqr_u64
+        );
+
+        let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
 
         // Copy into 64-byte aligned memory for AVX-512 operations.
         let decode_start = Instant::now();
@@ -535,8 +550,17 @@ pub fn dispatch_query(
         "pir_request_started"
     );
 
-    match tier_state.server().answer_query(body) {
-        Ok(answer) => {
+    // Contain any panic from the YPIR computation at the trust boundary. Layer 1
+    // (dimension validation in `answer_query`) rejects the known panic trigger,
+    // but a dependency invariant we do not model could still unwind; converting
+    // it to a bounded response keeps one malformed request from aborting the
+    // task (or the whole process under `panic = "abort"`). Mirrors the
+    // `catch_unwind` the client already wraps its YPIR calls in.
+    let answer =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tier_state.server().answer_query(body)));
+
+    match answer {
+        Ok(Ok(answer)) => {
             let handler_ms = t0.elapsed().as_secs_f64() * 1000.0;
             let mut response = (
                 StatusCode::OK,
@@ -559,7 +583,7 @@ pub fn dispatch_query(
             );
             response
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             warn!(
                 req_id,
                 tier,
@@ -569,6 +593,24 @@ pub fn dispatch_query(
                 "pir_request_failed"
             );
             (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
+        Err(panic_payload) => {
+            let detail = panic_payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            warn!(
+                req_id,
+                tier,
+                status = 400,
+                handler_ms = format!("{:.3}", t0.elapsed().as_secs_f64() * 1000.0),
+                panic = detail,
+                "pir_request_panicked"
+            );
+            // Return the same bounded status as other malformed queries and a
+            // generic message, so the panic detail is not disclosed to callers.
+            (StatusCode::BAD_REQUEST, "invalid query").into_response()
         }
     }
 }
@@ -883,5 +925,40 @@ mod tests {
             Err(err) => err.to_string(),
         };
         assert!(err.contains("does not match metadata pir_root"), "{err}");
+    }
+
+    // A well-framed query whose pqr vector length does not match the tier's YPIR
+    // scenario used to reach `perform_online_computation_simplepir`, whose
+    // `assert_eq!` on the query dimension would panic and unwind past the
+    // `Result`-based error path. Both layers must now contain it: `answer_query`
+    // rejects the dimension, and `dispatch_query` returns a bounded 400 even if
+    // an unmodeled invariant were to panic.
+    #[test]
+    fn wrong_dimension_query_is_rejected_not_panicked() {
+        // Smallest scenario YPIR accepts (item_size_bits >= 2048 * 14).
+        let scenario = YpirScenario {
+            num_items: 2048,
+            item_size_bits: 2048 * 14,
+        };
+        let row_bytes = scenario.item_size_bits / 8;
+        let data = vec![0u8; scenario.num_items * row_bytes];
+        let tier = OwnedTierState::new(&data, scenario);
+
+        // 8-byte length prefix, both sections non-empty and 8-byte aligned, but
+        // the pqr vector length (8 u64s) cannot match the tier's query
+        // dimension (>= poly_len).
+        let payload = pir_types::serialize_ypir_query(&[0u64; 8], &[0u64; 8]);
+
+        let err = tier
+            .server()
+            .answer_query(&payload)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected query dimension"), "{err}");
+
+        let next = std::sync::atomic::AtomicU64::new(0);
+        let inflight = std::sync::atomic::AtomicUsize::new(0);
+        let resp = dispatch_query(&tier, "tier1", &payload, &next, &inflight);
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 }

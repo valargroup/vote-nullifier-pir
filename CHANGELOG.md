@@ -1,5 +1,14 @@
 # v0.0.42-alpha.1
 
+- Validate the query vector length against the tier's YPIR scenario before any
+  allocation or computation in `answer_query`, and wrap the online computation
+  in `catch_unwind` at the `dispatch_query` trust boundary. A well-framed query
+  with mismatched dimensions previously reached
+  `perform_online_computation_simplepir`, whose dimension `assert_eq!` would
+  panic and unwind past the `Result`-based error path (aborting the request
+  task, or the whole process under `panic = "abort"`); it now returns a bounded
+  HTTP 400. Mirrors the `catch_unwind` the client already applies to its YPIR
+  calls.
 - Require PIR clients to provide the expected Zcash network when connecting,
   and reject `/root` metadata for another network before downloading tier data.
   This is a breaking signature change to `PirClient::with_transport` and
