@@ -16,7 +16,7 @@ use pasta_curves::Fp;
 pub use imt_tree::ImtProofData;
 
 mod transport;
-pub use pir_types::{PirLayout, COMPILED_PIR_LAYOUT};
+pub use pir_types::{PirLayout, ZcashNetwork, COMPILED_PIR_LAYOUT};
 pub use transport::{Transport, TransportFuture, TransportResponse};
 
 use pir_types::tier0::Tier0Data;
@@ -207,9 +207,11 @@ fn tier1_geometry(layout: PirLayout) -> Result<(usize, usize, usize)> {
 }
 
 impl PirClient {
-    /// Connect using a caller-provided HTTP transport and configuration layout.
+    /// Connect using a caller-provided HTTP transport, expected Zcash network,
+    /// and configuration layout.
     pub async fn with_transport(
         server_url: &str,
+        expected_network: ZcashNetwork,
         expected_layout: PirLayout,
         transport: Arc<dyn Transport>,
     ) -> Result<Self> {
@@ -232,6 +234,12 @@ impl PirClient {
         let root_info: RootInfo =
             serde_json::from_slice(&body_for_status(root_resp, "GET /root failed")?)
                 .context("parse /root response")?;
+        anyhow::ensure!(
+            root_info.zcash_network == expected_network,
+            "Zcash network mismatch: expected {}, server advertised {}",
+            expected_network,
+            root_info.zcash_network
+        );
         anyhow::ensure!(
             pir_types::is_current_dataset(&root_info.nullifier_pool, root_info.dataset_version),
             "server nullifier dataset {:?} version {} is unsupported; expected {:?} version {}",
@@ -689,15 +697,18 @@ pub struct PirClientBlocking {
 }
 
 impl PirClientBlocking {
-    /// Connect with a caller-provided HTTP transport and configuration layout.
+    /// Connect with a caller-provided HTTP transport, expected Zcash network,
+    /// and configuration layout.
     pub fn with_transport(
         server_url: &str,
+        expected_network: ZcashNetwork,
         expected_layout: PirLayout,
         transport: Arc<dyn Transport>,
     ) -> Result<Self> {
         let rt = tokio::runtime::Runtime::new()?;
         let inner = rt.block_on(PirClient::with_transport(
             server_url,
+            expected_network,
             expected_layout,
             transport,
         ))?;
@@ -1104,7 +1115,14 @@ mod tests {
     }
 
     async fn rejected_connect(expected_layout: PirLayout, transport: Arc<MockTransport>) -> String {
-        match PirClient::with_transport("https://pir.example", expected_layout, transport).await {
+        match PirClient::with_transport(
+            "https://pir.example",
+            ZcashNetwork::Test,
+            expected_layout,
+            transport,
+        )
+        .await
+        {
             Ok(_) => panic!("layout mismatch must be rejected"),
             Err(err) => err.to_string(),
         }
@@ -1141,6 +1159,7 @@ mod tests {
         let transport = Arc::new(MockTransport::new(&tree));
         let client = PirClient::with_transport(
             "https://pir.example",
+            ZcashNetwork::Test,
             COMPILED_PIR_LAYOUT,
             transport.clone(),
         )
@@ -1187,6 +1206,7 @@ mod tests {
         let transport = Arc::new(transport);
         let client = PirClient::with_transport(
             "https://pir.example",
+            ZcashNetwork::Test,
             COMPILED_PIR_LAYOUT,
             transport.clone(),
         )
@@ -1211,6 +1231,7 @@ mod tests {
         let transport = Arc::new(MockTransport::new(&tree));
         let client = PirClient::with_transport(
             "https://pir.example",
+            ZcashNetwork::Test,
             COMPILED_PIR_LAYOUT,
             transport.clone(),
         )
@@ -1431,10 +1452,14 @@ mod tests {
                 tier1_layers: t1,
             };
             let transport = Arc::new(MockTransport::new_layout(&tree, layout));
-            let client =
-                PirClient::with_transport("https://pir.example", layout, transport.clone())
-                    .await
-                    .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
+            let client = PirClient::with_transport(
+                "https://pir.example",
+                ZcashNetwork::Test,
+                layout,
+                transport.clone(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
             assert_eq!(client.layout, layout);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
@@ -1464,6 +1489,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_wrong_zcash_network_before_data_download() {
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let transport = Arc::new(MockTransport::new(&tree));
+
+        let err = match PirClient::with_transport(
+            "https://pir.example",
+            ZcashNetwork::Main,
+            COMPILED_PIR_LAYOUT,
+            transport.clone(),
+        )
+        .await
+        {
+            Ok(_) => panic!("wrong Zcash network must be rejected"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("expected main") && err.contains("server advertised test"),
+            "{err}"
+        );
+        assert_eq!(transport.count_hits("/root"), 1);
+        assert_eq!(transport.count_hits("/tier0"), 0);
+        assert_eq!(transport.count_hits("/params/tier1"), 0);
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
+    }
+
+    #[tokio::test]
     async fn rejects_wrong_nullifier_pool() {
         let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
         let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
@@ -1478,6 +1530,7 @@ mod tests {
 
         let err = match PirClient::with_transport(
             "https://pir.example",
+            ZcashNetwork::Test,
             COMPILED_PIR_LAYOUT,
             transport.clone(),
         )
@@ -1504,6 +1557,7 @@ mod tests {
 
         let err = match PirClient::with_transport(
             "https://pir.example",
+            ZcashNetwork::Test,
             COMPILED_PIR_LAYOUT,
             transport.clone(),
         )
@@ -1532,6 +1586,7 @@ mod tests {
 
         let err = match PirClient::with_transport(
             "https://pir.example",
+            ZcashNetwork::Test,
             COMPILED_PIR_LAYOUT,
             Arc::new(transport),
         )

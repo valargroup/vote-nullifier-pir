@@ -17,6 +17,7 @@ use crate::transport::HyperTransport;
 
 pub struct LoadConfig {
     pub url: String,
+    pub network: pir_types::ZcashNetwork,
     pub nullifiers_path: PathBuf,
     pub concurrency: usize,
     pub rps: Option<f64>,
@@ -226,6 +227,7 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     let client = Arc::new(
         PirClient::with_transport(
             &cfg.url,
+            cfg.network,
             pir_types::COMPILED_PIR_LAYOUT,
             Arc::new(HyperTransport::new()),
         )

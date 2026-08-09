@@ -9,12 +9,14 @@ Used by Zcash wallets integrating shielded voting: before building a delegation 
 ```rust
 use std::sync::Arc;
 
-use pir_client::{ImtProofData, PirClientBlocking, PirLayout, Transport};
+use pir_client::{ImtProofData, PirClientBlocking, PirLayout, Transport, ZcashNetwork};
 
 let transport: Arc<dyn Transport> = Arc::new(my_http_transport);
+let expected_network = ZcashNetwork::Main;
 let expected_layout: PirLayout = resolved_voting_config.pir_layout.into();
 let client = PirClientBlocking::with_transport(
     "https://pir1.example.com",
+    expected_network,
     expected_layout,
     transport,
 )?;
@@ -27,12 +29,17 @@ Async equivalent:
 ```rust
 use std::sync::Arc;
 
-use pir_client::{PirClient, PirLayout, Transport};
+use pir_client::{PirClient, PirLayout, Transport, ZcashNetwork};
 
 let transport: Arc<dyn Transport> = Arc::new(my_http_transport);
+let expected_network = ZcashNetwork::Main;
 let expected_layout: PirLayout = resolved_voting_config.pir_layout.into();
-let client =
-    PirClient::with_transport("https://pir1.example.com", expected_layout, transport).await?;
+let client = PirClient::with_transport(
+    "https://pir1.example.com",
+    expected_network,
+    expected_layout,
+    transport,
+).await?;
 let proofs = client.fetch_proofs(&[nf1, nf2, nf3]).await?;
 ```
 
@@ -41,6 +48,8 @@ The returned `ImtProofData { root, nf_bounds, leaf_pos, path: [Fp; 29] }` is the
 ## Security
 
 - The client rejects servers that don't report the expected Ironwood dataset version.
+- Client construction requires the expected Zcash network and rejects `/root`
+  metadata for another network before downloading tier data.
 - Client construction requires the layout from the resolved dynamic voting config.
 - The client requires an exact config-to-`/root` layout match before parsing
   Tier 0 or creating a usable client. Missing `pir_layout` metadata fails closed.

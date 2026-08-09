@@ -1,5 +1,9 @@
 # v0.0.42-alpha.1
 
+- Require PIR clients to provide the expected Zcash network when connecting,
+  and reject `/root` metadata for another network before downloading tier data.
+  This is a breaking signature change to `PirClient::with_transport` and
+  `PirClientBlocking::with_transport`.
 - Make two-tier PIR geometry runtime-driven: clients accept any valid
   `PirLayout` that matches `/root` (and passes geometry / YPIR / circuit
   bounds) instead of requiring equality against `COMPILED_PIR_LAYOUT`.
