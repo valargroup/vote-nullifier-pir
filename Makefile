@@ -31,6 +31,11 @@ LWD_URL       ?= https://us.zec.stardust.rest:443
 ZCASH_NETWORK ?= main
 PORT          ?= 3000
 SYNC_HEIGHT   ?=
+PIR_POLY_LEN  ?= 2048
+
+ifneq ($(filter $(PIR_POLY_LEN),2048 4096),$(PIR_POLY_LEN))
+  $(error PIR_POLY_LEN must be 2048 or 4096, got $(PIR_POLY_LEN))
+endif
 
 # `make install`: DESTDIR for packaging. PREFIX defaults to ~/.local (no sudo); system-wide:
 # `sudo make install PREFIX=/usr/local`. Cargo features: INSTALL_FEATURES (default serve).
@@ -75,8 +80,8 @@ sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
 sync-invalidate: ## Same as sync with `--invalidate-after-blocks` (rebuild tree/tiers when new blocks synced)
 	cd $(NF_DIR) && cargo run --release -- sync --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
 
-serve: ## Start the PIR HTTP server
-	cd $(NF_DIR) && cargo run --release --features serve -- serve --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT)
+serve: ## Start PIR server (PIR_POLY_LEN=2048|4096)
+	cd $(NF_DIR) && cargo run --release --features serve -- serve --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT) --pir-poly-len $(PIR_POLY_LEN)
 
 test: ## Run unit tests for all subcrates
 	cd $(IMT_DIR) && cargo test --lib

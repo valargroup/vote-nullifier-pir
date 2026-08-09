@@ -357,8 +357,11 @@ async fn run_rebuild(state: Arc<AppState>, target_height: u64) -> Result<()> {
 
     let pd = pir_data_dir.clone();
     let network = state.zcash_network;
-    let new_serving =
-        tokio::task::spawn_blocking(move || pir_server::load_serving_state(&pd, network)).await??;
+    let poly_len = state.pir_poly_len;
+    let new_serving = tokio::task::spawn_blocking(move || {
+        pir_server::load_serving_state_with_poly_len(&pd, network, poly_len)
+    })
+    .await??;
 
     {
         let mut serving = state.serving.write().await;

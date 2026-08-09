@@ -301,6 +301,15 @@ pub struct PirMetadata {
 pub struct YpirScenario {
     pub num_items: usize,
     pub item_size_bits: usize,
+    /// RLWE polynomial degree selected by the server.
+    #[serde(default = "default_ypir_poly_len")]
+    pub poly_len: usize,
+}
+
+pub const DEFAULT_YPIR_POLY_LEN: usize = 2048;
+
+fn default_ypir_poly_len() -> usize {
+    DEFAULT_YPIR_POLY_LEN
 }
 
 /// Root hash and metadata returned by `GET /root`.
@@ -382,6 +391,13 @@ mod tests {
         assert_eq!("main".parse(), Ok(ZcashNetwork::Main));
         assert_eq!("test".parse(), Ok(ZcashNetwork::Test));
         assert!("regtest".parse::<ZcashNetwork>().is_err());
+    }
+
+    #[test]
+    fn ypir_scenario_defaults_legacy_responses_to_degree_2048() {
+        let scenario: YpirScenario =
+            serde_json::from_str(r#"{"num_items":4096,"item_size_bits":98304}"#).unwrap();
+        assert_eq!(scenario.poly_len, DEFAULT_YPIR_POLY_LEN);
     }
 
     #[test]

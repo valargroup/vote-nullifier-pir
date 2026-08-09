@@ -130,6 +130,7 @@ pub fn hash_scenario(s: &YpirScenario) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&(s.num_items as u64).to_le_bytes());
     hasher.update(&(s.item_size_bits as u64).to_le_bytes());
+    hasher.update(&(s.poly_len as u64).to_le_bytes());
     hasher.finalize().into()
 }
 
@@ -676,6 +677,7 @@ mod test {
         let s = YpirScenario {
             num_items: 12345,
             item_size_bits: 6789,
+            poly_len: 2048,
         };
         let h1 = hash_scenario(&s);
         let h2 = hash_scenario(&s);
@@ -684,8 +686,15 @@ mod test {
         let s2 = YpirScenario {
             num_items: 12346,
             item_size_bits: 6789,
+            poly_len: 2048,
         };
         assert_ne!(h1, hash_scenario(&s2));
+        let s3 = YpirScenario {
+            num_items: s.num_items,
+            item_size_bits: s.item_size_bits,
+            poly_len: 4096,
+        };
+        assert_ne!(h1, hash_scenario(&s3));
     }
 
     // ── End-to-end wrapper round-trip + rejection tests ──────────────────────
@@ -739,6 +748,7 @@ mod test {
         let scenario = YpirScenario {
             num_items: num_items as usize,
             item_size_bits: item_size_bits as usize,
+            poly_len: 2048,
         };
         let cache_path = dir.join("tier_fixture.precompute");
 

@@ -3661,8 +3661,7 @@ dependencies = [
 [[package]]
 name = "valar-ypir"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8c3852d9476a0e3efd6c3bfbfc54d3a21a68d8818c4779824ace78aec84a042"
+source = "git+https://github.com/valargroup/ypir.git?rev=32c6fcf2201f6242887c862d58a6f83386340e5c#32c6fcf2201f6242887c862d58a6f83386340e5c"
 dependencies = [
  "cc",
  "fastrand",

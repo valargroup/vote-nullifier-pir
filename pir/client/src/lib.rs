@@ -24,6 +24,7 @@ use pir_types::tier1::Tier1Row;
 use pir_types::{serialize_ypir_query, RootInfo, YpirScenario, YPIR_MIN_ITEM_BITS, YPIR_MIN_ROWS};
 
 use ypir::client::YPIRClient;
+use ypir::params::YPIRSPConfig;
 
 /// Valid row used when Tier 0 cannot safely route a nullifier. The encrypted
 /// query is still sent so a server cannot distinguish routing failures by
@@ -474,10 +475,16 @@ impl PirClient {
             scenario.num_items
         );
         let t0 = Instant::now();
-        let ypir_client = YPIRClient::from_db_sz(
+        anyhow::ensure!(
+            matches!(scenario.poly_len, 2048 | 4096),
+            "{} advertised unsupported YPIR polynomial degree {}",
+            tier_name,
+            scenario.poly_len
+        );
+        let ypir_client = YPIRClient::from_db_sz_simplepir_with_config(
             scenario.num_items as u64,
             scenario.item_size_bits as u64,
-            true,
+            YPIRSPConfig::for_poly_len(scenario.poly_len),
         );
 
         // Generate PIR query from a fresh secret created from OsRng seed.
@@ -1046,6 +1053,7 @@ mod tests {
             let tier1_scenario = YpirScenario {
                 num_items: rows,
                 item_size_bits: item_bits,
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
             };
 
             let gets = [
