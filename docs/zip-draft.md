@@ -2041,7 +2041,10 @@ guesses. That work reports a roughly 2–3 bit gap for ML-KEM parameter
 sets and larger gaps for sparse-secret RLWE. It does not provide a
 concrete instantiation for this ZIP's discrete-Gaussian secret with
 standard deviation 6.4, so those numerical gaps cannot be transferred
-directly. The lattice-estimator results below do not implement these
+directly. The dense-Gaussian instantiation is supplied in
+[Rotation-aware dense-Gaussian status]: for this instance, neither
+rotational hybrid beats the unstructured baselines below. The
+lattice-estimator results below do not implement these
 ring-aware hybrids and must therefore be read as unstructured-LWE
 baselines, not model-independent RLWE bounds.
 
@@ -2217,6 +2220,38 @@ $s^\star$. No attack is known that exploits this structure for the
 parameter sizes used in this ZIP, but the hardness estimates in
 [Hardness Estimates] do not quantify the strength of this KDM
 assumption.
+
+#### Structural Analysis of the KDM Instance
+
+The residual question can be stated precisely. Each packing-key
+ciphertext hides its key-dependent plaintext inside what is
+effectively the public matrix: it is an LWE sample whose public matrix
+is $a + B_\mathsf{ks}^u \tau_{k_r}$ — a known shift (coset) of
+the usual negacyclic matrices, uniform within its coset, with
+unchanged secret, error, and entropy. Any attack on the joint
+transcript therefore either works against standard RLWE at equal
+sample count — covered by the estimator — or must exploit the coset
+shift itself, for which no attack is known.
+
+Three facts narrow the assumption further:
+
+1. **Symmetries.** The joint transcript keeps about as many algebraic
+   symmetries as plain RLWE (see [Ring-aware analyses: hybrids, joint
+   transcript, and lifetime]); the KDM structure adds none.
+2. **Ephemeral secret.** The packing key is regenerated per query
+   under a fresh secret, so circular security never compounds across
+   queries — much weaker exposure than deployed FHE, where one
+   long-lived secret encrypts its own key-switching material for
+   years.
+3. **Toy-dimension probing.** Real lattice attacks on small analogues
+   ($d \leq 128$) of the exact coset instance behave identically to
+   matched standard-RLWE controls. This
+   falsifies structural shortcuts visible at small scale; it is not a
+   proof at $n = 2048$.
+
+KDM security for affine functions of the secret key is a separately
+named, well-studied assumption [^ACPS09]. This ZIP states it
+explicitly rather than discharging it.
 
 ### Instance Summary
 
@@ -2416,32 +2451,61 @@ stddev $\approx 64$–$100$, which is impractical for the noise budget
 ### Security Assessment
 
 The selector and packing-key instances rely on Ring-LWE hardness over
-$\mathbb{Z}_q[X]/(X^{2048}+1)$, evaluated using the same
-lattice-estimator methodology applied to ML-KEM. The 4,096-sample
-single-tier selector and the 67,584-sample packing key have identical
-estimates at the reported precision. The conservative binding estimate
-is 131.5 bits under the Matzov cost model (BDD attack) and 104.0 bits
-under Core-SVP (uSVP attack), meeting the 125-bit target under
-Matzov-style modeling.
+$\mathbb{Z}_q[X]/(X^{2048}+1)$. The lattice-estimator results in this
+ZIP are **unstructured-LWE baselines**, produced by
+`docs/nullifier-pir-analysis.py`. The 4,096-sample single-tier selector
+and the 67,584-sample packing key have identical estimates at the
+reported precision. The binding unstructured estimate is 131.5 bits
+under the Matzov cost model (BDD attack) and 104.0 bits under Core-SVP
+(uSVP attack).
 
-This ZIP therefore treats the 125-bit classical-security target as
-satisfied under the Matzov-style attack-cost model used throughout this
-analysis, not as a model-independent theorem for the deployed
-construction. The Kyber512 comparison and the cost-model ladder in
-[Kyber512 Calibration] and [Cost Model Analysis] are heuristic
-calibration arguments supporting that modeling choice; they are not
-independent hardness proofs for this PIR instance.
+This ZIP does **not** assert an unconditional “128-bit secure” query-
+privacy guarantee. The supportable statement is:
 
-The 131.5-bit estimate has 6.5 bits of margin over the target before
-accounting for ring-aware isometry hybrids. The published 2–3 bit gaps
-for ML-KEM would not consume that margin, but they were derived for
-different secret distributions and are not a concrete bound for this
-instance [^Ogilvie2026]. A direct estimate for the discrete-Gaussian
-secret used here remains an open analysis item.
+> The unstructured-LWE Matzov baseline is approximately 131.5 bits.
 
-The overall privacy argument additionally relies on the
-circular-security / KDM assumption for the packing key described in
-[Circular Security]. The hardness estimates do not quantify this assumption; no attack is known that exploits the KDM structure at these parameter sizes.
+#### Rotation-aware dense-Gaussian status
+
+Known coefficient-isometry hybrids [^Ogilvie2026] apply structurally
+to this ring, but independent analysis finds no material improvement
+over the unstructured attack.
+
+The dense Gaussian secret makes
+coefficient guessing expensive: even its most likely value has
+probability only $p_0 \approx 0.0623$, or about four bits of guessing
+cost per coordinate. Both the primal and dual variants remain dominated
+by lattice reduction, and the best primal strategy guesses no
+coordinates at all. Published reductions for ML-KEM or sparse-secret
+RLWE therefore are not deducted from the 131.5-bit Matzov baseline.
+
+#### Ring-aware analyses: hybrids, joint transcript, and lifetime
+
+A strengthened analysis using optimal guessing sets and a larger
+symmetry group reaches the same result: every tested attack is cheapest
+when it makes no guesses and reduces to the unstructured baseline.
+General bounds put this attack family no lower than 129.7 Matzov bits
+with normal accounting, or 127.2 bits under the unrealistic assumption
+that guesses are free. A speculative five-bit meet-in-the-middle saving
+is reported only as a sensitivity because it is not justified across
+the distinct isometric lattices involved.
+
+The 35 related RLWE ciphertexts in one query expose no additional
+isometry leverage beyond plain RLWE. Whether their known packing-key
+relationships enable some other lattice attack remains an explicit
+assumption under [Circular Security].
+
+Nor does observing many queries materially change the estimate. Even an
+aggressive multi-target model with up to $10^{10}$ queries gives 131.2
+bits, above the 125-bit operational target for the *any-one-of-$U$*
+security goal. Per-epoch and per-query seed randomization remain
+available as fallbacks if future attack models make amortization more
+effective.
+
+Accordingly, 131.5 classical Matzov bits remains the operational
+baseline. The 104.0 classical and 94.3 quantum Core-SVP figures are
+comparison metrics only; there is no validated quantum-Matzov estimate,
+and the Kyber512 calibration is heuristic context rather than an
+independent hardness proof.
 
 ### Quantum Security Estimates
 
@@ -3226,6 +3290,8 @@ three-tier Poseidon tree, the Tier 1 / Tier 2 query orchestration described in t
 [^Albrecht2015]: [On the concrete hardness of Learning with Errors](https://doi.org/10.1515/jmc-2015-0016). Martin R. Albrecht, Rachel Player, and Sam Scott. Journal of Mathematical Cryptology 9(3):169–203, 2015.
 
 [^Ogilvie2026]: [On the Concrete Hardness Gap Between MLWE and LWE](https://eprint.iacr.org/2026/279). Tabitha Ogilvie. Cryptology ePrint Archive 2026/279, 2026.
+
+[^ACPS09]: [Fast Cryptographic Primitives and Circular-Secure Encryption Based on Hard Learning Problems](https://eprint.iacr.org/2009/078). Benny Applebaum, David Cash, Chris Peikert, and Amit Sahai. Advances in Cryptology – CRYPTO 2009. Establishes KDM (key-dependent message) security for affine functions of the secret key under the LWE assumption for a suitably modified encryption scheme.
 
 [^LiuNgu2013]: [Solving BDD by Enumeration: An Update](https://doi.org/10.1007/978-3-642-36095-4_19). Mingjie Liu and Phong Q. Nguyen. Topics in Cryptology – CT-RSA 2013, pp. 293–309.
 
