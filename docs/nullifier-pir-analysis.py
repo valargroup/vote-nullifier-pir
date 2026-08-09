@@ -6,7 +6,7 @@ Produces the data that feeds the Noise Analysis section of the ZIP:
   1. Kyber512 calibration benchmark.
      Runs the lattice estimator on NIST's Kyber512 parameters under both
      Core-SVP (ADPS16) and MATZOV cost models, then compares the resulting
-     block sizes and bit-security with the PIR Tier 2 selector instance.
+     block sizes and bit-security with the single-tier PIR selector instance.
 
   2. Cost model ladder.
      Analytical computation for block size beta = 356: layers Core-SVP,
@@ -17,7 +17,7 @@ Produces the data that feeds the Noise Analysis section of the ZIP:
   3. Sensitivity sweep.
      Varies the discrete Gaussian standard deviation over
      {3.2, 6.4, 10, 16, 25, 40, 64, 100} while holding n, q, m fixed
-     at the Tier 2 values.  Runs both ADPS16 and MATZOV to produce a
+     at the current selector values.  Runs both ADPS16 and MATZOV to produce a
      2D table showing where each cost model crosses the 125-bit target.
 
 CONVENTION NOTE
@@ -29,12 +29,12 @@ stddev = 6.4.
 
 REQUIREMENTS
 ------------
-  - SageMath environment (e.g. conda sage-env)
-  - git submodule third_party/lattice-estimator
+  - SageMath environment (e.g. ``mamba create -n sage sage``)
+  - initialized git submodule third_party/lattice-estimator
 
 Run:
-    PATH="/opt/anaconda3/envs/sage-env/bin:$PATH" \\
-      python tools/nullifier_pir_analysis.py
+    git submodule update --init --recursive
+    mamba run -n sage python docs/nullifier-pir-analysis.py
 """
 
 from __future__ import annotations
@@ -75,10 +75,10 @@ Q = 268_369_921 * 249_561_089
 N = 2048
 D = 2048  # ring degree
 STDDEV = 6.4
-M_TIER2 = 32_768
-M_TIER1 = D  # 1 ring element × 2048 coefficients
+M_SELECTOR = 4_096  # 2 ring elements × 2048 coefficients
 PACKING_RING_SAMPLES = 33  # 11 automorphisms × 3 gadget digits
 M_PACKING = PACKING_RING_SAMPLES * D  # expanded to scalar LWE: 67,584
+M_COMBINED = M_SELECTOR + M_PACKING  # shared-secret standard-LWE baseline
 
 # Classical cost models: the conservative lower bound (Core-SVP / ADPS16) and
 # the more realistic MATZOV model that accounts for progressive BKZ,
@@ -151,12 +151,11 @@ def extract_results(result):
 
 
 def print_kyber_calibration():
-    """Ccompare PIR Tier 2 hardness against NIST Kyber512.
+    """Compare the single-tier PIR selector hardness against NIST Kyber512.
 
-    This gives a cost-model-independent reference point: the ratio of
-    uSVP block sizes (beta_PIR / beta_Kyber) tells a reviewer how close
-    the PIR parameters are to NIST's category-1 bar, regardless of which
-    cost model they prefer.
+    This gives a reduction-cost-model-independent reference point within
+    the estimator's unstructured-LWE methodology: the ratio of uSVP block
+    sizes (beta_PIR / beta_Kyber) shows the relative primal parameters.
     """
     print()
     print("=" * 72)
@@ -177,23 +176,23 @@ def print_kyber_calibration():
         bits, beta = extract_results(res)
         kyber_results[model_name] = (bits, beta)
 
-    pir_par = LWE.Parameters(
+    selector_par = LWE.Parameters(
         n=N, q=Q,
         Xs=ND.DiscreteGaussian(STDDEV),
         Xe=ND.DiscreteGaussian(STDDEV),
-        m=M_TIER2,
-        tag="PIR Tier 2",
+        m=M_SELECTOR,
+        tag="PIR selector",
     )
 
-    pir_results = {}
+    selector_results = {}
     for model_name, model in MODELS:
-        print(f"\n  [PIR Tier 2 — {model_name}]")
-        res = estimate_rough(pir_par, model)
+        print(f"\n  [PIR selector — {model_name}]")
+        res = estimate_rough(selector_par, model)
         for alg in res:
             if res[alg]["rop"] != oo:
                 print(f"    {alg:20s} :: {res[alg]!r}")
         bits, beta = extract_results(res)
-        pir_results[model_name] = (bits, beta)
+        selector_results[model_name] = (bits, beta)
 
     print()
     print("  COMPARISON TABLE:")
@@ -205,30 +204,30 @@ def print_kyber_calibration():
     kyber_core = kyber_results.get("Core-SVP (ADPS16)", (None, None))[0]
     kyber_matzov = kyber_results.get("MATZOV 2022", (None, None))[0]
 
-    pir_beta = pir_results.get("Core-SVP (ADPS16)", (None, None))[1]
-    pir_core = pir_results.get("Core-SVP (ADPS16)", (None, None))[0]
-    pir_matzov = pir_results.get("MATZOV 2022", (None, None))[0]
+    selector_beta = selector_results.get("Core-SVP (ADPS16)", (None, None))[1]
+    selector_core = selector_results.get("Core-SVP (ADPS16)", (None, None))[0]
+    selector_matzov = selector_results.get("MATZOV 2022", (None, None))[0]
 
     kb_str = str(kyber_beta) if kyber_beta else "N/A"
     kc_str = f"{kyber_core:.1f}" if kyber_core else "N/A"
     km_str = f"{kyber_matzov:.1f}" if kyber_matzov else "N/A"
     print(f"  │ Kyber512                 │ {kb_str:>12s} │ {kc_str:>12s} │ {km_str:>12s} │     1.00     │")
 
-    pb_str = str(pir_beta) if pir_beta else "N/A"
-    pc_str = f"{pir_core:.1f}" if pir_core else "N/A"
-    pm_str = f"{pir_matzov:.1f}" if pir_matzov else "N/A"
-    ratio = f"{pir_beta / kyber_beta:.2f}" if (pir_beta and kyber_beta) else "N/A"
-    print(f"  │ PIR Tier 2 (binding)     │ {pb_str:>12s} │ {pc_str:>12s} │ {pm_str:>12s} │ {ratio:>12s} │")
+    sb_str = str(selector_beta) if selector_beta else "N/A"
+    sc_str = f"{selector_core:.1f}" if selector_core else "N/A"
+    sm_str = f"{selector_matzov:.1f}" if selector_matzov else "N/A"
+    ratio = f"{selector_beta / kyber_beta:.2f}" if (selector_beta and kyber_beta) else "N/A"
+    print(f"  │ PIR selector             │ {sb_str:>12s} │ {sc_str:>12s} │ {sm_str:>12s} │ {ratio:>12s} │")
     print("  └───────────────────────────┴──────────────┴──────────────┴──────────────┴──────────────┘")
 
-    if pir_beta and kyber_beta:
-        print(f"\n  uSVP β ratio: {pir_beta}/{kyber_beta} = {pir_beta/kyber_beta:.3f}")
-        print("  (cost-model-independent measure of relative security)")
+    if selector_beta and kyber_beta:
+        print(f"\n  uSVP β ratio: {selector_beta}/{kyber_beta} = {selector_beta/kyber_beta:.3f}")
+        print("  (reduction-cost-model-independent within unstructured-LWE uSVP)")
 
-    return kyber_beta, pir_results
+    return kyber_beta, selector_results
 
 
-def print_cost_model_ladder(kyber_beta, pir_results):
+def print_cost_model_ladder(kyber_beta, selector_results):
     """Analytical cost model ladder for the binding block size.
 
     Follows the NIST Kyber-512 FAQ (Dec 2023) methodology.  The sieving
@@ -245,12 +244,12 @@ def print_cost_model_ladder(kyber_beta, pir_results):
     corrections are additive on top of MATZOV:
       delta = (c(k) - 0.292) * beta   extra bits per sieve call
     """
-    pir_core_beta = pir_results.get("Core-SVP (ADPS16)", (None, None))[1]
-    pir_matzov_bits = pir_results.get("MATZOV 2022", (None, None))[0]
-    pir_matzov_beta = pir_results.get("MATZOV 2022", (None, None))[1]
-    core_beta = pir_core_beta or 356
-    mat_beta = pir_matzov_beta or core_beta
-    matzov_bits = pir_matzov_bits or 131.5
+    selector_core_beta = selector_results.get("Core-SVP (ADPS16)", (None, None))[1]
+    selector_matzov_bits = selector_results.get("MATZOV 2022", (None, None))[0]
+    selector_matzov_beta = selector_results.get("MATZOV 2022", (None, None))[1]
+    core_beta = selector_core_beta or 356
+    mat_beta = selector_matzov_beta or core_beta
+    matzov_bits = selector_matzov_bits or 131.5
 
     print()
     print("=" * 72)
@@ -291,7 +290,7 @@ def print_cost_model_ladder(kyber_beta, pir_results):
 
 
 def print_sensitivity_sweep():
-    """Vary stddev while keeping (n, q, m) at Tier 2 values.
+    """Vary stddev while keeping (n, q, m) at current selector values.
 
     Sweeps both ADPS16 and MATZOV to show where each model crosses the
     125-bit target.  Under MATZOV, even stddev=3.2 exceeds 125 bits;
@@ -301,7 +300,7 @@ def print_sensitivity_sweep():
     print("=" * 72)
     print("SENSITIVITY SWEEP (stddev × cost model)")
     print("=" * 72)
-    print(f"  n={N}, q≈2^{math.log2(Q):.1f}, m={M_TIER2}")
+    print(f"  n={N}, q≈2^{math.log2(Q):.1f}, m={M_SELECTOR}")
 
     stddevs = [3.2, 6.4, 10.0, 16.0, 25.0, 40.0, 64.0, 100.0]
     sweep = []
@@ -311,7 +310,7 @@ def print_sensitivity_sweep():
             n=N, q=Q,
             Xs=ND.DiscreteGaussian(sd),
             Xe=ND.DiscreteGaussian(sd),
-            m=M_TIER2,
+            m=M_SELECTOR,
             tag=f"sd={sd}",
         )
 
@@ -354,9 +353,9 @@ def print_quantum_estimates():
 
     Rather than hand-computing 0.265*beta from the classical uSVP block
     size, this runs the full estimator with quantum sieving costs to find
-    the cheapest quantum attack for both Kyber512 and the PIR binding
-    instance.  This ensures the quantum column is consistent with the
-    classical column (both report the minimum across all attack families).
+    the cheapest quantum attack for Kyber512, the selector, and the packing
+    key. This ensures the quantum column is consistent with the classical
+    column (both report the minimum across all attack families).
     """
     print()
     print("=" * 72)
@@ -366,16 +365,28 @@ def print_quantum_estimates():
     q_name, q_model = QUANTUM_MODEL
 
     kyber = schemes.Kyber512
-    pir_par = LWE.Parameters(
+    selector_par = LWE.Parameters(
         n=N, q=Q,
         Xs=ND.DiscreteGaussian(STDDEV),
         Xe=ND.DiscreteGaussian(STDDEV),
-        m=M_TIER2,
-        tag="PIR Tier 2",
+        m=M_SELECTOR,
+        tag="PIR selector",
     )
+    packing_par = LWE.Parameters(
+        n=N, q=Q,
+        Xs=ND.DiscreteGaussian(STDDEV),
+        Xe=ND.DiscreteGaussian(STDDEV),
+        m=M_PACKING,
+        tag="Packing-key RLWE",
+    )
+    instances = [
+        ("Kyber512", kyber),
+        ("PIR selector", selector_par),
+        ("Packing-key RLWE", packing_par),
+    ]
 
     results = {}
-    for label, par in [("Kyber512", kyber), ("PIR Tier 2 (binding)", pir_par)]:
+    for label, par in instances:
         print(f"\n  [{label} — {q_name}]")
         res = estimate_rough(par, q_model)
         for alg in res:
@@ -386,7 +397,7 @@ def print_quantum_estimates():
 
     # Also run classical for side-by-side comparison
     classical_results = {}
-    for label, par in [("Kyber512", kyber), ("PIR Tier 2 (binding)", pir_par)]:
+    for label, par in instances:
         res = estimate_rough(par, RC.ADPS16)
         bits, beta = extract_results(res)
         classical_results[label] = (bits, beta)
@@ -397,7 +408,7 @@ def print_quantum_estimates():
     print("  │ Instance                  │ β (best) │ Classical ADPS16│ Quantum ADPS16  │")
     print("  ├───────────────────────────┼──────────┼─────────────────┼─────────────────┤")
 
-    for label in ["Kyber512", "PIR Tier 2 (binding)"]:
+    for label, _ in instances:
         c_bits, c_beta = classical_results[label]
         q_bits, q_beta = results[label]
         c_str = f"{c_bits:.1f}" if c_bits else "N/A"
@@ -414,7 +425,7 @@ def print_quantum_estimates():
     return results
 
 
-def print_packing_key_estimates():
+def print_packing_key_estimates(selector_results):
     """Estimate hardness of the packing-key RLWE instance.
 
     The packing key consists of 33 RLWE ciphertexts.  Following the same
@@ -448,6 +459,12 @@ def print_packing_key_estimates():
         bits, beta = extract_results(res)
         pk_results[model_name] = (bits, beta)
 
+    combined_par = pk_par.updated(m=M_COMBINED, tag="Combined standard-LWE baseline")
+    combined_results = {}
+    for model_name, model in MODELS:
+        res = estimate_rough(combined_par, model)
+        combined_results[model_name] = extract_results(res)
+
     print()
     print("  PACKING-KEY vs SELECTOR COMPARISON:")
     print("  ┌──────────────────────────────────┬──────────┬──────────────┬──────────────┐")
@@ -455,9 +472,9 @@ def print_packing_key_estimates():
     print("  ├──────────────────────────────────┼──────────┼──────────────┼──────────────┤")
 
     for label, m_val, results in [
-        ("Selector Tier 1 (1 ring elem)", M_TIER1, None),
+        ("Selector (2 ring elems)", M_SELECTOR, selector_results),
         (f"Packing key ({PACKING_RING_SAMPLES} ring elems)", M_PACKING, pk_results),
-        ("Selector Tier 2 (16 ring elems)", M_TIER2, None),
+        ("Combined shared-secret budget", M_COMBINED, combined_results),
     ]:
         if results:
             core = results.get("Core-SVP (ADPS16)", (None, None))[0]
@@ -471,9 +488,9 @@ def print_packing_key_estimates():
 
     print("  └──────────────────────────────────┴──────────┴──────────────┴──────────────┘")
     print()
-    print(f"  With {M_PACKING:,d} scalar samples the packing-key instance is well")
-    print("  within the same hardness range as both selector tiers.")
-    print("  The binding case remains the Tier 2 selector (most samples).")
+    print(f"  Even the combined {M_COMBINED:,d}-sample standard-LWE baseline is in")
+    print("  the same estimated hardness range. The actual packing-key view also")
+    print("  requires the separate circular-security / KDM assumption.")
 
     return pk_results
 
@@ -488,9 +505,9 @@ def main():
     except (OSError, subprocess.CalledProcessError):
         pass
 
-    kyber_beta, pir_results = print_kyber_calibration()
-    print_cost_model_ladder(kyber_beta, pir_results)
-    print_packing_key_estimates()
+    kyber_beta, selector_results = print_kyber_calibration()
+    print_cost_model_ladder(kyber_beta, selector_results)
+    print_packing_key_estimates(selector_results)
     print_sensitivity_sweep()
     print_quantum_estimates()
 
