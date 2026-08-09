@@ -1694,7 +1694,6 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
- "tower 0.4.13",
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
@@ -2767,7 +2766,6 @@ dependencies = [
  "sentry-contexts",
  "sentry-core",
  "sentry-panic",
- "sentry-tower",
  "sentry-tracing",
  "tokio",
  "ureq",
@@ -2821,21 +2819,6 @@ checksum = "de296dae6f01e931b65071ee5fe28d66a27909857f744018f107ed15fd1f6b25"
 dependencies = [
  "sentry-backtrace",
  "sentry-core",
-]
-
-[[package]]
-name = "sentry-tower"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcdaf9b1939589476bd57751d12a9653bbfe356610fc476d03d7683189183ab7"
-dependencies = [
- "axum 0.7.9",
- "http 1.4.0",
- "pin-project",
- "sentry-core",
- "tower-layer",
- "tower-service",
- "url",
 ]
 
 [[package]]

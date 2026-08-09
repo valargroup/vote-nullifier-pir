@@ -10,9 +10,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::Args as ClapArgs;
-use sentry::integrations::tower as sentry_tower;
 use tokio::sync::RwLock;
-use tower::ServiceBuilder;
 
 use nf_ingest::config;
 use nf_ingest::file_store;
@@ -157,11 +155,6 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/ready", get(handlers::get_ready))
         .layer(DefaultBodyLimit::max(MAX_QUERY_BODY_BYTES))
         .layer(cors)
-        .layer(
-            ServiceBuilder::new()
-                .layer(sentry_tower::NewSentryLayer::new_from_top())
-                .layer(sentry_tower::SentryHttpLayer::with_transaction()),
-        )
         .with_state(Arc::clone(&state));
 
     let addr = format!("0.0.0.0:{}", args.port);
@@ -203,9 +196,6 @@ pub async fn run(args: Args) -> Result<()> {
     let startup_guard = Arc::clone(&warm_state.rebuild_lock).lock_owned().await;
     tokio::spawn(async move {
         let _startup_guard = startup_guard;
-        let tx =
-            sentry::start_transaction(sentry::TransactionContext::new("server-startup", "startup"));
-        sentry::configure_scope(|scope| scope.set_span(Some(tx.clone().into())));
 
         {
             let mut phase = warm_state.phase.write().await;
@@ -225,7 +215,6 @@ pub async fn run(args: Args) -> Result<()> {
                     message: msg.clone(),
                 };
                 sentry::capture_message(&msg, sentry::Level::Error);
-                tx.finish();
                 return;
             }
             Err(e) => {
@@ -234,7 +223,6 @@ pub async fn run(args: Args) -> Result<()> {
                     message: msg.clone(),
                 };
                 sentry::capture_message(&msg, sentry::Level::Error);
-                tx.finish();
                 return;
             }
         }
@@ -253,7 +241,6 @@ pub async fn run(args: Args) -> Result<()> {
                     message: msg.clone(),
                 };
                 sentry::capture_message(&msg, sentry::Level::Error);
-                tx.finish();
                 return;
             }
         }
@@ -306,7 +293,6 @@ pub async fn run(args: Args) -> Result<()> {
                          set SENTRY_DSN to enable alerting)"
                     );
                 }
-                tx.finish();
                 sentry::capture_message("nf-server ready", sentry::Level::Info);
             }
             Ok(Err(e)) => {
@@ -315,7 +301,6 @@ pub async fn run(args: Args) -> Result<()> {
                     message: msg.clone(),
                 };
                 sentry::capture_message(&msg, sentry::Level::Error);
-                tx.finish();
             }
             Err(e) => {
                 let msg = format!("initial load task failed: {e}");
@@ -323,7 +308,6 @@ pub async fn run(args: Args) -> Result<()> {
                     message: msg.clone(),
                 };
                 sentry::capture_message(&msg, sentry::Level::Error);
-                tx.finish();
             }
         }
     });
