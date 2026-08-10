@@ -302,14 +302,15 @@ pub struct YpirScenario {
     pub num_items: usize,
     pub item_size_bits: usize,
     /// RLWE polynomial degree selected by the server.
-    #[serde(default = "default_ypir_poly_len")]
+    #[serde(default = "legacy_ypir_poly_len")]
     pub poly_len: usize,
 }
 
-pub const DEFAULT_YPIR_POLY_LEN: usize = 2048;
+pub const DEFAULT_YPIR_POLY_LEN: usize = 4096;
 
-fn default_ypir_poly_len() -> usize {
-    DEFAULT_YPIR_POLY_LEN
+fn legacy_ypir_poly_len() -> usize {
+    // Responses from servers predating the explicit field used degree 2048.
+    2048
 }
 
 /// Root hash and metadata returned by `GET /root`.
@@ -397,7 +398,7 @@ mod tests {
     fn ypir_scenario_defaults_legacy_responses_to_degree_2048() {
         let scenario: YpirScenario =
             serde_json::from_str(r#"{"num_items":4096,"item_size_bits":98304}"#).unwrap();
-        assert_eq!(scenario.poly_len, DEFAULT_YPIR_POLY_LEN);
+        assert_eq!(scenario.poly_len, 2048);
     }
 
     #[test]

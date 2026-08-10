@@ -31,7 +31,7 @@ LWD_URL       ?= https://us.zec.stardust.rest:443
 ZCASH_NETWORK ?= main
 PORT          ?= 3000
 SYNC_HEIGHT   ?=
-PIR_POLY_LEN  ?= 2048
+PIR_POLY_LEN  ?= 4096
 
 ifneq ($(filter $(PIR_POLY_LEN),2048 4096),$(PIR_POLY_LEN))
   $(error PIR_POLY_LEN must be 2048 or 4096, got $(PIR_POLY_LEN))

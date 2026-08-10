@@ -94,7 +94,11 @@ enum Command {
     /// Verify YPIR round-trip correctness by comparing decoded rows with originals.
     VerifyYpir {
         /// RLWE polynomial degree (supported: 2048 or 4096).
-        #[arg(long, default_value_t = 2048, value_parser = parse_poly_len)]
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
         poly_len: usize,
     },
 
@@ -105,7 +109,11 @@ enum Command {
         num_queries: usize,
 
         /// RLWE polynomial degree (supported: 2048 or 4096).
-        #[arg(long, default_value_t = 2048, value_parser = parse_poly_len)]
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
         poly_len: usize,
     },
 

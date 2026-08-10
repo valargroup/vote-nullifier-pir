@@ -116,8 +116,8 @@ The shape satisfies YPIR without database padding:
 - 4,096 rows is at least the 2,048-row `poly_len` minimum;
 - 98,304 item bits is at least the 28,672-bit minimum item width.
 
-For SimplePIR this gives `db_rows = 4,096`, `db_cols = 4`, `nu_1 = 1`,
-`nu_2 = 1`, and `instances = 4`.
+With the default 4,096-degree lattice this gives `db_rows = 4,096`,
+`db_cols = 2`, `nu_1 = 0`, `nu_2 = 1`, and `instances = 2`.
 
 ## Client procedure
 
