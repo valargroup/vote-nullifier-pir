@@ -14,7 +14,7 @@ pir-export = { path = "../export" }
 [dependencies]
 pir-types  = { path = "../types", version = "=0.3.0-rc.4", features = ["reader"] }
 imt-tree = { workspace = true }
-ypir = { version = "0.1.4", package = "valar-ypir", default-features = false }
+ypir = { version = "0.2.0", package = "valar-ypir", default-features = false }
 hex = "0.4"
 anyhow = "1.0"
 ff = "0.13"

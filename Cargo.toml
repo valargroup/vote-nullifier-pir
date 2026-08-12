@@ -14,10 +14,6 @@ members = [
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.2.1" }
 
-[patch.crates-io]
-# Temporary until valargroup/ypir#23 is merged and released.
-valar-ypir = { git = "https://github.com/valargroup/ypir.git", rev = "32c6fcf2201f6242887c862d58a6f83386340e5c" }
-
 [profile.release]
 lto = "fat"
 codegen-units = 1
