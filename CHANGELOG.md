@@ -1,8 +1,23 @@
-# v0.0.42-alpha.1
+# v0.0.42-alpha.2
 
+- Default YPIR lattice dimension to 4096 and advertise `poly_len` on
+  `/params/tier1` (responses that omit the field stay legacy degree 2048).
+- Depend on released `valar-ypir` 0.2.0 from crates.io.
+- Limit PIR query request bodies to 2 MiB.
 - Disable Sentry tracing in `nf-server` so proxy-added client identity headers,
   request timing, and PIR request cardinality are not exported. Process error
   reporting and explicit startup/watchdog messages remain enabled.
+
+# pir-types 0.3.0-rc.5 and pir-client 0.4.0-rc.5
+
+- Advertise and negotiate YPIR polynomial degree via `YpirScenario.poly_len`
+  (server default 4096; responses that omit the field deserialize as legacy
+  2048).
+- Depend on `valar-ypir` 0.2.0 and construct YPIR clients with
+  `YPIRSPConfig::for_poly_len` for supported degrees 2048 and 4096.
+
+# v0.0.42-alpha.1
+
 - Make two-tier PIR geometry runtime-driven: clients accept any valid
   `PirLayout` that matches `/root` (and passes geometry / YPIR / circuit
   bounds) instead of requiring equality against `COMPILED_PIR_LAYOUT`.
