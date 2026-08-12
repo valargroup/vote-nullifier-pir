@@ -15,7 +15,9 @@ use tracing::{info, warn};
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
 
 use spiral_rs::params::Params;
-use ypir::params::{params_for_scenario_simplepir, DbRowsCols, PtModulusBits};
+use ypir::params::{
+    params_for_scenario_simplepir_with_config, DbRowsCols, PtModulusBits, YPIRSPConfig,
+};
 use ypir::serialize::{FilePtIter, OfflinePrecomputedValues};
 use ypir::server::YServer;
 
@@ -74,10 +76,23 @@ pub fn tier1_scenario() -> YpirScenario {
 
 /// Derive the Tier 1 YPIR scenario from a negotiated two-tier layout.
 pub fn tier1_scenario_for_layout(layout: PirLayout) -> Result<YpirScenario> {
+    tier1_scenario_for_layout_with_poly_len(layout, pir_types::DEFAULT_YPIR_POLY_LEN)
+}
+
+/// Derive the Tier 1 YPIR scenario with an explicit RLWE polynomial degree.
+pub fn tier1_scenario_for_layout_with_poly_len(
+    layout: PirLayout,
+    poly_len: usize,
+) -> Result<YpirScenario> {
     layout.validate_supported().map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        matches!(poly_len, 2048 | 4096),
+        "YPIR polynomial degree must be 2048 or 4096"
+    );
     Ok(YpirScenario {
         num_items: layout.tier1_rows().map_err(anyhow::Error::msg)?,
         item_size_bits: layout.tier1_item_bits().map_err(anyhow::Error::msg)?,
+        poly_len,
     })
 }
 
@@ -132,6 +147,7 @@ impl<'a> TierServer<'a> {
         info!(
             num_items = scenario.num_items,
             item_size_bits = scenario.item_size_bits,
+            poly_len = params.poly_len,
             "YPIR server init"
         );
 
@@ -161,9 +177,10 @@ impl<'a> TierServer<'a> {
     /// Allocate a fresh `Params` box for this scenario. Caller is
     /// responsible for keeping it alive longer than any borrows.
     fn alloc_params(scenario: &YpirScenario) -> Box<Params> {
-        Box::new(params_for_scenario_simplepir(
+        Box::new(params_for_scenario_simplepir_with_config(
             scenario.num_items as u64,
             scenario.item_size_bits as u64,
+            YPIRSPConfig::for_poly_len(scenario.poly_len),
         ))
     }
 
@@ -609,6 +626,19 @@ pub fn load_serving_state(
     pir_data_dir: &std::path::Path,
     expected_network: pir_types::ZcashNetwork,
 ) -> Result<ServingState> {
+    load_serving_state_with_poly_len(
+        pir_data_dir,
+        expected_network,
+        pir_types::DEFAULT_YPIR_POLY_LEN,
+    )
+}
+
+/// Load serving state using an explicit YPIR RLWE polynomial degree.
+pub fn load_serving_state_with_poly_len(
+    pir_data_dir: &std::path::Path,
+    expected_network: pir_types::ZcashNetwork,
+    poly_len: usize,
+) -> Result<ServingState> {
     let t_total = Instant::now();
 
     let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
@@ -703,7 +733,7 @@ pub fn load_serving_state(
     );
 
     info!("Initializing YPIR servers");
-    let tier1_scenario = tier1_scenario_for_layout(metadata.pir_layout)?;
+    let tier1_scenario = tier1_scenario_for_layout_with_poly_len(metadata.pir_layout, poly_len)?;
     let tier1_cache_path = pir_data_dir.join(TIER1_PRECOMPUTE_FILE);
     let (tier1, tier1_hit) =
         OwnedTierState::new_or_load(&tier1_path, tier1_scenario.clone(), &tier1_cache_path)?;

@@ -23,6 +23,13 @@ use crate::serve::rebuild;
 use crate::serve::state::{AppState, ServerPhase};
 use crate::serve::watchdog;
 
+fn parse_pir_poly_len(value: &str) -> std::result::Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(poly_len @ (2048 | 4096)) => Ok(poly_len),
+        _ => Err("YPIR polynomial degree must be 2048 or 4096".to_string()),
+    }
+}
+
 #[derive(ClapArgs)]
 pub struct Args {
     /// Zcash network this server may ingest and serve.
@@ -32,6 +39,15 @@ pub struct Args {
     /// Listen port.
     #[arg(long, default_value = "3000", env = "SVOTE_PIR_PORT")]
     port: u16,
+
+    /// YPIR RLWE polynomial degree. Client and server must use the same value.
+    #[arg(
+        long,
+        default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+        env = "SVOTE_PIR_POLY_LEN",
+        value_parser = parse_pir_poly_len
+    )]
+    pir_poly_len: usize,
 
     /// Directory for the dataset marker, nullifiers, tree, and PIR tier files.
     /// Required for snapshot rebuilds via POST /snapshot/prepare.
@@ -134,6 +150,7 @@ pub async fn run(args: Args) -> Result<()> {
         rebuild_lock: Arc::new(tokio::sync::Mutex::new(())),
         pir_data_dir: args.pir_data_dir.clone(),
         zcash_network: args.zcash_network,
+        pir_poly_len: args.pir_poly_len,
         lwd_urls,
         chain_url,
         next_req_id: AtomicU64::new(0),
@@ -253,8 +270,13 @@ pub async fn run(args: Args) -> Result<()> {
         }
         let pir_dir_for_load = warm_pir_dir.clone();
         let load_network = warm_state.zcash_network;
+        let load_poly_len = warm_state.pir_poly_len;
         let load = tokio::task::spawn_blocking(move || {
-            pir_server::load_serving_state(&pir_dir_for_load, load_network)
+            pir_server::load_serving_state_with_poly_len(
+                &pir_dir_for_load,
+                load_network,
+                load_poly_len,
+            )
         })
         .await;
         match load {

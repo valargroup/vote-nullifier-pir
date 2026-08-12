@@ -79,6 +79,7 @@ tier0_bytes    = 393,184
 YpirScenario {
     num_items: 4_096,
     item_size_bits: 98_304,
+    poly_len: 4_096,
 }
 ```
 
@@ -90,9 +91,9 @@ second PIR endpoint.
 The local YPIR implementation uses:
 
 ```text
-poly_len = 2,048
+poly_len = 4,096
 p        = 2^14
-bits_per_polynomial = 2,048 * 14 = 28,672
+bits_per_polynomial = 4,096 * 14 = 57,344
 ```
 
 The database matrix is therefore:
@@ -101,31 +102,31 @@ The database matrix is therefore:
 db_rows = num_items
         = 4,096
 
-db_cols = ceil(item_size_bits / 28,672)
-        = ceil(98,304 / 28,672)
-        = 4
+db_cols = ceil(item_size_bits / 57,344)
+        = ceil(98,304 / 57,344)
+        = 2
 ```
 
 The row dimension exponent is:
 
 ```text
-nu_1 = log2(next_power_of_two(db_rows)) - 11
-     = 12 - 11
-     = 1
+nu_1 = log2(next_power_of_two(db_rows)) - 12
+     = 12 - 12
+     = 0
 ```
 
 SimplePIR uses `nu_2 = 1`. The database width is
-`instances = db_cols = 4`.
+`instances = db_cols = 2`.
 
 Concrete scenario summary:
 
 - `num_items = 4,096`;
 - `item_size_bits = 98,304`;
 - `db_rows = 4,096`;
-- `db_cols = 4`;
-- `nu_1 = 1`;
+- `db_cols = 2`;
+- `nu_1 = 0`;
 - `nu_2 = 1`;
-- `instances = 4`;
+- `instances = 2`;
 - source database bytes = `4,096 * 12,288 = 50,331,648` (48 MiB).
 
 ## Fixed cryptographic constants
@@ -136,12 +137,12 @@ These values remain selected by the YPIR crate's
 - plaintext modulus `p = 16,384` (`2^14`);
 - ciphertext compression width `q2_bits = 28`;
 - NTT moduli `[268369921, 249561089]`;
-- polynomial length `2,048`;
+- polynomial length `4,096`;
 - Gaussian noise width `16.042421`;
 - RLWE rank `n = 1`;
 - `t_gsw = 3`;
 - `t_conv = 4`;
-- `t_exp_left = 3`;
+- `t_exp_left = 4`;
 - `t_exp_right = 2`.
 
 The client passes `true` to `YPIRClient::from_db_sz`, selecting the

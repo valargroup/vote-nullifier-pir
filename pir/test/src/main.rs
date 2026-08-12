@@ -92,13 +92,29 @@ enum Command {
     },
 
     /// Verify YPIR round-trip correctness by comparing decoded rows with originals.
-    VerifyYpir,
+    VerifyYpir {
+        /// RLWE polynomial degree (supported: 2048 or 4096).
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
+        poly_len: usize,
+    },
 
     /// Benchmark YPIR query/response sizes and timing in-process (no HTTP).
     Bench {
         /// Number of YPIR queries.
         #[arg(long, default_value = "3")]
         num_queries: usize,
+
+        /// RLWE polynomial degree (supported: 2048 or 4096).
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
+        poly_len: usize,
     },
 
     /// Benchmark multiple tier split configurations to compare sizes/timing.
@@ -231,8 +247,11 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run_server(url, nullifiers, num_proofs, parallel))
         }
-        Command::VerifyYpir => run_verify_ypir(),
-        Command::Bench { num_queries } => run_bench(num_queries),
+        Command::VerifyYpir { poly_len } => run_verify_ypir(poly_len),
+        Command::Bench {
+            num_queries,
+            poly_len,
+        } => run_bench(num_queries, poly_len),
         Command::BenchSplits {
             num_queries,
             config,
@@ -300,6 +319,13 @@ fn main() -> Result<()> {
 
 fn parse_duration(s: &str) -> Result<Duration, humantime::DurationError> {
     humantime::parse_duration(s)
+}
+
+fn parse_poly_len(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(poly_len @ (2048 | 4096)) => Ok(poly_len),
+        _ => Err("polynomial degree must be 2048 or 4096".to_owned()),
+    }
 }
 
 // ── Small mode ───────────────────────────────────────────────────────────────
@@ -532,9 +558,10 @@ async fn run_server(
 
 // ── Verify YPIR mode ─────────────────────────────────────────────────────────
 
-fn run_verify_ypir() -> Result<()> {
+fn run_verify_ypir(poly_len: usize) -> Result<()> {
     use pir_server::OwnedTierState;
     use ypir::client::YPIRClient;
+    use ypir::params::YPIRSPConfig;
 
     eprintln!("=== YPIR Round-Trip Verification ===\n");
 
@@ -544,16 +571,19 @@ fn run_verify_ypir() -> Result<()> {
     let tree = build_pir_tree(ranges)?;
     let (_, tier1_data) = export_tiers(&tree)?;
 
-    let tier1_scenario = pir_server::tier1_scenario();
+    let tier1_scenario = pir_server::tier1_scenario_for_layout_with_poly_len(
+        pir_types::COMPILED_PIR_LAYOUT,
+        poly_len,
+    )?;
 
     eprintln!("Initializing Tier 1 YPIR server...");
     let tier1_server = OwnedTierState::new(&tier1_data, tier1_scenario.clone());
 
     for row_idx in [0usize, 1, 100, TIER1_ROWS - 1] {
-        let ypir_client = YPIRClient::from_db_sz(
+        let ypir_client = YPIRClient::from_db_sz_simplepir_with_config(
             tier1_scenario.num_items as u64,
             tier1_scenario.item_size_bits as u64,
-            true,
+            YPIRSPConfig::for_poly_len(tier1_scenario.poly_len),
         );
         let (query, seed) = ypir_client.generate_query_simplepir(row_idx);
         let payload = pir_types::serialize_ypir_query(query.0.as_slice(), query.1.as_slice());
@@ -604,26 +634,30 @@ fn run_verify_ypir() -> Result<()> {
 
 // ── Bench mode ───────────────────────────────────────────────────────────────
 
-fn run_bench(num_queries: usize) -> Result<()> {
+fn run_bench(num_queries: usize, poly_len: usize) -> Result<()> {
     use pir_server::OwnedTierState;
 
-    let tier1_scenario = pir_server::tier1_scenario();
+    let tier1_scenario = pir_server::tier1_scenario_for_layout_with_poly_len(
+        pir_types::COMPILED_PIR_LAYOUT,
+        poly_len,
+    )?;
 
     eprintln!(
         "=== PIR Benchmark: in-process YPIR ({} queries) ===\n",
         num_queries
     );
     eprintln!(
-        "  Config: TIER0_LAYERS={}, TIER1_LAYERS={}",
+        "  Config: TIER0_LAYERS={}, TIER1_LAYERS={}, POLY_LEN={}",
         pir_types::TIER0_LAYERS,
-        pir_types::TIER1_LAYERS
+        pir_types::TIER1_LAYERS,
+        tier1_scenario.poly_len,
     );
     eprintln!(
         "  Tier 1: {} rows × {} bytes/row ({} bits/item), instances={}",
         TIER1_ROWS,
         TIER1_ROW_BYTES,
         TIER1_ITEM_BITS,
-        (TIER1_ITEM_BITS as f64 / (2048.0 * 14.0)).ceil() as usize,
+        (TIER1_ITEM_BITS as f64 / (tier1_scenario.poly_len as f64 * 14.0)).ceil() as usize,
     );
     // Build a small tree to get valid tier data
     eprintln!("\nBuilding synthetic tree (1000 nullifiers)...");
@@ -652,6 +686,7 @@ fn run_bench(num_queries: usize) -> Result<()> {
         tier1_scenario.item_size_bits,
         tier1_server.server(),
         num_queries,
+        tier1_scenario.poly_len,
     )?;
 
     // Summary table
@@ -753,6 +788,7 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
         let t1_scenario = YpirScenario {
             num_items: cfg.tier1_rows(),
             item_size_bits: cfg.tier1_item_bits(),
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
 
         eprintln!(
@@ -786,6 +822,7 @@ fn run_bench_splits(num_queries: usize, filter: Option<String>) -> Result<()> {
             t1_scenario.item_size_bits,
             t1_server.server(),
             num_queries,
+            t1_scenario.poly_len,
         )?;
         drop(t1_server);
 
@@ -859,10 +896,16 @@ fn bench_tier(
     item_size_bits: usize,
     server: &pir_server::TierServer<'static>,
     num_queries: usize,
+    poly_len: usize,
 ) -> Result<BenchResults> {
     use ypir::client::YPIRClient;
+    use ypir::params::YPIRSPConfig;
 
-    let ypir_client = YPIRClient::from_db_sz(num_items as u64, item_size_bits as u64, true);
+    let ypir_client = YPIRClient::from_db_sz_simplepir_with_config(
+        num_items as u64,
+        item_size_bits as u64,
+        YPIRSPConfig::for_poly_len(poly_len),
+    );
 
     let mut total_query_bytes = 0usize;
     let mut total_response_bytes = 0usize;

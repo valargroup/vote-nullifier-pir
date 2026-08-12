@@ -33,6 +33,7 @@ pub(crate) struct AppState {
     pub rebuild_lock: Arc<tokio::sync::Mutex<()>>,
     pub pir_data_dir: PathBuf,
     pub zcash_network: pir_types::ZcashNetwork,
+    pub pir_poly_len: usize,
     pub lwd_urls: Vec<String>,
     pub chain_url: Option<String>,
     pub next_req_id: AtomicU64,
