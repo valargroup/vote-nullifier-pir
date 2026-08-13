@@ -58,15 +58,9 @@ pub struct PirLayout {
     pub tier1_layers: usize,
     /// YPIR RLWE polynomial degree (2048 or 4096).
     ///
-    /// Missing on older snapshot metadata; those deserialize as
-    /// [`DEFAULT_YPIR_POLY_LEN`]. Serving `/root` responses should overwrite
-    /// this with the process-configured degree.
-    #[serde(default = "default_layout_poly_len")]
+    /// Required on negotiated wire layouts. Older snapshot metadata receives a
+    /// compatibility default while deserializing [`PirMetadata`].
     pub poly_len: usize,
-}
-
-fn default_layout_poly_len() -> usize {
-    DEFAULT_YPIR_POLY_LEN
 }
 
 /// Layout compiled into this version as the production default advertise/export
@@ -300,6 +294,7 @@ pub struct PirMetadata {
     ///
     /// Required on the wire; snapshots without `pir_layout` fail to deserialize.
     /// Loaders verify on-disk blob sizes against this layout.
+    #[serde(deserialize_with = "deserialize_snapshot_pir_layout")]
     pub pir_layout: PirLayout,
     /// Tier 0 size in bytes.
     pub tier0_bytes: usize,
@@ -309,6 +304,32 @@ pub struct PirMetadata {
     pub tier1_row_bytes: usize,
     /// Block height the tree was built from (if known).
     pub height: Option<u64>,
+}
+
+fn deserialize_snapshot_pir_layout<'de, D>(deserializer: D) -> Result<PirLayout, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct SnapshotPirLayout {
+        pir_depth: usize,
+        tier0_layers: usize,
+        tier1_layers: usize,
+        #[serde(default = "default_snapshot_poly_len")]
+        poly_len: usize,
+    }
+
+    let layout = SnapshotPirLayout::deserialize(deserializer)?;
+    Ok(PirLayout {
+        pir_depth: layout.pir_depth,
+        tier0_layers: layout.tier0_layers,
+        tier1_layers: layout.tier1_layers,
+        poly_len: layout.poly_len,
+    })
+}
+
+fn default_snapshot_poly_len() -> usize {
+    DEFAULT_YPIR_POLY_LEN
 }
 
 // ── Wire types ───────────────────────────────────────────────────────────────
