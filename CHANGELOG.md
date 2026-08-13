@@ -1,4 +1,4 @@
-# v0.0.42-alpha.3
+# v0.0.42-rc.1
 
 - Advertise the process-configured YPIR degree at both
   `/root.pir_layout.poly_len` and `/params/tier1.poly_len` so clients can
