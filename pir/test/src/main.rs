@@ -78,6 +78,14 @@ enum Command {
         #[arg(long)]
         url: String,
 
+        /// Expected server RLWE polynomial degree (supported: 2048 or 4096).
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
+        poly_len: usize,
+
         /// Path to nullifiers.bin (to know which values to query).
         #[arg(long)]
         nullifiers: PathBuf,
@@ -136,6 +144,14 @@ enum Command {
         #[arg(long)]
         url: String,
 
+        /// Expected server RLWE polynomial degree (supported: 2048 or 4096).
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
+        poly_len: usize,
+
         /// Path to nullifiers.bin (used to pick `nf_lo + 1` query values).
         #[arg(long)]
         nullifiers: PathBuf,
@@ -174,6 +190,14 @@ enum Command {
         /// Server URL (e.g., http://localhost:3000).
         #[arg(long)]
         url: String,
+
+        /// Expected server RLWE polynomial degree (supported: 2048 or 4096).
+        #[arg(
+            long,
+            default_value_t = pir_types::DEFAULT_YPIR_POLY_LEN,
+            value_parser = parse_poly_len
+        )]
+        poly_len: usize,
 
         /// Path to nullifiers.bin (to know which values to query).
         #[arg(long)]
@@ -240,12 +264,19 @@ fn main() -> Result<()> {
         } => run_local(nullifiers, num_proofs),
         Command::Server {
             url,
+            poly_len,
             nullifiers,
             num_proofs,
             parallel,
         } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(run_server(url, nullifiers, num_proofs, parallel))
+            rt.block_on(run_server(
+                url,
+                layout_with_poly_len(poly_len),
+                nullifiers,
+                num_proofs,
+                parallel,
+            ))
         }
         Command::VerifyYpir { poly_len } => run_verify_ypir(poly_len),
         Command::Bench {
@@ -258,6 +289,7 @@ fn main() -> Result<()> {
         } => run_bench_splits(num_queries, config),
         Command::BenchServer {
             url,
+            poly_len,
             nullifiers,
             iterations,
             warmup,
@@ -270,6 +302,7 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(bench_server::run(bench_server::BenchConfig {
                 url,
+                expected_layout: layout_with_poly_len(poly_len),
                 nullifiers_path: nullifiers,
                 iterations,
                 warmup,
@@ -286,6 +319,7 @@ fn main() -> Result<()> {
         }
         Command::Load {
             url,
+            poly_len,
             nullifiers,
             concurrency,
             rps,
@@ -301,6 +335,7 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(load::run(load::LoadConfig {
                 url,
+                expected_layout: layout_with_poly_len(poly_len),
                 nullifiers_path: nullifiers,
                 concurrency,
                 rps,
@@ -325,6 +360,13 @@ fn parse_poly_len(s: &str) -> Result<usize, String> {
     match s.parse::<usize>() {
         Ok(poly_len @ (2048 | 4096)) => Ok(poly_len),
         _ => Err("polynomial degree must be 2048 or 4096".to_owned()),
+    }
+}
+
+fn layout_with_poly_len(poly_len: usize) -> pir_types::PirLayout {
+    pir_types::PirLayout {
+        poly_len,
+        ..pir_types::COMPILED_PIR_LAYOUT
     }
 }
 
@@ -465,6 +507,7 @@ fn run_local_inner(raw_nfs: &[Fp], num_proofs: usize) -> Result<()> {
 
 async fn run_server(
     url: String,
+    expected_layout: pir_types::PirLayout,
     nullifiers_path: PathBuf,
     num_proofs: usize,
     parallel: bool,
@@ -477,7 +520,7 @@ async fn run_server(
     // Connect to server
     let client = pir_client::PirClient::with_transport(
         &url,
-        pir_types::COMPILED_PIR_LAYOUT,
+        expected_layout,
         std::sync::Arc::new(transport::HyperTransport::new()),
     )
     .await?;
@@ -1004,4 +1047,35 @@ fn export_tiers(tree: &pir_export::PirTree) -> Result<(Vec<u8>, Vec<u8>)> {
 fn load_nullifiers(path: &std::path::Path) -> Result<Vec<Fp>> {
     let data = std::fs::read(path)?;
     nf_ingest::file_store::parse_nullifier_bytes(&data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_commands_accept_2048_poly_len() {
+        for command in ["server", "bench-server", "load"] {
+            let args = Args::try_parse_from([
+                "pir-test",
+                command,
+                "--url",
+                "https://pir.example",
+                "--poly-len",
+                "2048",
+                "--nullifiers",
+                "nullifiers.bin",
+            ])
+            .unwrap();
+
+            let poly_len = match args.command {
+                Command::Server { poly_len, .. }
+                | Command::BenchServer { poly_len, .. }
+                | Command::Load { poly_len, .. } => poly_len,
+                _ => unreachable!("parsed a remote command"),
+            };
+
+            assert_eq!(layout_with_poly_len(poly_len).poly_len, 2048);
+        }
+    }
 }

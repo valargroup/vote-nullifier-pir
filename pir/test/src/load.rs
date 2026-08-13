@@ -17,6 +17,7 @@ use crate::transport::HyperTransport;
 
 pub struct LoadConfig {
     pub url: String,
+    pub expected_layout: pir_types::PirLayout,
     pub nullifiers_path: PathBuf,
     pub concurrency: usize,
     pub rps: Option<f64>,
@@ -75,6 +76,7 @@ fn classify_error(e: &anyhow::Error) -> ErrorClass {
 #[derive(Serialize)]
 pub struct LoadSummary {
     pub url: String,
+    pub poly_len: usize,
     pub duration_s: f64,
     pub concurrency: usize,
     pub completed: u64,
@@ -154,7 +156,13 @@ impl StatsCollector {
         }
     }
 
-    fn into_summary(self, url: &str, duration_s: f64, concurrency: usize) -> LoadSummary {
+    fn into_summary(
+        self,
+        url: &str,
+        poly_len: usize,
+        duration_s: f64,
+        concurrency: usize,
+    ) -> LoadSummary {
         let completed = self.ok_count + self.err_count;
         let error_rate = if completed > 0 {
             self.err_count as f64 / completed as f64
@@ -182,6 +190,7 @@ impl StatsCollector {
 
         LoadSummary {
             url: url.to_string(),
+            poly_len,
             duration_s,
             concurrency,
             completed,
@@ -198,6 +207,7 @@ impl StatsCollector {
 pub async fn run(cfg: LoadConfig) -> Result<()> {
     eprintln!("=== pir-test load ===\n");
     eprintln!("  url:         {}", cfg.url);
+    eprintln!("  poly_len:    {}", cfg.expected_layout.poly_len);
     eprintln!("  concurrency: {}", cfg.concurrency);
     if let Some(rps) = cfg.rps {
         eprintln!("  rps:         {:.1}", rps);
@@ -226,7 +236,7 @@ pub async fn run(cfg: LoadConfig) -> Result<()> {
     let client = Arc::new(
         PirClient::with_transport(
             &cfg.url,
-            pir_types::COMPILED_PIR_LAYOUT,
+            cfg.expected_layout,
             Arc::new(HyperTransport::new()),
         )
         .await?,
@@ -406,7 +416,12 @@ async fn run_phase(
         while rx.recv().await.is_some() {}
     }
 
-    Ok(collector.into_summary(&cfg.url, duration.as_secs_f64(), cfg.concurrency))
+    Ok(collector.into_summary(
+        &cfg.url,
+        cfg.expected_layout.poly_len,
+        duration.as_secs_f64(),
+        cfg.concurrency,
+    ))
 }
 
 async fn do_request(client: &PirClient, pool: &[Fp], idx: u64, no_verify: bool) -> Sample {
@@ -468,8 +483,9 @@ fn build_query_pool(ranges: &[[Fp; 3]], size: usize, seed: Option<u64>) -> Vec<F
 fn print_summary(s: &LoadSummary) {
     eprintln!("\n=== pir-test load summary ===");
     eprintln!(
-        "url={}   duration={:.0}s   concurrency={}   completed={}   errors={} ({:.2}%)",
+        "url={}   poly_len={}   duration={:.0}s   concurrency={}   completed={}   errors={} ({:.2}%)",
         s.url,
+        s.poly_len,
         s.duration_s,
         s.concurrency,
         s.completed,

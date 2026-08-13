@@ -1063,7 +1063,7 @@ mod tests {
             let tier1_scenario = YpirScenario {
                 num_items: rows,
                 item_size_bits: item_bits,
-                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
+                poly_len: layout.poly_len,
             };
 
             let gets = [
@@ -1469,6 +1469,23 @@ mod tests {
             assert_eq!(client.layout, layout);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn connects_matching_2048_poly_len_without_query() {
+        let raw_nfs: Vec<Fp> = (1u64..=20).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut layout = COMPILED_PIR_LAYOUT;
+        layout.poly_len = 2048;
+        let transport = Arc::new(MockTransport::new_layout(&tree, layout));
+
+        let client = PirClient::with_transport("https://pir.example", layout, transport.clone())
+            .await
+            .expect("matching 2048 layout should connect");
+
+        assert_eq!(client.layout, layout);
+        assert_eq!(client.tier1_scenario.poly_len, layout.poly_len);
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
     }
 
     #[tokio::test]
