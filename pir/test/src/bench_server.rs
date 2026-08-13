@@ -59,6 +59,7 @@ impl BenchMode {
 
 pub struct BenchConfig {
     pub url: String,
+    pub expected_layout: pir_types::PirLayout,
     pub nullifiers_path: PathBuf,
     pub iterations: usize,
     pub warmup: usize,
@@ -75,6 +76,7 @@ pub struct BenchConfig {
 pub struct BenchSummary {
     pub label: String,
     pub url: String,
+    pub poly_len: usize,
     pub mode: String,
     pub batch_size: usize,
     pub iterations: usize,
@@ -333,6 +335,7 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     eprintln!("=== pir-test bench-server ===");
     eprintln!("  label:      {}", label);
     eprintln!("  url:        {}", cfg.url);
+    eprintln!("  poly_len:   {}", cfg.expected_layout.poly_len);
     eprintln!("  mode:       {}", cfg.mode.as_str());
     eprintln!("  batch_size: {}", cfg.batch_size);
     eprintln!(
@@ -359,7 +362,7 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
 
     eprintln!("  Connecting to PIR server...");
     let connect_start = Instant::now();
-    let client = Arc::new(connect_client(cfg.mode, &cfg.url).await?);
+    let client = Arc::new(connect_client(cfg.mode, &cfg.url, cfg.expected_layout).await?);
     eprintln!(
         "  Connected in {:.2}s\n",
         connect_start.elapsed().as_secs_f64()
@@ -435,6 +438,7 @@ pub async fn run(cfg: BenchConfig) -> Result<()> {
     let summary = BenchSummary {
         label,
         url: cfg.url.clone(),
+        poly_len: cfg.expected_layout.poly_len,
         mode: cfg.mode.as_str().to_string(),
         batch_size: cfg.batch_size,
         iterations: cfg.iterations,
@@ -498,12 +502,16 @@ async fn run_iteration(
 
 /// Build a [`PirClient`] for `mode`. [`BenchMode::SingleTls`] forces HTTP/1.1
 /// so each query avoids HTTP/2 stream multiplexing.
-async fn connect_client(mode: BenchMode, url: &str) -> Result<PirClient> {
+async fn connect_client(
+    mode: BenchMode,
+    url: &str,
+    expected_layout: pir_types::PirLayout,
+) -> Result<PirClient> {
     let transport = match mode {
         BenchMode::SingleTls => HyperTransport::http1_only(),
         _ => HyperTransport::new(),
     };
-    PirClient::with_transport(url, pir_types::COMPILED_PIR_LAYOUT, Arc::new(transport)).await
+    PirClient::with_transport(url, expected_layout, Arc::new(transport)).await
 }
 
 fn pick_values<R: Rng + ?Sized>(ranges: &[[Fp; 3]], k: usize, rng: &mut R) -> Vec<Fp> {
@@ -580,8 +588,8 @@ fn fmt_bytes(b: f64) -> String {
 fn print_summary(s: &BenchSummary) {
     eprintln!("\n=== bench-server summary ({}) ===", s.label);
     eprintln!(
-        "  url={}  mode={}  K={}  iterations={}  ok={} err={}",
-        s.url, s.mode, s.batch_size, s.iterations, s.success_count, s.error_count,
+        "  url={}  poly_len={}  mode={}  K={}  iterations={}  ok={} err={}",
+        s.url, s.poly_len, s.mode, s.batch_size, s.iterations, s.success_count, s.error_count,
     );
     eprintln!();
 

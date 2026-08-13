@@ -141,6 +141,8 @@ fn get_tier_row_inner(
 }
 
 async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut pir_layout = state.serving.metadata.pir_layout;
+    pir_layout.poly_len = state.serving.tier1_scenario.poly_len;
     let info = RootInfo {
         zcash_network: state.serving.metadata.zcash_network,
         nullifier_pool: state.serving.metadata.nullifier_pool.clone(),
@@ -148,7 +150,7 @@ async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         circuit_root: state.serving.metadata.circuit_root.clone(),
         pir_root: state.serving.metadata.pir_root.clone(),
         num_ranges: state.serving.metadata.num_ranges,
-        pir_layout: state.serving.metadata.pir_layout,
+        pir_layout,
         pir_depth: state.serving.metadata.pir_depth,
         tier1_rows: state.serving.metadata.tier1_rows,
         tier1_row_bytes: state.serving.metadata.tier1_row_bytes,

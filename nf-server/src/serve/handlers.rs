@@ -127,6 +127,10 @@ async fn get_tier_row(
 pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let guard = require_serving!(state);
     let s = guard.as_ref().expect("guaranteed Some by require_serving");
+    let mut pir_layout = s.metadata.pir_layout;
+    // Advertise the process-configured YPIR degree on /root so wallets can
+    // authenticate it as part of pir_layout, matching /params/tier1.
+    pir_layout.poly_len = s.tier1_scenario.poly_len;
     let info = RootInfo {
         zcash_network: s.metadata.zcash_network,
         nullifier_pool: s.metadata.nullifier_pool.clone(),
@@ -134,7 +138,7 @@ pub(crate) async fn get_root(State(state): State<Arc<AppState>>) -> impl IntoRes
         circuit_root: s.metadata.circuit_root.clone(),
         pir_root: s.metadata.pir_root.clone(),
         num_ranges: s.metadata.num_ranges,
-        pir_layout: s.metadata.pir_layout,
+        pir_layout,
         pir_depth: s.metadata.pir_depth,
         tier1_rows: s.metadata.tier1_rows,
         tier1_row_bytes: s.metadata.tier1_row_bytes,

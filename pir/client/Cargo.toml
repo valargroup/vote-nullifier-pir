@@ -1,6 +1,6 @@
 [package]
 name = "pir-client"
-version = "0.4.0-rc.5"
+version = "0.4.0-rc.7"
 edition = "2021"
 description = "Private Information Retrieval client for Zcash nullifier non-membership proofs. Fetches circuit-ready Merkle authentication paths without revealing the queried nullifier to the server."
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ rand = "0.8"
 pir-export = { path = "../export" }
 
 [dependencies]
-pir-types  = { path = "../types", version = "=0.3.0-rc.5", features = ["reader"] }
+pir-types  = { path = "../types", version = "=0.3.0-rc.6", features = ["reader"] }
 imt-tree = { workspace = true }
 ypir = { version = "0.2.0", package = "valar-ypir", default-features = false }
 hex = "0.4"

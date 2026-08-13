@@ -45,7 +45,9 @@ pub const TIER1_LAYERS: usize = 7;
 /// Explicit PIR tree layout negotiated between configuration, server, and client.
 ///
 /// Supported layouts satisfy the shared protocol and YPIR constraints;
-/// [`COMPILED_PIR_LAYOUT`] is the production default identity.
+/// [`COMPILED_PIR_LAYOUT`] is the production default identity. `poly_len` is the
+/// YPIR RLWE polynomial degree bound into wallet config / round-auth and checked
+/// against `GET /params/tier1` (and advertised on `/root.pir_layout`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PirLayout {
     /// Depth of the PIR Merkle tree.
@@ -54,6 +56,11 @@ pub struct PirLayout {
     pub tier0_layers: usize,
     /// Number of privately queried Tier 1 tree layers.
     pub tier1_layers: usize,
+    /// YPIR RLWE polynomial degree (2048 or 4096).
+    ///
+    /// Required on negotiated wire layouts. Older snapshot metadata receives a
+    /// compatibility default while deserializing [`PirMetadata`].
+    pub poly_len: usize,
 }
 
 /// Layout compiled into this version as the production default advertise/export
@@ -62,6 +69,7 @@ pub const COMPILED_PIR_LAYOUT: PirLayout = PirLayout {
     pir_depth: PIR_DEPTH,
     tier0_layers: TIER0_LAYERS,
     tier1_layers: TIER1_LAYERS,
+    poly_len: DEFAULT_YPIR_POLY_LEN,
 };
 
 impl PirLayout {
@@ -173,6 +181,12 @@ impl PirLayout {
                 self.tier1_layers
             ));
         }
+        if !matches!(self.poly_len, 2048 | 4096) {
+            return Err(format!(
+                "unsupported PIR layout poly_len {}; supported values are 2048 and 4096",
+                self.poly_len
+            ));
+        }
         self.validate_ypir_bounds()
     }
 }
@@ -280,6 +294,7 @@ pub struct PirMetadata {
     ///
     /// Required on the wire; snapshots without `pir_layout` fail to deserialize.
     /// Loaders verify on-disk blob sizes against this layout.
+    #[serde(deserialize_with = "deserialize_snapshot_pir_layout")]
     pub pir_layout: PirLayout,
     /// Tier 0 size in bytes.
     pub tier0_bytes: usize,
@@ -289,6 +304,32 @@ pub struct PirMetadata {
     pub tier1_row_bytes: usize,
     /// Block height the tree was built from (if known).
     pub height: Option<u64>,
+}
+
+fn deserialize_snapshot_pir_layout<'de, D>(deserializer: D) -> Result<PirLayout, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct SnapshotPirLayout {
+        pir_depth: usize,
+        tier0_layers: usize,
+        tier1_layers: usize,
+        #[serde(default = "default_snapshot_poly_len")]
+        poly_len: usize,
+    }
+
+    let layout = SnapshotPirLayout::deserialize(deserializer)?;
+    Ok(PirLayout {
+        pir_depth: layout.pir_depth,
+        tier0_layers: layout.tier0_layers,
+        tier1_layers: layout.tier1_layers,
+        poly_len: layout.poly_len,
+    })
+}
+
+fn default_snapshot_poly_len() -> usize {
+    DEFAULT_YPIR_POLY_LEN
 }
 
 // ── Wire types ───────────────────────────────────────────────────────────────
@@ -465,6 +506,7 @@ mod tests {
                 pir_depth: PIR_DEPTH,
                 tier0_layers,
                 tier1_layers,
+                poly_len: DEFAULT_YPIR_POLY_LEN,
             };
             layout.validate_supported().unwrap();
         }
@@ -476,6 +518,7 @@ mod tests {
             pir_depth: PIR_DEPTH,
             tier0_layers: 10,
             tier1_layers: 9,
+            poly_len: DEFAULT_YPIR_POLY_LEN,
         };
         assert!(unsupported_split
             .validate_supported()
@@ -486,6 +529,7 @@ mod tests {
             pir_depth: 30,
             tier0_layers: 19,
             tier1_layers: 11,
+            poly_len: DEFAULT_YPIR_POLY_LEN,
         };
         assert!(unsupported_depth
             .validate_supported()

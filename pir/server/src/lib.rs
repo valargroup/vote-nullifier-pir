@@ -76,7 +76,7 @@ pub fn tier1_scenario() -> YpirScenario {
 
 /// Derive the Tier 1 YPIR scenario from a negotiated two-tier layout.
 pub fn tier1_scenario_for_layout(layout: PirLayout) -> Result<YpirScenario> {
-    tier1_scenario_for_layout_with_poly_len(layout, pir_types::DEFAULT_YPIR_POLY_LEN)
+    tier1_scenario_for_layout_with_poly_len(layout, layout.poly_len)
 }
 
 /// Derive the Tier 1 YPIR scenario with an explicit RLWE polynomial degree.
@@ -641,7 +641,7 @@ pub fn load_serving_state_with_poly_len(
 ) -> Result<ServingState> {
     let t_total = Instant::now();
 
-    let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
+    let mut metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
         pir_data_dir.join("pir_root.json"),
     )?)?;
     anyhow::ensure!(
@@ -659,6 +659,9 @@ pub fn load_serving_state_with_poly_len(
         pir_types::DATASET_VERSION
     );
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
+    // Bind the process-configured YPIR degree into the serving layout identity
+    // so /root and /params/tier1 advertise the same poly_len.
+    metadata.pir_layout.poly_len = poly_len;
     metadata
         .pir_layout
         .validate_supported()
@@ -756,6 +759,16 @@ pub fn load_serving_state_with_poly_len(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_tier1_scenario_poly_len_from_layout() {
+        let mut layout = COMPILED_PIR_LAYOUT;
+        layout.poly_len = 2048;
+
+        let scenario = tier1_scenario_for_layout(layout).unwrap();
+
+        assert_eq!(scenario.poly_len, layout.poly_len);
+    }
 
     #[test]
     fn rejects_wrong_dataset_before_loading_tiers() {
