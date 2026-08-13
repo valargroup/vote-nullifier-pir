@@ -1,3 +1,10 @@
+# v0.0.42-rc.1
+
+- Advertise the process-configured YPIR degree at both
+  `/root.pir_layout.poly_len` and `/params/tier1.poly_len` so clients can
+  require one layout identity across signed configuration and the server
+  handshake.
+
 # pir-types 0.3.0-rc.6 and pir-client 0.4.0-rc.7
 
 - `PirLayout` now includes `poly_len` (2048 or 4096; missing snapshot metadata
