@@ -1,3 +1,13 @@
+# pir-types 0.3.0-rc.6 and pir-client 0.4.0-rc.7
+
+- `PirLayout` now includes `poly_len` (2048 or 4096; missing snapshot metadata
+  deserializes as `DEFAULT_YPIR_POLY_LEN`). Serving `/root` overwrites it with
+  the process-configured YPIR degree so wallets authenticate degree as part of
+  the layout handshake.
+- `PirClient::with_transport` / `PirClientBlocking::with_transport` take a single
+  `expected_layout` and fail closed when `/root.pir_layout` or
+  `GET /params/tier1` disagrees (including `poly_len`).
+
 # v0.0.42-alpha.2
 
 - Default YPIR lattice dimension to 4096 and advertise `poly_len` on

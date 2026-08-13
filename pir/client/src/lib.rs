@@ -209,6 +209,9 @@ fn tier1_geometry(layout: PirLayout) -> Result<(usize, usize, usize)> {
 
 impl PirClient {
     /// Connect using a caller-provided HTTP transport and configuration layout.
+    ///
+    /// `expected_layout.poly_len` must match `GET /params/tier1` (and
+    /// `/root.pir_layout`) before any private query.
     pub async fn with_transport(
         server_url: &str,
         expected_layout: PirLayout,
@@ -261,6 +264,12 @@ impl PirClient {
         let tier1_scenario: YpirScenario =
             serde_json::from_slice(&body_for_status(tier1_resp, "GET /params/tier1 failed")?)
                 .context("parse /params/tier1 response")?;
+        anyhow::ensure!(
+            tier1_scenario.poly_len == expected_layout.poly_len,
+            "PIR poly_len mismatch: expected {}, server advertised {}",
+            expected_layout.poly_len,
+            tier1_scenario.poly_len
+        );
 
         let (layout_rows, _layout_leaves, layout_row_bytes) = tier1_geometry(root_info.pir_layout)?;
         let scenario_item_bits = root_info
@@ -997,7 +1006,8 @@ mod tests {
                 pir_depth: 19,
                 tier0_layers: t0,
                 tier1_layers: t1,
-            };
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
+        };
             let fix = TestFixture::build_layout(&raw_nfs, layout);
             for &[nf_lo, _, _] in fix.ranges.iter().take(10) {
                 let value = nf_lo + Fp::one();
@@ -1112,7 +1122,11 @@ mod tests {
     }
 
     async fn rejected_connect(expected_layout: PirLayout, transport: Arc<MockTransport>) -> String {
-        match PirClient::with_transport("https://pir.example", expected_layout, transport).await {
+        match PirClient::with_transport(
+            "https://pir.example",
+            expected_layout,
+            transport,
+        ).await {
             Ok(_) => panic!("layout mismatch must be rejected"),
             Err(err) => err.to_string(),
         }
@@ -1241,6 +1255,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 12,
             tier1_layers: 8,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", inconsistent)
             .unwrap_err()
@@ -1251,6 +1266,7 @@ mod tests {
             pir_depth: TREE_DEPTH + 1,
             tier0_layers: 15,
             tier1_layers: 15,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", too_deep).unwrap_err().to_string();
         assert!(err.contains("expected 1..=29"), "{err}");
@@ -1262,6 +1278,7 @@ mod tests {
             pir_depth: 29,
             tier0_layers: 23,
             tier1_layers: 6,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", excessive_tier0)
             .unwrap_err()
@@ -1272,6 +1289,7 @@ mod tests {
             pir_depth: 27,
             tier0_layers: 11,
             tier1_layers: 16,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", excessive_tier1)
             .unwrap_err()
@@ -1285,6 +1303,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 19,
             tier1_layers: 0,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", zero_tier).unwrap_err().to_string();
         assert!(err.contains("tiers must be non-zero"), "{err}");
@@ -1293,6 +1312,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 10,
             tier1_layers: 9,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", too_few_rows)
             .unwrap_err()
@@ -1303,6 +1323,7 @@ mod tests {
             pir_depth: 18,
             tier0_layers: 13,
             tier1_layers: 5,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let err = validate_layout("test", too_few_item_bits)
             .unwrap_err()
@@ -1319,6 +1340,7 @@ mod tests {
             pir_depth: 29,
             tier0_layers: 23,
             tier1_layers: 6,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
 
         let err = rejected_connect(unsafe_layout, transport.clone()).await;
@@ -1375,11 +1397,13 @@ mod tests {
                 pir_depth: 20,
                 tier0_layers: 12,
                 tier1_layers: 8,
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
             },
             PirLayout {
                 pir_depth: 19,
                 tier0_layers: 11,
                 tier1_layers: 8,
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
             },
         ];
 
@@ -1403,11 +1427,13 @@ mod tests {
                 pir_depth: 20,
                 tier0_layers: 12,
                 tier1_layers: 8,
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
             },
             PirLayout {
                 pir_depth: 19,
                 tier0_layers: 11,
                 tier1_layers: 8,
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
             },
         ];
 
@@ -1437,12 +1463,16 @@ mod tests {
                 pir_depth: 19,
                 tier0_layers: t0,
                 tier1_layers: t1,
-            };
+                poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
+        };
             let transport = Arc::new(MockTransport::new_layout(&tree, layout));
-            let client =
-                PirClient::with_transport("https://pir.example", layout, transport.clone())
-                    .await
-                    .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
+            let client = PirClient::with_transport(
+                "https://pir.example",
+                layout,
+                transport.clone(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
             assert_eq!(client.layout, layout);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
@@ -1456,11 +1486,13 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 11,
             tier1_layers: 8,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let expected = PirLayout {
             pir_depth: 19,
             tier0_layers: 13,
             tier1_layers: 6,
+            poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
         };
         let transport = Arc::new(MockTransport::new_layout(&tree, server_layout));
         let err = rejected_connect(expected, transport.clone()).await;
@@ -1468,6 +1500,44 @@ mod tests {
         assert_eq!(transport.count_hits("/root"), 1);
         assert_eq!(transport.count_hits("/tier0"), 0);
         assert_eq!(transport.count_hits("/params/tier1"), 0);
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_config_server_poly_len_mismatch_before_query() {
+        // poly_len is part of PirLayout, so /root rejects before /params/tier1.
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let transport = Arc::new(MockTransport::new(&tree));
+        let mut expected = COMPILED_PIR_LAYOUT;
+        expected.poly_len = 2048;
+        let err = rejected_connect(expected, transport.clone()).await;
+        assert!(err.contains("PIR layout mismatch"), "{err}");
+        assert_eq!(transport.count_hits("/root"), 1);
+        assert_eq!(transport.count_hits("/tier0"), 0);
+        assert_eq!(transport.count_hits("/params/tier1"), 0);
+        assert_eq!(transport.count_hits("/tier1/query"), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_params_tier1_poly_len_disagreeing_with_root() {
+        // Fail closed when /root.pir_layout.poly_len matches config but
+        // /params/tier1 advertises a different degree.
+        let raw_nfs: Vec<Fp> = (1u64..=10).map(|i| Fp::from(i * 7)).collect();
+        let tree = pir_export::build_pir_tree(build_ranges_with_sentinels(&raw_nfs)).unwrap();
+        let mut transport = MockTransport::new(&tree);
+        let mut scenario: YpirScenario =
+            serde_json::from_slice(&transport.gets.get("/params/tier1").unwrap().body).unwrap();
+        scenario.poly_len = 2048;
+        transport.gets.insert(
+            "/params/tier1",
+            response(serde_json::to_vec(&scenario).unwrap()),
+        );
+        let transport = Arc::new(transport);
+        let err = rejected_connect(COMPILED_PIR_LAYOUT, transport.clone()).await;
+        assert!(err.contains("PIR poly_len mismatch"), "{err}");
+        assert_eq!(transport.count_hits("/root"), 1);
+        assert_eq!(transport.count_hits("/params/tier1"), 1);
         assert_eq!(transport.count_hits("/tier1/query"), 0);
     }
 

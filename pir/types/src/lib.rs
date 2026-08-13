@@ -45,7 +45,9 @@ pub const TIER1_LAYERS: usize = 7;
 /// Explicit PIR tree layout negotiated between configuration, server, and client.
 ///
 /// Supported layouts satisfy the shared protocol and YPIR constraints;
-/// [`COMPILED_PIR_LAYOUT`] is the production default identity.
+/// [`COMPILED_PIR_LAYOUT`] is the production default identity. `poly_len` is the
+/// YPIR RLWE polynomial degree bound into wallet config / round-auth and checked
+/// against `GET /params/tier1` (and advertised on `/root.pir_layout`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PirLayout {
     /// Depth of the PIR Merkle tree.
@@ -54,6 +56,17 @@ pub struct PirLayout {
     pub tier0_layers: usize,
     /// Number of privately queried Tier 1 tree layers.
     pub tier1_layers: usize,
+    /// YPIR RLWE polynomial degree (2048 or 4096).
+    ///
+    /// Missing on older snapshot metadata; those deserialize as
+    /// [`DEFAULT_YPIR_POLY_LEN`]. Serving `/root` responses should overwrite
+    /// this with the process-configured degree.
+    #[serde(default = "default_layout_poly_len")]
+    pub poly_len: usize,
+}
+
+fn default_layout_poly_len() -> usize {
+    DEFAULT_YPIR_POLY_LEN
 }
 
 /// Layout compiled into this version as the production default advertise/export
@@ -62,6 +75,7 @@ pub const COMPILED_PIR_LAYOUT: PirLayout = PirLayout {
     pir_depth: PIR_DEPTH,
     tier0_layers: TIER0_LAYERS,
     tier1_layers: TIER1_LAYERS,
+    poly_len: DEFAULT_YPIR_POLY_LEN,
 };
 
 impl PirLayout {
@@ -171,6 +185,12 @@ impl PirLayout {
             return Err(format!(
                 "PIR layout Tier 1 layers {} exceeds maximum {MAX_TIER1_LAYERS}",
                 self.tier1_layers
+            ));
+        }
+        if !matches!(self.poly_len, 2048 | 4096) {
+            return Err(format!(
+                "unsupported PIR layout poly_len {}; supported values are 2048 and 4096",
+                self.poly_len
             ));
         }
         self.validate_ypir_bounds()
@@ -465,7 +485,8 @@ mod tests {
                 pir_depth: PIR_DEPTH,
                 tier0_layers,
                 tier1_layers,
-            };
+                poly_len: DEFAULT_YPIR_POLY_LEN,
+};
             layout.validate_supported().unwrap();
         }
     }
@@ -476,7 +497,8 @@ mod tests {
             pir_depth: PIR_DEPTH,
             tier0_layers: 10,
             tier1_layers: 9,
-        };
+            poly_len: DEFAULT_YPIR_POLY_LEN,
+};
         assert!(unsupported_split
             .validate_supported()
             .unwrap_err()
@@ -486,7 +508,8 @@ mod tests {
             pir_depth: 30,
             tier0_layers: 19,
             tier1_layers: 11,
-        };
+            poly_len: DEFAULT_YPIR_POLY_LEN,
+};
         assert!(unsupported_depth
             .validate_supported()
             .unwrap_err()

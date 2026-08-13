@@ -641,7 +641,7 @@ pub fn load_serving_state_with_poly_len(
 ) -> Result<ServingState> {
     let t_total = Instant::now();
 
-    let metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
+    let mut metadata: PirMetadata = serde_json::from_str(&std::fs::read_to_string(
         pir_data_dir.join("pir_root.json"),
     )?)?;
     anyhow::ensure!(
@@ -659,6 +659,9 @@ pub fn load_serving_state_with_poly_len(
         pir_types::DATASET_VERSION
     );
     info!(num_ranges = metadata.num_ranges, "Metadata loaded");
+    // Bind the process-configured YPIR degree into the serving layout identity
+    // so /root and /params/tier1 advertise the same poly_len.
+    metadata.pir_layout.poly_len = poly_len;
     metadata
         .pir_layout
         .validate_supported()

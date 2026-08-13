@@ -128,7 +128,7 @@ impl<'a> Tier1Row<'a> {
 mod tests {
     use super::*;
     use crate::fp_utils::write_fp;
-    use crate::{TIER1_LAYERS, TIER1_ROW_BYTES};
+    use crate::{DEFAULT_YPIR_POLY_LEN, TIER1_LAYERS, TIER1_ROW_BYTES};
     use imt_tree::hasher::PoseidonHasher;
 
     #[test]
@@ -192,6 +192,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 13,
             tier1_layers: 6,
+            poly_len: DEFAULT_YPIR_POLY_LEN,
         };
         let row_bytes = layout.tier1_row_bytes().unwrap();
         let row = vec![0u8; row_bytes];

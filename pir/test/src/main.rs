@@ -478,7 +478,7 @@ async fn run_server(
     let client = pir_client::PirClient::with_transport(
         &url,
         pir_types::COMPILED_PIR_LAYOUT,
-        std::sync::Arc::new(transport::HyperTransport::new()),
+            std::sync::Arc::new(transport::HyperTransport::new()),
     )
     .await?;
     eprintln!("  Connected to PIR server");

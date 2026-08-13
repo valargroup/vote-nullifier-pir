@@ -109,6 +109,7 @@ impl Tier0Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DEFAULT_YPIR_POLY_LEN;
 
     #[test]
     fn from_bytes_rejects_wrong_size() {
@@ -183,6 +184,7 @@ mod tests {
             pir_depth: 19,
             tier0_layers: 11,
             tier1_layers: 8,
+            poly_len: DEFAULT_YPIR_POLY_LEN,
         };
         let expected = layout.tier0_bytes().unwrap();
         let tier0 = Tier0Data::from_layout(vec![0u8; expected], layout).unwrap();
