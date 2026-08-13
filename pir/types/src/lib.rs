@@ -486,7 +486,7 @@ mod tests {
                 tier0_layers,
                 tier1_layers,
                 poly_len: DEFAULT_YPIR_POLY_LEN,
-};
+            };
             layout.validate_supported().unwrap();
         }
     }
@@ -498,7 +498,7 @@ mod tests {
             tier0_layers: 10,
             tier1_layers: 9,
             poly_len: DEFAULT_YPIR_POLY_LEN,
-};
+        };
         assert!(unsupported_split
             .validate_supported()
             .unwrap_err()
@@ -509,7 +509,7 @@ mod tests {
             tier0_layers: 19,
             tier1_layers: 11,
             poly_len: DEFAULT_YPIR_POLY_LEN,
-};
+        };
         assert!(unsupported_depth
             .validate_supported()
             .unwrap_err()

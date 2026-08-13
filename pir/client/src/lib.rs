@@ -1007,7 +1007,7 @@ mod tests {
                 tier0_layers: t0,
                 tier1_layers: t1,
                 poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
-        };
+            };
             let fix = TestFixture::build_layout(&raw_nfs, layout);
             for &[nf_lo, _, _] in fix.ranges.iter().take(10) {
                 let value = nf_lo + Fp::one();
@@ -1122,11 +1122,7 @@ mod tests {
     }
 
     async fn rejected_connect(expected_layout: PirLayout, transport: Arc<MockTransport>) -> String {
-        match PirClient::with_transport(
-            "https://pir.example",
-            expected_layout,
-            transport,
-        ).await {
+        match PirClient::with_transport("https://pir.example", expected_layout, transport).await {
             Ok(_) => panic!("layout mismatch must be rejected"),
             Err(err) => err.to_string(),
         }
@@ -1464,15 +1460,12 @@ mod tests {
                 tier0_layers: t0,
                 tier1_layers: t1,
                 poly_len: pir_types::DEFAULT_YPIR_POLY_LEN,
-        };
+            };
             let transport = Arc::new(MockTransport::new_layout(&tree, layout));
-            let client = PirClient::with_transport(
-                "https://pir.example",
-                layout,
-                transport.clone(),
-            )
-            .await
-            .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
+            let client =
+                PirClient::with_transport("https://pir.example", layout, transport.clone())
+                    .await
+                    .unwrap_or_else(|e| panic!("connect {t0}+{t1} should succeed: {e}"));
             assert_eq!(client.layout, layout);
             assert_eq!(transport.count_hits("/tier1/query"), 0);
         }
