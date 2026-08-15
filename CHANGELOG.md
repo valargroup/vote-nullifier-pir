@@ -1,3 +1,13 @@
+# v0.0.42
+
+- Released the exact `v0.0.42-rc.1` server implementation as stable without
+  implementation changes.
+
+# pir-types 0.3.0 and pir-client 0.4.0
+
+- Released the exact `pir-types 0.3.0-rc.6` and `pir-client 0.4.0-rc.7`
+  implementations as stable without API or wire-format changes.
+
 # v0.0.42-rc.1
 
 - Advertise the process-configured YPIR degree at both
