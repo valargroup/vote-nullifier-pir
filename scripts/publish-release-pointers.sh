@@ -8,7 +8,7 @@ update_script="${4:-}"
 height_output="${5:-}"
 bucket="${DO_BUCKET:-shielded-vote}"
 s3cmd_bin="${S3CMD_BIN:-s3cmd}"
-pir_config_url="${PIR_CONFIG_URL:-https://voting.valargroup.org/prod/pir.json}"
+pir_config_url="${PIR_CONFIG_URL:-https://voting.valargroup.dev/prod/pir.json}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 [ -n "$version" ] || { echo "ERROR: release version is required." >&2; exit 1; }

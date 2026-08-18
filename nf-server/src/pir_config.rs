@@ -13,8 +13,8 @@ use anyhow::{bail, Context, Result};
 use pir_types::ZcashNetwork;
 use serde::Deserialize;
 
-pub const DEFAULT_PROD_PIR_CONFIG_URL: &str = "https://voting.valargroup.org/prod/pir.json";
-pub const DEFAULT_STAGE_PIR_CONFIG_URL: &str = "https://voting.valargroup.org/stage/pir.json";
+pub const DEFAULT_PROD_PIR_CONFIG_URL: &str = "https://voting.valargroup.dev/prod/pir.json";
+pub const DEFAULT_STAGE_PIR_CONFIG_URL: &str = "https://voting.valargroup.dev/stage/pir.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -140,6 +140,18 @@ fn is_prod_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_use_gateway() {
+        assert_eq!(
+            DEFAULT_PROD_PIR_CONFIG_URL,
+            "https://voting.valargroup.dev/prod/pir.json"
+        );
+        assert_eq!(
+            DEFAULT_STAGE_PIR_CONFIG_URL,
+            "https://voting.valargroup.dev/stage/pir.json"
+        );
+    }
 
     #[test]
     fn explicit_url_wins() {

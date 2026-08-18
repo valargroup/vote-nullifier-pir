@@ -44,7 +44,7 @@
 //!
 //! **`nf-server serve` ships with a production voting-config default**, so
 //! normal operators do nothing: the binary derives
-//! `https://voting.valargroup.org/prod/pir.json` from that default. Existing
+//! `https://voting.valargroup.dev/prod/pir.json` from that default. Existing
 //! hosts that only have `SVOTE_PIR_VOTING_CONFIG_URL` continue working with no
 //! manual edits: the new binary derives `prod/pir.json` or `stage/pir.json`
 //! from that old URL when it can, and falls back to the active-round path if it
@@ -131,11 +131,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// Legacy production-default endpoints. The voting config URL points at
+    /// Production-default endpoints. The voting config URL points at
     /// the active static config; older `nf-server` follows its
     /// `dynamic_config_url` to discover vote servers.
     pub const DEFAULT_VOTING_CONFIG_URL: &'static str =
-        "https://voting.valargroup.org/prod/static-voting-config.json";
+        "https://voting.valargroup.dev/prod/static-voting-config.json";
     /// Public bucket origin for snapshot tier downloads. Operators can
     /// override this with `SVOTE_PIR_PRECOMPUTED_BASE_URL`.
     pub const DEFAULT_PRECOMPUTED_BASE_URL: &'static str =

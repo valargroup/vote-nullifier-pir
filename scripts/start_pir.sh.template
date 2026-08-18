@@ -50,8 +50,8 @@ case "$ZCASH_NETWORK" in
     VOTING_CONFIG_URL="${SVOTE_PIR_VOTING_CONFIG_URL-$START_VOTING_CONFIG_URL}"
     ;;
   test)
-    PIR_CONFIG_URL="${SVOTE_PIR_CONFIG_URL-https://voting.valargroup.org/stage/pir.json}"
-    VOTING_CONFIG_URL="${SVOTE_PIR_VOTING_CONFIG_URL-https://voting.valargroup.org/stage/static-voting-config.json}"
+    PIR_CONFIG_URL="${SVOTE_PIR_CONFIG_URL-https://voting.valargroup.dev/stage/pir.json}"
+    VOTING_CONFIG_URL="${SVOTE_PIR_VOTING_CONFIG_URL-https://voting.valargroup.dev/stage/static-voting-config.json}"
     ;;
   *)
     echo "SVOTE_ZCASH_NETWORK must be set to main or test." >&2

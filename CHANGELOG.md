@@ -1,3 +1,8 @@
+# Unreleased
+
+- Route default PIR and voting-config reads through the GitHub-primary
+  `voting.valargroup.dev` gateway with its Cloudflare fallback.
+
 # v0.0.42
 
 - Released the exact `v0.0.42-rc.1` server implementation as stable without

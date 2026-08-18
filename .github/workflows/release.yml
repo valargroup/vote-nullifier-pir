@@ -247,8 +247,8 @@ jobs:
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
             -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
-            -e "s|__PIR_CONFIG_URL__|https://voting.valargroup.org/prod/pir.json|g" \
-            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/prod/static-voting-config.json|g" \
+            -e "s|__PIR_CONFIG_URL__|https://voting.valargroup.dev/prod/pir.json|g" \
+            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.dev/prod/static-voting-config.json|g" \
             -e "s|__PRECOMPUTED_BASE_URL__|${PRECOMPUTED_BASE_URL}|g" \
             scripts/start_pir.sh.template > start_pir.sh
           chmod +x start_pir.sh
@@ -312,7 +312,7 @@ jobs:
       DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
-      PIR_CONFIG_URL: https://voting.valargroup.org/prod/pir.json
+      PIR_CONFIG_URL: https://voting.valargroup.dev/prod/pir.json
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
