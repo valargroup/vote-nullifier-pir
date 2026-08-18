@@ -53,8 +53,8 @@ jobs:
             -e "s|__RELEASE_TAG__|${TAG}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
             -e "s|__BINARY_BASE_URL__|https://shielded-vote.nyc3.digitaloceanspaces.com/binaries/vote-pir|g" \
-            -e "s|__PIR_CONFIG_URL__|https://voting.valargroup.org/prod/pir.json|g" \
-            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.org/prod/static-voting-config.json|g" \
+            -e "s|__PIR_CONFIG_URL__|https://voting.valargroup.dev/prod/pir.json|g" \
+            -e "s|__VOTING_CONFIG_URL__|https://voting.valargroup.dev/prod/static-voting-config.json|g" \
             -e "s|__PRECOMPUTED_BASE_URL__|https://shielded-vote.nyc3.digitaloceanspaces.com|g" \
             scripts/start_pir.sh.template > /tmp/start_pir.sh
           chmod +x /tmp/start_pir.sh

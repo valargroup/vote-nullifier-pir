@@ -27,7 +27,7 @@ jobs:
       DO_BUCKET: ${{ vars.DO_BUCKET || 'shielded-vote' }}
       DO_REGION: ${{ vars.DO_REGION || 'nyc3' }}
       DO_PUBLIC_BASE_URL: ${{ vars.DO_PUBLIC_BASE_URL }}
-      PIR_CONFIG_URL: https://voting.valargroup.org/prod/pir.json
+      PIR_CONFIG_URL: https://voting.valargroup.dev/prod/pir.json
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check out trusted promotion logic

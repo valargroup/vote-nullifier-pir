@@ -201,8 +201,8 @@ jobs:
                 ;;
             esac
             PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
-            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
-            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
+            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.dev/${PIR_ENV}/pir.json}"
+            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.dev/${PIR_ENV}/static-voting-config.json}"
             PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)
@@ -388,8 +388,8 @@ jobs:
                 ;;
             esac
             PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
-            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/pir.json}"
-            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.org/${PIR_ENV}/static-voting-config.json}"
+            PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.dev/${PIR_ENV}/pir.json}"
+            VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.dev/${PIR_ENV}/static-voting-config.json}"
             PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
             echo "==> Writing PIR defaults ($PIR_ENV)"
             tmp=$(mktemp)

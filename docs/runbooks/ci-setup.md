@@ -87,8 +87,8 @@ Set these GitHub Environment variables in both environments:
 
 | Variable | Staging | Production | Description |
 |----------|---------|------------|-------------|
-| `PIR_CONFIG_URL` | `https://voting.valargroup.org/stage/pir.json` | `https://voting.valargroup.org/prod/pir.json` | Optional override written by deploy/restart workflows as `SVOTE_PIR_CONFIG_URL`. If unset, workflows derive the same URL from `target_environment`. |
-| `VOTING_CONFIG_URL` | `https://voting.valargroup.org/stage/static-voting-config.json` | `https://voting.valargroup.org/prod/static-voting-config.json` | Optional legacy fallback URL written by deploy/restart workflows as `SVOTE_PIR_VOTING_CONFIG_URL`. |
+| `PIR_CONFIG_URL` | `https://voting.valargroup.dev/stage/pir.json` | `https://voting.valargroup.dev/prod/pir.json` | Optional override written by deploy/restart workflows as `SVOTE_PIR_CONFIG_URL`. If unset, workflows derive the same URL from `target_environment`. |
+| `VOTING_CONFIG_URL` | `https://voting.valargroup.dev/stage/static-voting-config.json` | `https://voting.valargroup.dev/prod/static-voting-config.json` | Optional legacy fallback URL written by deploy/restart workflows as `SVOTE_PIR_VOTING_CONFIG_URL`. |
 | `PRECOMPUTED_BASE_URL` | `https://shielded-vote.nyc3.digitaloceanspaces.com` | `https://shielded-vote.nyc3.digitaloceanspaces.com` | Base URL used when forcing a deploy to a published snapshot height. |
 | `SNAPSHOTS_BASE_URL` | `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots` | `https://shielded-vote.nyc3.digitaloceanspaces.com/snapshots` | Base URL used to validate forced snapshot heights. |
 | `LWD_URLS` | Testnet post-NU6.3 endpoints | Mainnet post-NU6.3 endpoints | Required comma-separated lightwalletd gRPC URLs used for snapshot publishing and server rebuilds. |

@@ -72,7 +72,7 @@ The server needs the following network access:
 |-----------|-------------|---------|
 | Outbound 443 | `shielded-vote.nyc3.digitaloceanspaces.com` | Binary, `SHA256SUMS`, `start_pir.sh`, snapshot tier downloads |
 | Outbound 443 | `github.com`, `objects.githubusercontent.com` | Binary / unit-file fallback |
-| Outbound 443 | `voting.valargroup.org`, `raw.githubusercontent.com` | PIR snapshot config and legacy static/dynamic voting config fallback |
+| Outbound 443 | `voting.valargroup.dev` | PIR snapshot config and static/dynamic voting config fallback |
 | Outbound 443 | `sentry.io` (DSN-specific host) | Optional — only when `SENTRY_DSN` is set |
 | Outbound 443 | lightwalletd (e.g. `us.zec.stardust.rest:443`) | **Synced mode only** |
 | Inbound 3000 | client / reverse proxy | PIR query traffic |
@@ -186,8 +186,8 @@ sudo apt-get update && sudo apt-get install -y curl ca-certificates jq
 SVOTE_ZCASH_NETWORK=${ZCASH_NETWORK}
 LWD_URLS=${LWD_URLS}
 SVOTE_PIR_DATA_DIR=${PIR_DATA_DIR}
-SVOTE_PIR_CONFIG_URL=https://voting.valargroup.org/${CONFIG_ENV}/pir.json
-SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/${CONFIG_ENV}/static-voting-config.json
+SVOTE_PIR_CONFIG_URL=https://voting.valargroup.dev/${CONFIG_ENV}/pir.json
+SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.dev/${CONFIG_ENV}/static-voting-config.json
 SVOTE_PIR_PRECOMPUTED_BASE_URL=${PIR_PRECOMPUTED_BASE_URL}
 EOF
 
@@ -265,7 +265,7 @@ systemctl restart nullifier-query-server
 Cache invalidation is automatic: any change to `tier{N}.bin` (sync rebuild, bootstrap snapshot rotation, manual edit) invalidates the corresponding cache via content hash, and the server falls back to recompute. Operators do not manage these files.
 
 **On startup**, `serve` fetches the environment's PIR snapshot config
-(`SVOTE_PIR_CONFIG_URL`, for example `https://voting.valargroup.org/prod/pir.json`),
+(`SVOTE_PIR_CONFIG_URL`, for example `https://voting.valargroup.dev/prod/pir.json`),
 reads its `snapshot_height`, compares that height and the Ironwood dataset
 identity to local `pir_root.json`, and downloads matching snapshot tiers from
 `SVOTE_PIR_PRECOMPUTED_BASE_URL/snapshots/<network>/<height>` if they don't match. For zero-touch migration, hosts that only have the legacy
@@ -302,7 +302,7 @@ systemctl stop nullifier-query-server
 # Optional: load the same env as systemd so sync picks up the active-round height cap
 # sudo set -a && . /etc/default/nf-server && set +a
 
-CONFIG=$(curl -fsSL https://voting.valargroup.org/prod/static-voting-config.json)
+CONFIG=$(curl -fsSL https://voting.valargroup.dev/prod/static-voting-config.json)
 DYNAMIC_CONFIG_URL=$(jq -r '.dynamic_config_url // empty' <<<"$CONFIG")
 if [ -n "$DYNAMIC_CONFIG_URL" ]; then
     CONFIG=$(curl -fsSL "$DYNAMIC_CONFIG_URL")
@@ -459,7 +459,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_ZCASH_NETWORK` | Required Zcash network: `main` or `test`. |
 | `SVOTE_PIR_DATA_DIR` | Network-specific on-disk root. Fleet hosts use `/opt/nf-ingest/pir-data/<network>`. |
 | `SVOTE_PIR_PORT` | HTTP listen port. Unit overrides via `--port 3000`. |
-| `SVOTE_PIR_CONFIG_URL` | Environment PIR snapshot config URL. Empty string disables bootstrap (offline / pre-staged tiers). New installs use `https://voting.valargroup.org/prod/pir.json` by default. |
+| `SVOTE_PIR_CONFIG_URL` | Environment PIR snapshot config URL. Empty string disables bootstrap (offline / pre-staged tiers). New installs use `https://voting.valargroup.dev/prod/pir.json` by default. |
 | `SVOTE_PIR_VOTING_CONFIG_URL` | Legacy static voting-config URL. Used to derive the PIR config URL on old hosts and as a fallback active-round discovery path for ambiguous configs. |
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to `https://shielded-vote.nyc3.digitaloceanspaces.com`. |
 | `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses PIR/voting-config discovery while set. |

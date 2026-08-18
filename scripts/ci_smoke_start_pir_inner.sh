@@ -75,8 +75,8 @@ fi
 test -f /etc/default/nf-server
 grep -Fxq 'SVOTE_ZCASH_NETWORK=test' /etc/default/nf-server
 grep -Fxq 'SVOTE_PIR_DATA_DIR=/opt/nf-ingest/pir-data/test' /etc/default/nf-server
-grep -Fxq 'SVOTE_PIR_CONFIG_URL=https://voting.valargroup.org/stage/pir.json' /etc/default/nf-server
-grep -Fxq 'SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.org/stage/static-voting-config.json' /etc/default/nf-server
+grep -Fxq 'SVOTE_PIR_CONFIG_URL=https://voting.valargroup.dev/stage/pir.json' /etc/default/nf-server
+grep -Fxq 'SVOTE_PIR_VOTING_CONFIG_URL=https://voting.valargroup.dev/stage/static-voting-config.json' /etc/default/nf-server
 grep -Fq SVOTE_PIR_PRECOMPUTED_BASE_URL /etc/default/nf-server
 command -v curl >/dev/null
 
