@@ -4124,7 +4124,7 @@ dependencies = [
 [[package]]
 name = "voting-crypto-deps"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/voting-circuits?rev=e2b8c10b76e59e7155d2b3842203af74d9891a2f#e2b8c10b76e59e7155d2b3842203af74d9891a2f"
+source = "git+https://github.com/valargroup/voting-circuits?rev=83427979fccb8ae3bf010e21691742c78d283bc8#83427979fccb8ae3bf010e21691742c78d283bc8"
 dependencies = [
  "halo2_gadgets",
  "halo2_poseidon",
