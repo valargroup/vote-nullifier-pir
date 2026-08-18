@@ -12,7 +12,7 @@ This crate contains:
   the Zcash network and Ironwood dataset identity.
 - Query serialization helper `serialize_ypir_query`.
 
-Enable the `reader` feature to get tier-data parsers (`tier0::Tier0Data`, `tier1::Tier1Row`) and Fp serialization helpers (`fp_utils`). The default feature set is lightweight and only pulls in `serde`.
+Enable the `reader` feature to get tier-data parsers (`tier0::Tier0Data`, `tier1::Tier1Row`) and Fp serialization helpers (`fp_utils`). The default `upstream` backend keeps this crate lightweight until `reader` activates the crypto dependencies. A Zakura reader must use `default-features = false, features = ["reader", "zakura"]`. The two backend features are mutually exclusive.
 
 ## Usage
 

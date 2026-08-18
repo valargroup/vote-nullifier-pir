@@ -68,9 +68,19 @@ nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ─
 
 Requires Rust (stable for most crates; nightly for `pir-server` with AVX-512 support).
 
+Crates that use the voting crypto types expose two mutually exclusive backend
+features. `upstream` is enabled by default, so existing consumers do not need
+to change their dependency declarations. Zakura consumers must disable default
+features and enable `zakura`; selecting both backends or neither backend fails
+to compile.
+
 ```bash
 # Build everything
 cargo build --release
+
+# Build the full workspace with the Zakura backend
+cargo +1.88.0 build --workspace --release --no-default-features \
+  --features imt-tree/zakura,pir-types/zakura,pir-client/zakura,pir-export/zakura,pir-export/cli,pir-server/zakura,nf-ingest/zakura,nf-server/zakura,nf-server/serve,pir-test/zakura
 
 # Or use the Makefile for the standard pipeline:
 make build          # Build nf-server binary

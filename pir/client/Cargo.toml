@@ -7,18 +7,33 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/valargroup/vote-nullifier-pir"
 readme = "README.md"
 
+[features]
+default = ["upstream"]
+upstream = [
+    "voting-crypto-deps/upstream",
+    "pir-types/upstream",
+    "imt-tree/upstream",
+    "pir-export/upstream",
+]
+zakura = [
+    "voting-crypto-deps/zakura",
+    "pir-types/zakura",
+    "imt-tree/zakura",
+    "pir-export/zakura",
+]
+
 [dev-dependencies]
 rand = "0.8"
-pir-export = { path = "../export" }
+pir-export = { path = "../export", default-features = false }
 
 [dependencies]
-pir-types  = { path = "../types", version = "=0.3.0", features = ["reader"] }
+pir-types  = { path = "../types", version = "=0.3.0", default-features = false, features = ["reader"] }
 imt-tree = { workspace = true }
+voting-crypto-deps = { workspace = true }
 ypir = { version = "0.2.0", package = "valar-ypir", default-features = false }
 hex = "0.4"
 anyhow = "1.0"
 ff = "0.13"
-pasta_curves = "0.5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 serde_json = "1"
 futures = "0.3"

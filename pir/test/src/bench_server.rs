@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use hdrhistogram::Histogram;
-use pasta_curves::Fp;
 use rand::{Rng, SeedableRng};
 use serde::Serialize;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use pir_client::{NoteTiming, PirClient, TierTiming};
 

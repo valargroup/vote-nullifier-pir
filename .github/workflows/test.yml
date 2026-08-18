@@ -68,10 +68,63 @@ jobs:
           cargo run --quiet -p nf-server --features serve -- serve --help \
             | grep -Fq -- '--zcash-network'
 
+  zakura:
+    name: Zakura backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-zakura-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-zakura-
+
+      - name: Test Zakura backend
+        run: |
+          cargo test --workspace --all-targets --no-default-features \
+            --features imt-tree/zakura,pir-types/zakura,pir-client/zakura,pir-export/zakura,pir-export/cli,pir-server/zakura,nf-ingest/zakura,nf-server/zakura,nf-server/serve,pir-test/zakura \
+            --locked
+
+      - name: Check backend contracts
+        run: |
+          if cargo tree --workspace --locked \
+            | grep -Eq 'zakura-(pasta-curves|halo2-gadgets|halo2-poseidon|halo2-proofs|orchard|sinsemilla)'; then
+            echo "Zakura crypto crates entered the default upstream graph"
+            exit 1
+          fi
+
+          if cargo tree --workspace --no-default-features \
+            --features imt-tree/zakura,pir-types/zakura,pir-client/zakura,pir-export/zakura,pir-export/cli,pir-server/zakura,nf-ingest/zakura,nf-server/zakura,nf-server/serve,pir-test/zakura \
+            --locked \
+            | grep -Eq '(^|[[:space:]├└│])(pasta_curves|halo2_gadgets|halo2_poseidon|halo2_proofs|orchard|sinsemilla) v'; then
+            echo "Upstream crypto crates entered the Zakura graph"
+            exit 1
+          fi
+
+          if cargo check -p imt-tree --no-default-features --locked; then
+            echo "A crypto backend must be selected"
+            exit 1
+          fi
+
+          if cargo check -p imt-tree --all-features --locked; then
+            echo "The upstream and Zakura backends must remain mutually exclusive"
+            exit 1
+          fi
+
   notify-slack:
     name: Slack Notification
-    if: ${{ always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.test.result == 'failure' }}
-    needs: [test]
+    if: ${{ always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && (needs.test.result == 'failure' || needs.zakura.result == 'failure') }}
+    needs: [test, zakura]
     runs-on: ubuntu-latest
     steps:
       - name: Notify Slack on failure

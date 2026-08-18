@@ -4,7 +4,23 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["upstream"]
+upstream = [
+    "voting-crypto-deps/upstream",
+    "pir-server?/upstream",
+    "pir-export/upstream",
+    "pir-types/upstream",
+    "nf-ingest/upstream",
+    "imt-tree/upstream",
+]
+zakura = [
+    "voting-crypto-deps/zakura",
+    "pir-server?/zakura",
+    "pir-export/zakura",
+    "pir-types/zakura",
+    "nf-ingest/zakura",
+    "imt-tree/zakura",
+]
 serve = ["dep:pir-server", "dep:axum", "dep:tower-http", "dep:sentry", "dep:sha2", "dep:prometheus"]
 avx512 = ["serve", "pir-server/avx512"]
 # Parallelise the YPIR dot-product kernel across cores via rayon.
@@ -14,7 +30,7 @@ rayon = ["serve", "pir-server/rayon"]
 
 [dependencies]
 # Serve-only (YPIR PIR server)
-pir-server         = { path = "../pir/server", optional = true }
+pir-server         = { path = "../pir/server", optional = true, default-features = false }
 axum               = { version = "0.7", optional = true }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
@@ -27,16 +43,16 @@ sha2               = { version = "0.10", optional = true }
 prometheus         = { version = "0.13", default-features = false, features = ["process"], optional = true }
 
 # Always needed
-pir-export        = { path = "../pir/export" }
-pir-types         = { path = "../pir/types" }
-nf-ingest = { path = "../nf-ingest" }
+pir-export        = { path = "../pir/export", default-features = false }
+pir-types         = { path = "../pir/types", default-features = false }
+nf-ingest = { path = "../nf-ingest", default-features = false }
 imt-tree          = { workspace = true }
+voting-crypto-deps = { workspace = true }
 tokio             = { version = "1", features = ["rt-multi-thread", "macros"] }
 clap              = { version = "4", features = ["derive", "env"] }
 anyhow            = "1.0"
 hex               = "0.4"
 ff                = "0.13"
-pasta_curves      = "0.5"
 rayon             = "1"
 serde             = { version = "1", features = ["derive"] }
 serde_json        = "1"

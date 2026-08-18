@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hdrhistogram::Histogram;
-use pasta_curves::Fp;
 use serde::Serialize;
 use tokio::sync::{mpsc, Semaphore};
+use voting_crypto_deps::pasta_curves::Fp;
 
 use pir_client::PirClient;
 

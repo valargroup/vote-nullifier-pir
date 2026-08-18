@@ -5,7 +5,7 @@
 //! record arrays keyed by Fp values.
 
 use ff::PrimeField as _;
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 /// Write an Fp value as 32 little-endian bytes into `buf`.
 #[inline]

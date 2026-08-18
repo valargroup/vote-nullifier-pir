@@ -4,7 +4,7 @@
 //! client rebuilds the subtree locally to extract siblings. Row width follows
 //! the negotiated [`crate::PirLayout`].
 
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
 use crate::{PirLayout, COMPILED_PIR_LAYOUT, TIER1_LEAF_BYTES};

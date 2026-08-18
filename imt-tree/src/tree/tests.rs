@@ -1,7 +1,9 @@
 use super::*;
 use crate::test_helpers::fp;
 use ff::PrimeField as _;
-use halo2_gadgets::poseidon::primitives::{self as poseidon, ConstantLength, P128Pow5T3};
+use voting_crypto_deps::halo2_gadgets::poseidon::primitives::{
+    self as poseidon, ConstantLength, P128Pow5T3,
+};
 
 #[test]
 fn test_precompute_empty_hashes_chain() {

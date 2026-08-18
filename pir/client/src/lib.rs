@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use ff::PrimeField as _;
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 // Re-exported so downstream crates (e.g. zcash_voting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
 pub use imt_tree::ImtProofData;
@@ -810,8 +810,8 @@ pub fn fetch_proof_local_layout(
 mod tests {
     use super::*;
     use ff::Field;
-    use pasta_curves::Fp;
     use pir_export::build_ranges_with_sentinels;
+    use voting_crypto_deps::pasta_curves::Fp;
 
     /// Build a tree and export both tier blobs for a layout.
     struct TestFixture {

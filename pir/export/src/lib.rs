@@ -24,8 +24,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use ff::PrimeField as _;
-use pasta_curves::Fp;
 use tracing::info;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{

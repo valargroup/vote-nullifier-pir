@@ -60,8 +60,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ff::PrimeField;
-use pasta_curves::Fp;
 use rayon::prelude::*;
+use voting_crypto_deps::pasta_curves::Fp;
 
 const NULLIFIER_SIZE: usize = 32;
 const CHECKPOINT_SIZE: usize = 16;

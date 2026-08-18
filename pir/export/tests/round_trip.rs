@@ -4,7 +4,7 @@
 //! exports tier data, parses it back, constructs proofs, and verifies them.
 
 use ff::{Field, PrimeField as _};
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::TREE_DEPTH;

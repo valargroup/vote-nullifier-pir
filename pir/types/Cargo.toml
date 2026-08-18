@@ -8,12 +8,14 @@ repository = "https://github.com/valargroup/vote-nullifier-pir"
 readme = "README.md"
 
 [features]
-default = []
-reader = ["dep:pasta_curves", "dep:ff", "dep:anyhow", "dep:imt-tree"]
+default = ["upstream"]
+upstream = ["voting-crypto-deps?/upstream", "imt-tree?/upstream"]
+zakura = ["voting-crypto-deps?/zakura", "imt-tree?/zakura"]
+reader = ["dep:voting-crypto-deps", "dep:ff", "dep:anyhow", "dep:imt-tree"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-pasta_curves = { version = "0.5", optional = true }
+voting-crypto-deps = { workspace = true, optional = true }
 ff = { version = "0.13", optional = true }
 anyhow = { version = "1.0", optional = true }
 imt-tree = { workspace = true, optional = true }

@@ -7,7 +7,7 @@ pub use tree::*;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 /// Convenience wrapper: Poseidon hash of two field elements.
 ///

@@ -3,13 +3,18 @@ name = "nf-ingest"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["upstream"]
+upstream = ["voting-crypto-deps/upstream", "imt-tree/upstream", "pir-types/upstream"]
+zakura = ["voting-crypto-deps/zakura", "imt-tree/zakura", "pir-types/zakura"]
+
 [dependencies]
 imt-tree = { workspace = true }
-pir-types = { path = "../pir/types" }
+pir-types = { path = "../pir/types", default-features = false }
+voting-crypto-deps = { workspace = true }
 anyhow = "1.0"
 hex = "0.4"
 ff = "0.13"
-pasta_curves = "0.5"
 rayon = "1"
 prost = "0.10.3"
 tonic = { version = "0.7.2", features = ["tls", "tls-roots"] }
