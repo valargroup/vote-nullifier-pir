@@ -13,7 +13,7 @@ members = [
 
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.2.1", default-features = false }
-voting-crypto-deps = { version = "0.1.0", git = "https://github.com/valargroup/voting-circuits", rev = "efd911011d46cdd1be3455c8a4edb8ef5882591a", default-features = false }
+voting-crypto-deps = { version = "0.1.0", git = "https://github.com/valargroup/voting-circuits", rev = "e2b8c10b76e59e7155d2b3842203af74d9891a2f", default-features = false }
 
 [profile.release]
 lto = "fat"
