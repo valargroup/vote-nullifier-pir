@@ -1,5 +1,7 @@
 # Unreleased
 
+- Let PIR and IMT consumers select either the default Zakura voting crypto
+  crates or the mutually exclusive upstream backend.
 - Route default PIR and voting-config reads through the GitHub-primary
   `voting.valargroup.dev` gateway with its Cloudflare fallback.
 

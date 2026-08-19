@@ -2,7 +2,7 @@
 //!
 //! Supports the compiled-in default layout and negotiated plaintext-tier sizes.
 
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use crate::fp_utils::{binary_search_records, read_fp, validate_all_fp_chunks};
 use crate::{PirLayout, COMPILED_PIR_LAYOUT, TIER0_LAYERS, TIER1_ROWS};

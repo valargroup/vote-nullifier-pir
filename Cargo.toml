@@ -12,7 +12,8 @@ members = [
 ]
 
 [workspace.dependencies]
-imt-tree = { path = "imt-tree", version = "0.2.1" }
+imt-tree = { path = "imt-tree", version = "0.2.1", default-features = false }
+voting-crypto-deps = { version = "=0.1.1", default-features = false }
 
 [profile.release]
 lto = "fat"

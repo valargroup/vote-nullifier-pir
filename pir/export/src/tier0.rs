@@ -13,7 +13,7 @@
 //! Byte offset: `((2^d - 1) + i) * 32`.
 
 use anyhow::{Context, Result};
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::tree::{PuncturedRange, TREE_DEPTH};
 

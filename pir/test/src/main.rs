@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use ff::{Field, PrimeField as _};
-use pasta_curves::Fp;
 use rand::Rng;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use pir_export::build_pir_tree;
 use pir_types::{TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES};

@@ -2,6 +2,10 @@
 
 Indexed Merkle Tree (IMT) for nullifier non-membership proofs in [Zcash shielded voting](https://github.com/zcash/zips/pull/1198). This crate provides Poseidon hashing, punctured-range tree building, and exclusion proof generation that feeds into the delegation circuit.
 
+The default `zakura` feature uses the Zakura voting crypto libraries. An
+upstream consumer must use `default-features = false, features = ["upstream"]`.
+The two backend features are mutually exclusive.
+
 ## Architecture Overview
 
 ### Scale and Capacity

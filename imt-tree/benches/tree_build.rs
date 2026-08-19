@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use ff::Field;
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::tree::{
     build_levels, build_punctured_ranges, commit_punctured_ranges, precompute_empty_hashes,

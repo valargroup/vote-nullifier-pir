@@ -8,17 +8,29 @@ rand = "0.8"
 tempfile = "3"
 
 [features]
-default = []
+default = ["zakura"]
+upstream = [
+    "voting-crypto-deps/upstream-vct",
+    "pir-types/upstream",
+    "imt-tree/upstream",
+    "nf-ingest?/upstream",
+]
+zakura = [
+    "voting-crypto-deps/zakura-vct",
+    "pir-types/zakura",
+    "imt-tree/zakura",
+    "nf-ingest?/zakura",
+]
 cli = ["dep:nf-ingest"]
 
 [dependencies]
-pir-types = { path = "../types", features = ["reader"] }
+pir-types = { path = "../types", default-features = false, features = ["reader"] }
 imt-tree = { workspace = true }
-nf-ingest = { path = "../../nf-ingest", optional = true }
+nf-ingest = { path = "../../nf-ingest", optional = true, default-features = false }
+voting-crypto-deps = { workspace = true }
 anyhow = "1.0"
 hex = "0.4"
 ff = "0.13"
-pasta_curves = "0.5"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

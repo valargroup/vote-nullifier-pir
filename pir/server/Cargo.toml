@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["zakura"]
+upstream = ["voting-crypto-deps/upstream-vct", "pir-types/upstream"]
+zakura = ["voting-crypto-deps/zakura-vct", "pir-types/zakura"]
 avx512 = ["ypir/explicit_avx512"]
 rayon = ["ypir/rayon"]
 
 [dependencies]
-pir-types  = { path = "../types", features = ["reader"] }
+pir-types  = { path = "../types", default-features = false, features = ["reader"] }
+voting-crypto-deps = { workspace = true }
 ypir = { version = "0.2.0", package = "valar-ypir", default-features = false, features = ["server"] }
 spiral-rs = { version = "0.5", package = "valar-spiral-rs" }
 axum = "0.7"
@@ -20,7 +23,6 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 ff = "0.13"
-pasta_curves = "0.5"
 blake3 = "1"
 hex = "0.4.3"
 

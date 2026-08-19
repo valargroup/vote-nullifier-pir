@@ -3,17 +3,36 @@ name = "pir-test"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["zakura"]
+upstream = [
+    "voting-crypto-deps/upstream-vct",
+    "pir-export/upstream",
+    "pir-client/upstream",
+    "pir-server/upstream",
+    "pir-types/upstream",
+    "nf-ingest/upstream",
+]
+zakura = [
+    "voting-crypto-deps/zakura-vct",
+    "pir-export/zakura",
+    "pir-client/zakura",
+    "pir-server/zakura",
+    "pir-types/zakura",
+    "nf-ingest/zakura",
+]
+
 [dependencies]
-pir-export = { path = "../export" }
-pir-client = { path = "../client" }
-pir-server = { path = "../server" }
-pir-types  = { path = "../types" }
-nf-ingest = { path = "../../nf-ingest" }
+pir-export = { path = "../export", default-features = false }
+pir-client = { path = "../client", default-features = false }
+pir-server = { path = "../server", default-features = false }
+pir-types  = { path = "../types", default-features = false }
+nf-ingest = { path = "../../nf-ingest", default-features = false }
+voting-crypto-deps = { workspace = true }
 ypir = { version = "0.2.0", package = "valar-ypir", default-features = false, features = ["server"] }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 ff = "0.13"
-pasta_curves = "0.5"
 rand = "0.8"
 hex = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

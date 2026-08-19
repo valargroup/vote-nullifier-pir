@@ -1,4 +1,4 @@
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 use crate::hasher::PoseidonHasher;
 use crate::tree::TREE_DEPTH;

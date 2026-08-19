@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use pasta_curves::Fp;
+use voting_crypto_deps::pasta_curves::Fp;
 
 /// Build or load `nullifiers.tree` at `chain_height`, then write tier files under `pir_dir`.
 pub fn export_tree_and_tiers_from_nullifiers(

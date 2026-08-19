@@ -1,6 +1,6 @@
 use ff::Field as _;
-use pasta_curves::Fp;
 use rayon::prelude::*;
+use voting_crypto_deps::pasta_curves::Fp;
 
 pub(crate) use crate::hasher::PoseidonHasher;
 

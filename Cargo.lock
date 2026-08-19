@@ -1417,11 +1417,10 @@ dependencies = [
  "anyhow",
  "criterion",
  "ff",
- "halo2_gadgets",
  "hex",
- "pasta_curves",
  "rand 0.8.5",
  "rayon",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -1658,7 +1657,6 @@ dependencies = [
  "ff",
  "hex",
  "imt-tree",
- "pasta_curves",
  "pir-types",
  "prost",
  "rayon",
@@ -1667,6 +1665,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -1680,7 +1679,6 @@ dependencies = [
  "hex",
  "imt-tree",
  "nf-ingest",
- "pasta_curves",
  "pir-export",
  "pir-server",
  "pir-types",
@@ -1697,6 +1695,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -2048,13 +2047,13 @@ dependencies = [
  "hex",
  "imt-tree",
  "log",
- "pasta_curves",
  "pir-export",
  "pir-types",
  "rand 0.8.5",
  "serde_json",
  "tokio",
  "valar-ypir",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -2068,7 +2067,6 @@ dependencies = [
  "hex",
  "imt-tree",
  "nf-ingest",
- "pasta_curves",
  "pir-types",
  "rand 0.8.5",
  "rayon",
@@ -2076,6 +2074,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -2087,7 +2086,6 @@ dependencies = [
  "blake3",
  "ff",
  "hex",
- "pasta_curves",
  "pir-types",
  "serde",
  "serde_json",
@@ -2097,6 +2095,7 @@ dependencies = [
  "tracing-subscriber",
  "valar-spiral-rs",
  "valar-ypir",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -2120,7 +2119,6 @@ dependencies = [
  "hyper-util",
  "log",
  "nf-ingest",
- "pasta_curves",
  "pir-client",
  "pir-export",
  "pir-server",
@@ -2130,6 +2128,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "valar-ypir",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -2139,9 +2138,9 @@ dependencies = [
  "anyhow",
  "ff",
  "imt-tree",
- "pasta_curves",
  "serde",
  "serde_json",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -3672,6 +3671,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "voting-crypto-deps"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc4a58c1a77abf2198fd5a377da53b8ac39233bd62d66d655f6830875234fc30"
+dependencies = [
+ "halo2_gadgets",
+ "pasta_curves",
+ "zakura-halo2-gadgets",
+ "zakura-pasta-curves",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4160,6 +4171,82 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
+]
+
+[[package]]
+name = "zakura-halo2-gadgets"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ea4f65916f14036420da6f487db68eca9f6cd69ff187e2ba6ba5fe467dba1b6"
+dependencies = [
+ "arrayvec",
+ "bitvec",
+ "ff",
+ "group",
+ "lazy_static",
+ "rand 0.8.5",
+ "subtle",
+ "uint",
+ "zakura-halo2-poseidon",
+ "zakura-halo2-proofs",
+ "zakura-pasta-curves",
+ "zakura-sinsemilla",
+]
+
+[[package]]
+name = "zakura-halo2-poseidon"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb66e808e2f7b83333051be6691c679d3a32eb43fbea58be59595f5f36fa4e1"
+dependencies = [
+ "bitvec",
+ "ff",
+ "group",
+ "zakura-pasta-curves",
+]
+
+[[package]]
+name = "zakura-halo2-proofs"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64b0e307f5bc2c888bd82682ca468672b3896713ac8553f8107a3d1664326c90"
+dependencies = [
+ "blake2b_simd",
+ "ff",
+ "group",
+ "indexmap 1.9.3",
+ "maybe-rayon",
+ "rand_core 0.6.4",
+ "tracing",
+ "zakura-pasta-curves",
+]
+
+[[package]]
+name = "zakura-pasta-curves"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fb522ddc5c66ec58632313e31f8863d0c221c76e65d6ab6a32a3e3295cc21b3"
+dependencies = [
+ "blake2b_simd",
+ "cc",
+ "ff",
+ "group",
+ "lazy_static",
+ "rand 0.8.5",
+ "static_assertions",
+ "subtle",
+]
+
+[[package]]
+name = "zakura-sinsemilla"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2514ff447516a189656567de0d571018d9dcc265da6f931be56fa324db94d681"
+dependencies = [
+ "group",
+ "lazy_static",
+ "subtle",
+ "zakura-pasta-curves",
 ]
 
 [[package]]
