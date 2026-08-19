@@ -15,9 +15,6 @@ members = [
 imt-tree = { path = "imt-tree", version = "0.2.1", default-features = false }
 voting-crypto-deps = { version = "=0.1.0", default-features = false }
 
-[patch.crates-io]
-voting-crypto-deps = { git = "https://github.com/valargroup/voting-circuits", rev = "83427979fccb8ae3bf010e21691742c78d283bc8" }
-
 [profile.release]
 lto = "fat"
 codegen-units = 1
