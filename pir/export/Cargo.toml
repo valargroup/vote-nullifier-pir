@@ -8,7 +8,7 @@ rand = "0.8"
 tempfile = "3"
 
 [features]
-default = ["upstream"]
+default = ["zakura"]
 upstream = [
     "voting-crypto-deps/upstream-vct",
     "pir-types/upstream",

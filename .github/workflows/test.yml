@@ -68,8 +68,8 @@ jobs:
           cargo run --quiet -p nf-server --features serve -- serve --help \
             | grep -Fq -- '--zcash-network'
 
-  zakura:
-    name: Zakura backend
+  upstream:
+    name: Upstream backend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -85,29 +85,29 @@ jobs:
             target
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-zakura-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-upstream-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-zakura-
+            ${{ runner.os }}-upstream-
 
-      - name: Test Zakura backend
+      - name: Test upstream backend
         run: |
           cargo test --workspace --all-targets --no-default-features \
-            --features imt-tree/zakura,pir-types/zakura,pir-client/zakura,pir-export/zakura,pir-export/cli,pir-server/zakura,nf-ingest/zakura,nf-server/zakura,nf-server/serve,pir-test/zakura \
+            --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream \
             --locked
 
       - name: Check backend contracts
         run: |
           if cargo tree --workspace --locked \
-            | grep -Eq 'zakura-(pasta-curves|halo2-gadgets|halo2-poseidon|halo2-proofs|orchard|sinsemilla)'; then
-            echo "Zakura crypto crates entered the default upstream graph"
+            | grep -Eq '(^|[[:space:]├└│])(pasta_curves|halo2_gadgets|halo2_poseidon|halo2_proofs|orchard|sinsemilla) v'; then
+            echo "Upstream crypto crates entered the default Zakura graph"
             exit 1
           fi
 
           if cargo tree --workspace --no-default-features \
-            --features imt-tree/zakura,pir-types/zakura,pir-client/zakura,pir-export/zakura,pir-export/cli,pir-server/zakura,nf-ingest/zakura,nf-server/zakura,nf-server/serve,pir-test/zakura \
+            --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream \
             --locked \
-            | grep -Eq '(^|[[:space:]├└│])(pasta_curves|halo2_gadgets|halo2_poseidon|halo2_proofs|orchard|sinsemilla) v'; then
-            echo "Upstream crypto crates entered the Zakura graph"
+            | grep -Eq 'zakura-(pasta-curves|halo2-gadgets|halo2-poseidon|halo2-proofs|orchard|sinsemilla)'; then
+            echo "Zakura crypto crates entered the upstream graph"
             exit 1
           fi
 
@@ -123,8 +123,8 @@ jobs:
 
   notify-slack:
     name: Slack Notification
-    if: ${{ always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && (needs.test.result == 'failure' || needs.zakura.result == 'failure') }}
-    needs: [test, zakura]
+    if: ${{ always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && (needs.test.result == 'failure' || needs.upstream.result == 'failure') }}
+    needs: [test, upstream]
     runs-on: ubuntu-latest
     steps:
       - name: Notify Slack on failure

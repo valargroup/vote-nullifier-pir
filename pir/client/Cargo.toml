@@ -8,7 +8,7 @@ repository = "https://github.com/valargroup/vote-nullifier-pir"
 readme = "README.md"
 
 [features]
-default = ["upstream"]
+default = ["zakura"]
 upstream = [
     "voting-crypto-deps/upstream-vct",
     "pir-types/upstream",

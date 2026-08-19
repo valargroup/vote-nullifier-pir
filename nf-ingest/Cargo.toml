@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["upstream"]
+default = ["zakura"]
 upstream = ["voting-crypto-deps/upstream-vct", "imt-tree/upstream", "pir-types/upstream"]
 zakura = ["voting-crypto-deps/zakura-vct", "imt-tree/zakura", "pir-types/zakura"]
 

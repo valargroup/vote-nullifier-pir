@@ -4,9 +4,9 @@ Private Information Retrieval client for [vote-nullifier-pir](https://github.com
 
 Used by Zcash wallets integrating shielded voting: before building a delegation ZKP, a wallet must prove its notes' nullifiers are absent from the on-chain nullifier set. `pir-client` avoids downloading the full set by searching the public Tier 0 index and performing one YPIR query for the selected Tier 1 leaf row.
 
-The default `upstream` feature uses the crates.io voting crypto libraries. A
-Zakura wallet must use `default-features = false, features = ["zakura"]`. The
-two backend features are mutually exclusive.
+The default `zakura` feature uses the Zakura voting crypto libraries. An
+upstream wallet must use `default-features = false, features = ["upstream"]`.
+The two backend features are mutually exclusive.
 
 ## Usage
 
