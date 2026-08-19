@@ -9,8 +9,8 @@ readme = "README.md"
 
 [features]
 default = ["upstream"]
-upstream = ["voting-crypto-deps?/upstream", "imt-tree?/upstream"]
-zakura = ["voting-crypto-deps?/zakura", "imt-tree?/zakura"]
+upstream = ["voting-crypto-deps?/upstream-vct", "imt-tree?/upstream"]
+zakura = ["voting-crypto-deps?/zakura-vct", "imt-tree?/zakura"]
 reader = ["dep:voting-crypto-deps", "dep:ff", "dep:anyhow", "dep:imt-tree"]
 
 [dependencies]

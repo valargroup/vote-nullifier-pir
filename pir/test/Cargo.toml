@@ -6,7 +6,7 @@ edition = "2021"
 [features]
 default = ["upstream"]
 upstream = [
-    "voting-crypto-deps/upstream",
+    "voting-crypto-deps/upstream-vct",
     "pir-export/upstream",
     "pir-client/upstream",
     "pir-server/upstream",
@@ -14,7 +14,7 @@ upstream = [
     "nf-ingest/upstream",
 ]
 zakura = [
-    "voting-crypto-deps/zakura",
+    "voting-crypto-deps/zakura-vct",
     "pir-export/zakura",
     "pir-client/zakura",
     "pir-server/zakura",

@@ -6,7 +6,7 @@ edition = "2021"
 [features]
 default = ["upstream"]
 upstream = [
-    "voting-crypto-deps/upstream",
+    "voting-crypto-deps/upstream-vct",
     "pir-server?/upstream",
     "pir-export/upstream",
     "pir-types/upstream",
@@ -14,7 +14,7 @@ upstream = [
     "imt-tree/upstream",
 ]
 zakura = [
-    "voting-crypto-deps/zakura",
+    "voting-crypto-deps/zakura-vct",
     "pir-server?/zakura",
     "pir-export/zakura",
     "pir-types/zakura",

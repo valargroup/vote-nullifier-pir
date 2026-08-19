@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 default = ["upstream"]
-upstream = ["voting-crypto-deps/upstream", "pir-types/upstream"]
-zakura = ["voting-crypto-deps/zakura", "pir-types/zakura"]
+upstream = ["voting-crypto-deps/upstream-vct", "pir-types/upstream"]
+zakura = ["voting-crypto-deps/zakura-vct", "pir-types/zakura"]
 avx512 = ["ypir/explicit_avx512"]
 rayon = ["ypir/rayon"]
 
