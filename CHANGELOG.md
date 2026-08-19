@@ -1,9 +1,16 @@
 # Unreleased
 
-- Let PIR and IMT consumers select either the default Zakura voting crypto
-  crates or the mutually exclusive upstream backend.
+# v0.0.43
+
+- Default PIR and IMT builds to the Zakura voting crypto backend while retaining
+  an explicitly selectable and tested upstream backend.
 - Route default PIR and voting-config reads through the GitHub-primary
   `voting.valargroup.dev` gateway with its Cloudflare fallback.
+
+# imt-tree 0.3.0, pir-types 0.4.0, and pir-client 0.5.0
+
+- Add mutually exclusive Zakura and upstream crypto backends, with Zakura as
+  the default and minimal VCT-only dependency sets in both modes.
 
 # v0.0.42
 
