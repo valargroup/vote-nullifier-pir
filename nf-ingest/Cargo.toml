@@ -14,7 +14,6 @@ pir-types = { path = "../pir/types", default-features = false }
 voting-crypto-deps = { workspace = true }
 anyhow = "1.0"
 hex = "0.4"
-ff = "0.13"
 rayon = "1"
 prost = "0.10.3"
 tonic = { version = "0.7.2", features = ["tls", "tls-roots"] }

@@ -32,7 +32,6 @@ voting-crypto-deps = { workspace = true }
 ypir = { version = "0.2.0", package = "valar-ypir", default-features = false, features = ["server"] }
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
-ff = "0.13"
 rand = "0.8"
 hex = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

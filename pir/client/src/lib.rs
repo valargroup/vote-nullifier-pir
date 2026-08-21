@@ -7,9 +7,9 @@
 use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
-use ff::PrimeField as _;
 use imt_tree::hasher::PoseidonHasher;
 use imt_tree::tree::{precompute_empty_hashes, TREE_DEPTH};
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField as _;
 use voting_crypto_deps::pasta_curves::Fp;
 // Re-exported so downstream crates (e.g. zcash_voting) can reference the type
 // returned by PirClientBlocking::fetch_proof without a direct imt-tree dependency.
@@ -809,9 +809,15 @@ pub fn fetch_proof_local_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ff::Field;
     use pir_export::build_ranges_with_sentinels;
+    use voting_crypto_deps::pasta_curves::group::ff::FromUniformBytes;
     use voting_crypto_deps::pasta_curves::Fp;
+
+    fn random_fp(rng: &mut impl rand::RngCore) -> Fp {
+        let mut bytes = [0u8; 64];
+        rng.fill_bytes(&mut bytes);
+        Fp::from_uniform_bytes(&bytes)
+    }
 
     /// Build a tree and export both tier blobs for a layout.
     struct TestFixture {
@@ -849,7 +855,7 @@ mod tests {
     #[test]
     fn fetch_proof_local_verifies_for_known_ranges() {
         let mut rng = rand::thread_rng();
-        let raw_nfs: Vec<Fp> = (0..100).map(|_| Fp::random(&mut rng)).collect();
+        let raw_nfs: Vec<Fp> = (0..100).map(|_| random_fp(&mut rng)).collect();
         let fix = TestFixture::build(&raw_nfs);
 
         for &[nf_lo, _, _] in fix.ranges.iter().take(20) {
@@ -1041,7 +1047,7 @@ mod tests {
         }
 
         fn new_layout(tree: &pir_export::PirTree, layout: PirLayout) -> Self {
-            use ff::PrimeField as _;
+            use voting_crypto_deps::pasta_curves::group::ff::PrimeField as _;
 
             let (tier0_data, _) = pir_export::export_for_layout(tree, layout).unwrap();
             let rows = layout.tier1_rows().unwrap();

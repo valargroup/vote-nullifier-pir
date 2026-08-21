@@ -16,12 +16,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use ff::{Field, PrimeField as _};
 use rand::Rng;
+use voting_crypto_deps::pasta_curves::group::ff::{FromUniformBytes, PrimeField as _};
 use voting_crypto_deps::pasta_curves::Fp;
 
 use pir_export::build_pir_tree;
 use pir_types::{TIER1_ITEM_BITS, TIER1_ROWS, TIER1_ROW_BYTES};
+
+fn random_fp(rng: &mut impl rand::RngCore) -> Fp {
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes);
+    Fp::from_uniform_bytes(&bytes)
+}
 
 #[derive(Parser)]
 #[command(name = "pir-test", about = "PIR system end-to-end testing")]
@@ -378,7 +384,7 @@ fn run_small() -> Result<()> {
 
     // Generate 1000 random nullifiers
     let mut rng = rand::thread_rng();
-    let nfs: Vec<Fp> = (0..1000).map(|_| Fp::random(&mut rng)).collect();
+    let nfs: Vec<Fp> = (0..1000).map(|_| random_fp(&mut rng)).collect();
 
     run_local_inner(&nfs, 10)?;
 
@@ -400,7 +406,7 @@ fn run_local(nullifiers_path: Option<PathBuf>, num_proofs: usize) -> Result<()> 
     } else {
         eprintln!("Generating 31,000 random nullifiers...");
         let mut rng = rand::thread_rng();
-        (0..31_000).map(|_| Fp::random(&mut rng)).collect()
+        (0..31_000).map(|_| random_fp(&mut rng)).collect()
     };
 
     run_local_inner(&nfs, num_proofs)?;
@@ -609,7 +615,7 @@ fn run_verify_ypir(poly_len: usize) -> Result<()> {
     eprintln!("=== YPIR Round-Trip Verification ===\n");
 
     let mut rng = rand::thread_rng();
-    let raw_nfs: Vec<Fp> = (0..1000).map(|_| Fp::random(&mut rng)).collect();
+    let raw_nfs: Vec<Fp> = (0..1000).map(|_| random_fp(&mut rng)).collect();
     let ranges = pir_export::prepare_nullifiers(raw_nfs);
     let tree = build_pir_tree(ranges)?;
     let (_, tier1_data) = export_tiers(&tree)?;
@@ -705,7 +711,7 @@ fn run_bench(num_queries: usize, poly_len: usize) -> Result<()> {
     // Build a small tree to get valid tier data
     eprintln!("\nBuilding synthetic tree (1000 nullifiers)...");
     let mut rng = rand::thread_rng();
-    let raw_nfs: Vec<Fp> = (0..1000).map(|_| Fp::random(&mut rng)).collect();
+    let raw_nfs: Vec<Fp> = (0..1000).map(|_| random_fp(&mut rng)).collect();
     let ranges = pir_export::prepare_nullifiers(raw_nfs);
     let tree = build_pir_tree(ranges)?;
 

@@ -8,9 +8,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use ff::PrimeField;
 use imt_tree::tree::TREE_DEPTH as IMT_TREE_DEPTH;
 use serde::{Deserialize, Serialize};
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField;
 use voting_crypto_deps::pasta_curves::Fp;
 
 use super::{PirTree, PIR_DEPTH};

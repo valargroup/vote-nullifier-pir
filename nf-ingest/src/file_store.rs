@@ -59,8 +59,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ff::PrimeField;
 use rayon::prelude::*;
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField;
 use voting_crypto_deps::pasta_curves::Fp;
 
 const NULLIFIER_SIZE: usize = 32;

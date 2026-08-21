@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use ff::Field;
+use voting_crypto_deps::pasta_curves::group::ff::{Field, FromUniformBytes};
 use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::tree::{
@@ -7,13 +7,19 @@ use imt_tree::tree::{
     TREE_DEPTH,
 };
 
+fn random_fp(rng: &mut impl rand::RngCore) -> Fp {
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes);
+    Fp::from_uniform_bytes(&bytes)
+}
+
 fn bench_punctured_tree_build(c: &mut Criterion) {
     let mut rng = rand::thread_rng();
 
     let step = Fp::from(2u64).pow([250, 0, 0, 0]);
     let mut nfs: Vec<Fp> = (0u64..=16).map(|k| step * Fp::from(k)).collect();
     nfs.push(Fp::one().neg());
-    let extra: Vec<Fp> = (0..100_000).map(|_| Fp::random(&mut rng)).collect();
+    let extra: Vec<Fp> = (0..100_000).map(|_| random_fp(&mut rng)).collect();
     nfs.extend(extra);
     nfs.sort();
     nfs.dedup();

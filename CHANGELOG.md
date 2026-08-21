@@ -1,8 +1,18 @@
 # Unreleased
 
+# v0.0.44
+
+- Bump `voting-crypto-deps` to `0.1.2` so Zakura builds use cryptography RC.3.
+- Take `ff` traits through `pasta_curves::group::ff` so Zakura (`ff` 0.14) and
+  upstream (`ff` 0.13) backends stay mutually exclusive without a shared pin.
 - Log successful `nf-server` readiness locally instead of creating an
   Info-level Sentry issue. Snapshot-stale and recovery events now share an
   explicit routing tag, and recovery reports the last nonzero gap.
+
+# imt-tree 0.4.0, pir-types 0.5.0, and pir-client 0.6.0
+
+- Depend on `voting-crypto-deps` `0.1.2` (Zakura RC.3) and import field traits
+  via the selected pasta backend instead of a direct `ff` crate pin.
 
 # v0.0.43
 

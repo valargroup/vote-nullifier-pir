@@ -1,5 +1,5 @@
-use ff::PrimeField as _;
 use voting_crypto_deps::halo2_gadgets::poseidon::primitives::{P128Pow5T3, Spec};
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField as _;
 use voting_crypto_deps::pasta_curves::Fp;
 
 /// A reusable Poseidon hasher that avoids per-call initialisation overhead.

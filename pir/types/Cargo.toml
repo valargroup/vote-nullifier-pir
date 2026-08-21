@@ -1,6 +1,6 @@
 [package]
 name = "pir-types"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Shared wire types and tier-layout constants for Ironwood nullifier non-membership proofs."
 license = "MIT OR Apache-2.0"
@@ -11,12 +11,11 @@ readme = "README.md"
 default = ["zakura"]
 upstream = ["voting-crypto-deps?/upstream-vct", "imt-tree?/upstream"]
 zakura = ["voting-crypto-deps?/zakura-vct", "imt-tree?/zakura"]
-reader = ["dep:voting-crypto-deps", "dep:ff", "dep:anyhow", "dep:imt-tree"]
+reader = ["dep:voting-crypto-deps", "dep:anyhow", "dep:imt-tree"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 voting-crypto-deps = { workspace = true, optional = true }
-ff = { version = "0.13", optional = true }
 anyhow = { version = "1.0", optional = true }
 imt-tree = { workspace = true, optional = true }
 
