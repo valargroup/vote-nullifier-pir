@@ -1,5 +1,9 @@
 # Unreleased
 
+- Log successful `nf-server` readiness locally instead of creating an
+  Info-level Sentry issue. Snapshot-stale and recovery events now share an
+  explicit routing tag, and recovery reports the last nonzero gap.
+
 # v0.0.43
 
 - Default PIR and IMT builds to the Zakura voting crypto backend while retaining

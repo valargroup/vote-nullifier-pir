@@ -25,7 +25,8 @@
 //!   tick — Sentry would dedupe by fingerprint anyway, but a single
 //!   event keeps the noise down.
 //! * **Stale → converged**: clear the stale timer, reset the alerted
-//!   flag, set the gauge back to 0. The next staleness episode is a
+//!   flag, set the gauge back to 0, and emit one Info-level recovery
+//!   event with the same routing tag. The next staleness episode is a
 //!   fresh alert.
 //!
 //! Both `served > 0` and `served = 0` count as stale when
@@ -82,6 +83,9 @@ pub struct State {
     /// True between the alert firing and the host recovering. Prevents
     /// repeated Sentry events for the same continuous staleness.
     alerted: bool,
+    /// Most recent gap in the current stale episode. Recovery happens after
+    /// the current gap reaches zero, so retain the prior value for reporting.
+    last_gap: u64,
 }
 
 /// Pure decision function: classify the current observation and
@@ -108,11 +112,13 @@ pub fn tick(
             .stale_since
             .map(|t| now.saturating_duration_since(t))
             .unwrap_or_default();
+        let last_gap = state.last_gap;
         state.stale_since = None;
         state.alerted = false;
+        state.last_gap = 0;
         if was_alerted {
             return Action::Recovered {
-                gap: expected.saturating_sub(served),
+                gap: last_gap,
                 stale_for,
             };
         }
@@ -120,6 +126,7 @@ pub fn tick(
     }
 
     let gap = expected - served;
+    state.last_gap = gap;
     let started = *state.stale_since.get_or_insert(now);
     let stale_for = now.saturating_duration_since(started);
 
@@ -167,13 +174,23 @@ fn apply(action: Action) {
         Action::Stale { stale_for, .. } => metrics::stale_seconds_set(stale_for.as_secs()),
         Action::Recovered { gap, stale_for } => {
             metrics::stale_seconds_set(0);
-            sentry::capture_message(
-                &format!(
-                    "snapshot height converged: gap closed after {}s (was {} blocks behind)",
-                    stale_for.as_secs(),
-                    gap,
-                ),
-                sentry::Level::Info,
+            sentry::with_scope(
+                |scope| {
+                    scope.set_tag("alert", "snapshot_stale");
+                    scope.set_tag("snapshot_state", "recovered");
+                    scope.set_tag("gap_blocks", gap.to_string());
+                    scope.set_tag("stale_seconds", stale_for.as_secs().to_string());
+                },
+                || {
+                    sentry::capture_message(
+                        &format!(
+                            "snapshot height converged: gap closed after {}s (was {} blocks behind)",
+                            stale_for.as_secs(),
+                            gap,
+                        ),
+                        sentry::Level::Info,
+                    );
+                },
             );
         }
         Action::FireAlert {
@@ -185,11 +202,12 @@ fn apply(action: Action) {
             metrics::stale_seconds_set(stale_for.as_secs());
             // Tags let the Sentry alert rule filter on this specific
             // event class without false positives from other Error
-            // events. The shared message text + tags also give Sentry
-            // a stable fingerprint per-host (issue stays grouped).
+            // events. Local episode state, rather than Sentry grouping,
+            // prevents a repeat on every watchdog tick.
             sentry::with_scope(
                 |scope| {
                     scope.set_tag("alert", "snapshot_stale");
+                    scope.set_tag("snapshot_state", "stale");
                     scope.set_tag("served_height", served.to_string());
                     scope.set_tag("expected_height", expected.to_string());
                     scope.set_tag("gap_blocks", gap.to_string());
@@ -310,7 +328,7 @@ mod tests {
 
         // Recover (caught up).
         let r = tick(&mut st, t0 + s(2000), 110, 110, threshold);
-        assert!(matches!(r, Action::Recovered { gap: 0, .. }), "got {r:?}");
+        assert!(matches!(r, Action::Recovered { gap: 10, .. }), "got {r:?}");
         assert!(!st.alerted);
         assert!(st.stale_since.is_none());
 
@@ -360,6 +378,44 @@ mod tests {
                 }
             ),
             "got {a:?}"
+        );
+    }
+
+    #[test]
+    fn sentry_events_classify_stale_and_recovery_states() {
+        let events = sentry::test::with_captured_events(|| {
+            apply(Action::FireAlert {
+                served: 100,
+                expected: 110,
+                gap: 10,
+                stale_for: s(1800),
+            });
+            apply(Action::Recovered {
+                gap: 10,
+                stale_for: s(1860),
+            });
+        });
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].tags.get("alert").map(String::as_str),
+            Some("snapshot_stale")
+        );
+        assert_eq!(
+            events[0].tags.get("snapshot_state").map(String::as_str),
+            Some("stale")
+        );
+        assert_eq!(
+            events[1].tags.get("alert").map(String::as_str),
+            Some("snapshot_stale")
+        );
+        assert_eq!(
+            events[1].tags.get("snapshot_state").map(String::as_str),
+            Some("recovered")
+        );
+        assert_eq!(
+            events[1].tags.get("gap_blocks").map(String::as_str),
+            Some("10")
         );
     }
 }
