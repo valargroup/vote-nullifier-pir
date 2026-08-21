@@ -464,7 +464,7 @@ Variables the shipped systemd unit honors. Set them in `/etc/default/nf-server` 
 | `SVOTE_PIR_PRECOMPUTED_BASE_URL` | CDN base URL for tier downloads. Defaults to `https://shielded-vote.nyc3.digitaloceanspaces.com`. |
 | `SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT` | Optional operator override for bootstrapping and serving one specific published snapshot height. Bypasses PIR/voting-config discovery while set. |
 | `SVOTE_PIR_STALE_THRESHOLD_SECS` | Snapshot-staleness threshold for the watchdog (Sentry alerts gated on `SENTRY_DSN`). |
-| `SENTRY_DSN` | Enables Sentry reporting for startup, load, and snapshot-watchdog failures. Successful readiness logs locally. Sentry tracing is disabled. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
+| `SENTRY_DSN` | Enables Sentry reporting for startup, load, and snapshot-watchdog failures plus one-time snapshot recovery. Successful readiness logs locally. Sentry tracing is disabled. Lives in `/opt/nf-ingest/.env` (mode `0600`). |
 | `SENTRY_ENVIRONMENT` | Tags Sentry events as `staging` or `production`. Lives in `/opt/nf-ingest/.env` and defaults to `production` if omitted. |
 | `SENTRY_RELEASE` | Tags Sentry events with the deployed release tag. The deploy workflow sets this from `release_tag`; if omitted, the binary falls back to the compiled Cargo package version. |
 

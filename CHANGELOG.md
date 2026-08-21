@@ -1,8 +1,8 @@
 # Unreleased
 
 - Log successful `nf-server` readiness locally instead of creating an
-  Info-level Sentry issue. Startup, load, and snapshot-watchdog failures remain
-  alertable.
+  Info-level Sentry issue. Snapshot-stale and recovery events now share an
+  explicit routing tag, and recovery reports the last nonzero gap.
 
 # v0.0.43
 
