@@ -5,11 +5,11 @@
 //! can use.
 
 use anyhow::{Context, Result};
-use ff::PrimeField as _;
 use std::io::Cursor;
 use std::path::Path;
 use std::time::Instant;
 use tracing::{info, warn};
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField as _;
 use voting_crypto_deps::pasta_curves::Fp;
 
 use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};

@@ -4,7 +4,7 @@
 //! elements in 32-byte little-endian encoding, plus binary search over
 //! record arrays keyed by Fp values.
 
-use ff::PrimeField as _;
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField as _;
 use voting_crypto_deps::pasta_curves::Fp;
 
 /// Write an Fp value as 32 little-endian bytes into `buf`.

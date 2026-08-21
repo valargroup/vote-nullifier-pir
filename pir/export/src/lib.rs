@@ -23,8 +23,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use ff::PrimeField as _;
 use tracing::info;
+use voting_crypto_deps::pasta_curves::group::ff::PrimeField as _;
 use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
@@ -203,7 +203,7 @@ const SENTINEL_COUNT: u64 = 32;
 /// to an odd count so that `build_punctured_ranges` can group them into
 /// complete triples.
 pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
-    use ff::Field;
+    use voting_crypto_deps::pasta_curves::group::ff::Field;
 
     nfs.sort();
     let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
@@ -537,7 +537,7 @@ pub fn export_for_layout(tree: &PirTree, layout: PirLayout) -> Result<(Vec<u8>, 
 /// After injection the list is sorted, deduplicated, and padded to an odd
 /// count if needed.
 pub fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<PuncturedRange> {
-    use ff::Field as _;
+    use voting_crypto_deps::pasta_curves::group::ff::Field as _;
     let step = Fp::from(2u64).pow([SENTINEL_EXPONENT, 0, 0, 0]);
     let mut all_nfs: Vec<Fp> = (0u64..=SENTINEL_COUNT)
         .map(|k| step * Fp::from(k))

@@ -1,6 +1,6 @@
 [package]
 name = "imt-tree"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Indexed Merkle Tree for nullifier non-membership proofs"
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,6 @@ zakura = ["voting-crypto-deps/zakura-vct"]
 
 [dependencies]
 anyhow = "1.0"
-ff = "0.13"
 hex = "0.4"
 voting-crypto-deps = { workspace = true }
 rayon = "1"

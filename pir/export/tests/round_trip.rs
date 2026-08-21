@@ -3,7 +3,7 @@
 //! Builds a depth-19 punctured-range tree (K=2) from synthetic nullifiers,
 //! exports tier data, parses it back, constructs proofs, and verifies them.
 
-use ff::{Field, PrimeField as _};
+use voting_crypto_deps::pasta_curves::group::ff::{FromUniformBytes, PrimeField as _};
 use voting_crypto_deps::pasta_curves::Fp;
 
 use imt_tree::hasher::PoseidonHasher;
@@ -16,6 +16,12 @@ use pir_export::{
     build_pir_tree, build_ranges_with_sentinels, PIR_DEPTH, TIER0_LAYERS, TIER1_LEAVES,
     TIER1_ROW_BYTES,
 };
+
+fn random_fp(rng: &mut impl rand::RngCore) -> Fp {
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes);
+    Fp::from_uniform_bytes(&bytes)
+}
 
 /// Perform local proof construction from tier data (mirrors pir_client::fetch_proof_local).
 fn construct_proof(
@@ -68,7 +74,7 @@ fn construct_proof(
 fn test_small_tree_round_trip() {
     // Build a small tree with 100 nullifiers
     let mut rng = rand::thread_rng();
-    let raw_nfs: Vec<Fp> = (0..100).map(|_| Fp::random(&mut rng)).collect();
+    let raw_nfs: Vec<Fp> = (0..100).map(|_| random_fp(&mut rng)).collect();
     let ranges = build_ranges_with_sentinels(&raw_nfs);
 
     eprintln!("  Ranges: {}", ranges.len());
@@ -131,7 +137,7 @@ fn test_small_tree_round_trip() {
 #[test]
 fn test_root_extension_is_deterministic() {
     let mut rng = rand::thread_rng();
-    let raw_nfs: Vec<Fp> = (0..50).map(|_| Fp::random(&mut rng)).collect();
+    let raw_nfs: Vec<Fp> = (0..50).map(|_| random_fp(&mut rng)).collect();
 
     let ranges1 = build_ranges_with_sentinels(&raw_nfs);
     let tree1 = build_pir_tree(ranges1).unwrap();
@@ -146,7 +152,7 @@ fn test_root_extension_is_deterministic() {
 #[test]
 fn test_pir_proof_verifies_independently() {
     let mut rng = rand::thread_rng();
-    let raw_nfs: Vec<Fp> = (0..200).map(|_| Fp::random(&mut rng)).collect();
+    let raw_nfs: Vec<Fp> = (0..200).map(|_| random_fp(&mut rng)).collect();
 
     let ranges = build_ranges_with_sentinels(&raw_nfs);
     let tree = build_pir_tree(ranges.clone()).unwrap();
