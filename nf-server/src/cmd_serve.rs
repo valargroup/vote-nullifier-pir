@@ -315,7 +315,7 @@ pub async fn run(args: Args) -> Result<()> {
                          set SENTRY_DSN to enable alerting)"
                     );
                 }
-                sentry::capture_message("nf-server ready", sentry::Level::Info);
+                tracing::info!("nf-server ready");
             }
             Ok(Err(e)) => {
                 let msg = format!("initial load failed: {e:#}");
