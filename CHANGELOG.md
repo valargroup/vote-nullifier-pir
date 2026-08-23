@@ -1,5 +1,13 @@
 # Unreleased
 
+- Add privacy-preserving PIR APM metrics for the tier0 and tier1 client
+  endpoints without recording client identifiers.
+- Add the `pir-apm` host sidecar with a basic-auth dashboard, host and service
+  health summaries, coded outlier thresholds, and Slack alert/recovery
+  notifications.
+- Package and deploy the sidecar through the existing release and
+  environment-targeted fleet workflows.
+
 # v0.0.44
 
 - Bump `voting-crypto-deps` to `0.1.2` so Zakura builds use cryptography RC.3.

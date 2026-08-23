@@ -171,6 +171,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/health", get(handlers::get_health))
         .route("/ready", get(handlers::get_ready))
         .layer(DefaultBodyLimit::max(MAX_QUERY_BODY_BYTES))
+        .layer(axum::middleware::from_fn(metrics::track_pir_request))
         .layer(cors)
         .with_state(Arc::clone(&state));
 

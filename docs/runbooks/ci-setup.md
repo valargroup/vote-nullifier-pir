@@ -69,6 +69,8 @@ restart workflows read secrets and variables from the selected environment
 | `SSH_KEY` | all | SSH private key for authentication. |
 | `NF_SENTRY_DSN` | `deploy.yml` | Sentry DSN written to `/opt/nf-ingest/.env` as `SENTRY_DSN` on deploy. |
 | `SENTRY_AUTH_TOKEN` | `deploy.yml` | Optional Sentry token for `sentry-cli` deploy markers. If omitted, deploys skip marker creation. |
+| `PIR_APM_SLACK_WEBHOOK_URL` | `deploy.yml` | Optional dedicated incoming webhook for PIR APM incidents in `#thv-alert`; falls back to repository `SLACK_WEBHOOK_URL`. |
+| `PIR_APM_DASHBOARD_PASSWORD` | `deploy.yml` | Password for the `ops` basic-auth user on each host's `/apm/` dashboard. |
 | `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing and release artifact mirroring. |
 | `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing and release artifact mirroring. |
 
@@ -100,6 +102,27 @@ variables are absent, both workflows fall back to the production `shielded-vote`
 bucket in `nyc3`. Release artifact mirroring still requires the DigitalOcean
 access key and secret so `start_pir.sh`, `update_pir.sh`, binaries, and
 checksums are published as part of the release.
+
+### PIR APM sidecar
+
+Every tagged release includes `pir-apm-linux-amd64` and
+`pir-apm.service`. `deploy.yml` installs the sidecar next to `nf-server`,
+writes its root-only environment file, and configures Caddy to serve it at
+`/apm/` on the existing PIR hostnames:
+
+- staging: `https://stage.pir-primary.valargroup.org/apm/` and
+  `https://stage.pir-backup.valargroup.org/apm/`
+- production: `https://pir-primary.valargroup.org/apm/` and
+  `https://pir-backup.valargroup.org/apm/`
+
+The dashboard is protected by Caddy basic auth (`ops` plus
+`PIR_APM_DASHBOARD_PASSWORD`). The sidecar binds only to
+`127.0.0.1:3002`, and Caddy blocks the public `/metrics` route. No DNS,
+firewall, or `vote-infrastructure` changes are required.
+
+The sidecar scrapes localhost and sends threshold/recovery messages directly
+to `#thv-alert`. Metrics use fixed endpoint labels only; IP addresses,
+request IDs, headers, and User-Agent values are never recorded.
 
 ### One-time setup on the remote host
 

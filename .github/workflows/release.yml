@@ -129,10 +129,38 @@ jobs:
           name: nf-server-${{ matrix.platform }}
           path: target/release/nf-server
 
+  build-pir-apm:
+    name: Build pir-apm (linux-amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deploy/pir-apm/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-pir-apm-${{ hashFiles('deploy/pir-apm/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --manifest-path deploy/pir-apm/Cargo.toml
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pir-apm-linux-amd64
+          path: deploy/pir-apm/target/release/pir-apm
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [release-metadata, build]
+    needs: [release-metadata, build, build-pir-apm]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,6 +169,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: nf-server-*
+
+      - name: Download pir-apm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pir-apm-linux-amd64
+          path: pir-apm-artifact
 
       - name: Prepare release assets
         run: |
@@ -151,6 +185,9 @@ jobs:
             chmod +x "nf-server-${PLATFORM}"
           done
           cp docs/nullifier-query-server.service .
+          mv pir-apm-artifact/pir-apm pir-apm-linux-amd64
+          chmod +x pir-apm-linux-amd64
+          cp deploy/systemd/pir-apm.service .
 
       - name: Generate SHA256SUMS
         run: |
@@ -161,6 +198,8 @@ jobs:
             nf-server-darwin-amd64 \
             nf-server-darwin-arm64 \
             nullifier-query-server.service \
+            pir-apm-linux-amd64 \
+            pir-apm.service \
             > SHA256SUMS
 
       - name: Create or update release assets
@@ -175,6 +214,8 @@ jobs:
             nf-server-darwin-amd64
             nf-server-darwin-arm64
             nullifier-query-server.service
+            pir-apm-linux-amd64
+            pir-apm.service
             SHA256SUMS
           )
 
@@ -213,6 +254,12 @@ jobs:
         with:
           pattern: nf-server-*
 
+      - name: Download pir-apm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pir-apm-linux-amd64
+          path: pir-apm-artifact
+
       - name: Prepare binaries and SHA256SUMS for Spaces
         run: |
           set -euo pipefail
@@ -223,12 +270,17 @@ jobs:
             chmod +x "nf-server-${PLATFORM}"
           done
           cp docs/nullifier-query-server.service .
+          mv pir-apm-artifact/pir-apm pir-apm-linux-amd64
+          chmod +x pir-apm-linux-amd64
+          cp deploy/systemd/pir-apm.service .
           sha256sum \
             nf-server-linux-amd64 \
             nf-server-linux-arm64 \
             nf-server-darwin-amd64 \
             nf-server-darwin-arm64 \
             nullifier-query-server.service \
+            pir-apm-linux-amd64 \
+            pir-apm.service \
             > SHA256SUMS
 
       - name: Render PIR helper scripts
@@ -288,6 +340,8 @@ jobs:
                 "s3://${DO_BUCKET}/binaries/vote-pir/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
             fi
           done
+          s3cmd -c /tmp/do-spaces.s3cfg put pir-apm-linux-amd64 \
+            "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}-linux-amd64" --acl-public --force
           if [ -f SHA256SUMS ]; then
             s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force SHA256SUMS \
               "s3://${DO_BUCKET}/binaries/vote-pir/SHA256SUMS-${VERSION}"

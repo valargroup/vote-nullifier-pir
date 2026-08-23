@@ -1,0 +1,16 @@
+{$PIR_HOSTS} {
+	handle /metrics {
+		respond 404
+	}
+
+	handle_path /apm* {
+		basic_auth {
+			ops {$PIR_APM_BASIC_AUTH_HASH}
+		}
+		reverse_proxy 127.0.0.1:3002
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

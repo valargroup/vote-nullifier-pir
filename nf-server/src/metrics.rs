@@ -14,10 +14,11 @@
 //! them across the fleet.
 
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
-    TextEncoder,
+    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    Registry, TextEncoder,
 };
 
 struct Metrics {
@@ -29,6 +30,9 @@ struct Metrics {
     served_height: IntGauge,
     expected_height: IntGauge,
     stale_seconds: IntGauge,
+    http_requests: IntCounterVec,
+    http_request_duration: HistogramVec,
+    http_in_flight: IntGaugeVec,
 }
 
 fn build_metrics() -> Metrics {
@@ -101,6 +105,32 @@ fn build_metrics() -> Metrics {
     )
     .expect("valid metric");
 
+    let http_requests = IntCounterVec::new(
+        Opts::new(
+            "nf_http_requests_total",
+            "PIR API requests partitioned by allowlisted endpoint, method, and status.",
+        ),
+        &["endpoint", "method", "status"],
+    )
+    .expect("valid metric");
+    let http_request_duration = HistogramVec::new(
+        HistogramOpts::new(
+            "nf_http_request_duration_seconds",
+            "End-to-end request duration for allowlisted PIR API endpoints.",
+        )
+        .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]),
+        &["endpoint"],
+    )
+    .expect("valid metric");
+    let http_in_flight = IntGaugeVec::new(
+        Opts::new(
+            "nf_http_in_flight",
+            "Currently executing requests for allowlisted PIR API endpoints.",
+        ),
+        &["endpoint"],
+    )
+    .expect("valid metric");
+
     registry
         .register(Box::new(bootstrap_attempts.clone()))
         .expect("register attempts");
@@ -122,6 +152,21 @@ fn build_metrics() -> Metrics {
     registry
         .register(Box::new(stale_seconds.clone()))
         .expect("register stale_seconds");
+    registry
+        .register(Box::new(http_requests.clone()))
+        .expect("register http_requests");
+    registry
+        .register(Box::new(http_request_duration.clone()))
+        .expect("register http_request_duration");
+    registry
+        .register(Box::new(http_in_flight.clone()))
+        .expect("register http_in_flight");
+    #[cfg(target_os = "linux")]
+    registry
+        .register(Box::new(
+            prometheus::process_collector::ProcessCollector::for_self(),
+        ))
+        .expect("register process collector");
 
     Metrics {
         registry,
@@ -132,6 +177,9 @@ fn build_metrics() -> Metrics {
         served_height,
         expected_height,
         stale_seconds,
+        http_requests,
+        http_request_duration,
+        http_in_flight,
     }
 }
 
@@ -183,6 +231,40 @@ pub fn stale_seconds_set(s: u64) {
     metrics().stale_seconds.set(s.min(i64::MAX as u64) as i64);
 }
 
+fn allowlisted_endpoint(method: &axum::http::Method, path: &str) -> Option<&'static str> {
+    match (method, path) {
+        (&axum::http::Method::GET, "/tier0") => Some("tier0"),
+        (&axum::http::Method::GET, "/params/tier1") => Some("params_tier1"),
+        (&axum::http::Method::POST, "/tier1/query") => Some("tier1_query"),
+        _ => None,
+    }
+}
+
+/// Record only the fixed PIR client routes. Deliberately excludes request IDs,
+/// remote addresses, headers, and arbitrary paths from metric labels.
+pub async fn track_pir_request(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let Some(endpoint) = allowlisted_endpoint(request.method(), request.uri().path()) else {
+        return next.run(request).await;
+    };
+    let method = request.method().as_str().to_owned();
+    let m = metrics();
+    let in_flight = m.http_in_flight.with_label_values(&[endpoint]);
+    in_flight.inc();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    in_flight.dec();
+    m.http_request_duration
+        .with_label_values(&[endpoint])
+        .observe(started.elapsed().as_secs_f64());
+    m.http_requests
+        .with_label_values(&[endpoint, &method, response.status().as_str()])
+        .inc();
+    response
+}
+
 /// `GET /metrics` handler — Prometheus text exposition.
 pub async fn handle_metrics() -> impl axum::response::IntoResponse {
     let m = metrics();
@@ -228,6 +310,13 @@ mod tests {
         m.served_height.set(100);
         m.expected_height.set(101);
         m.stale_seconds.set(42);
+        m.http_requests
+            .with_label_values(&["tier0", "GET", "200"])
+            .inc();
+        m.http_request_duration
+            .with_label_values(&["tier0"])
+            .observe(0.1);
+        m.http_in_flight.with_label_values(&["tier0"]).set(1);
 
         let mf = m.registry.gather();
         let names: Vec<&str> = mf.iter().map(|f| f.get_name()).collect();
@@ -238,9 +327,32 @@ mod tests {
         assert!(names.contains(&"nf_snapshot_served_height"));
         assert!(names.contains(&"nf_snapshot_expected_height"));
         assert!(names.contains(&"nf_snapshot_stale_seconds"));
+        assert!(names.contains(&"nf_http_requests_total"));
+        assert!(names.contains(&"nf_http_request_duration_seconds"));
+        assert!(names.contains(&"nf_http_in_flight"));
 
         // Gauges reflect the most recent set call on this isolated registry.
         assert_eq!(m.served_height.get().max(0) as u64, 100);
         assert_eq!(m.expected_height.get().max(0) as u64, 101);
+    }
+
+    #[test]
+    fn endpoint_labels_are_fixed_and_allowlisted() {
+        assert_eq!(
+            allowlisted_endpoint(&axum::http::Method::GET, "/tier0"),
+            Some("tier0")
+        );
+        assert_eq!(
+            allowlisted_endpoint(&axum::http::Method::POST, "/tier1/query"),
+            Some("tier1_query")
+        );
+        assert_eq!(
+            allowlisted_endpoint(&axum::http::Method::GET, "/tier1/row/7"),
+            None
+        );
+        assert_eq!(
+            allowlisted_endpoint(&axum::http::Method::GET, "/metrics"),
+            None
+        );
     }
 }

@@ -156,16 +156,23 @@ jobs:
         run: |
           set -euo pipefail
           cp docs/nullifier-query-server.service .
+          cp deploy/systemd/pir-apm.service .
+          cp deploy/caddy/Caddyfile pir-apm.Caddyfile
           rm -rf nf-server/
-          rm -f nf-server-linux-amd64 SHA256SUMS
+          rm -f nf-server-linux-amd64 pir-apm-linux-amd64 SHA256SUMS
           curl -fL --retry 5 -o nf-server-linux-amd64 \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+          curl -fL --retry 5 -o pir-apm-linux-amd64 \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/pir-apm-linux-amd64"
           curl -fL --retry 5 -o SHA256SUMS \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/SHA256SUMS"
           # The fleet binary targets x86-64-v4, so hosted runners only verify its checksum.
           grep ' nf-server-linux-amd64$' SHA256SUMS | sha256sum --check -
+          grep ' pir-apm-linux-amd64$' SHA256SUMS | sha256sum --check -
           mv nf-server-linux-amd64 nf-server
+          mv pir-apm-linux-amd64 pir-apm
           chmod +x nf-server
+          chmod +x pir-apm
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -173,7 +180,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          source: "nf-server,nullifier-query-server.service"
+          source: "nf-server,nullifier-query-server.service,pir-apm,pir-apm.service,pir-apm.Caddyfile"
           target: ${{ env.DEPLOY_PATH }}
 
       - name: Install and restart
@@ -182,7 +189,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,PIR_APM_DASHBOARD_PASSWORD
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -203,7 +210,13 @@ jobs:
             sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
             rm -f "$tmp"
             sudo chmod +x /opt/nf-ingest/nf-server
+            sudo chmod +x /opt/nf-ingest/pir-apm
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            sudo cp /opt/nf-ingest/pir-apm.service /etc/systemd/system/pir-apm.service
+            if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ] || [ -z "$PIR_APM_DASHBOARD_PASSWORD" ]; then
+              echo "PIR APM Slack webhook and dashboard password are required." >&2
+              exit 1
+            fi
             DEFAULTS_FILE=/etc/default/nf-server
             case "$TARGET_ENVIRONMENT" in
               production) PIR_ENV=prod ;;
@@ -233,6 +246,28 @@ jobs:
             sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
             rm -f "$tmp"
             sudo install -d -m 0755 "$PIR_DATA_DIR"
+            tmp=$(mktemp)
+            {
+              echo "PIR_APM_SCRAPE_URL=http://127.0.0.1:3000"
+              echo "PIR_APM_LISTEN=127.0.0.1:3002"
+              echo "PIR_APM_ENVIRONMENT=$TARGET_ENVIRONMENT"
+              echo "PIR_APM_HOSTNAME=$(hostname -f)"
+              echo "PIR_APM_DATA_DIR=$PIR_DATA_DIR"
+              echo "PIR_APM_DASHBOARD=1"
+              echo "PIR_APM_SLACK_WEBHOOK_URL=$PIR_APM_SLACK_WEBHOOK_URL"
+            } > "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /etc/default/pir-apm
+            rm -f "$tmp"
+            CADDY_HASH=$(caddy hash-password --plaintext "$PIR_APM_DASHBOARD_PASSWORD")
+            tmp=$(mktemp)
+            sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
+            printf 'PIR_APM_BASIC_AUTH_HASH=%s\n' "$CADDY_HASH" >> "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
+            rm -f "$tmp"
+            sudo install -m 0644 -o root -g root /opt/nf-ingest/pir-apm.Caddyfile /etc/caddy/Caddyfile
+            sudo systemd-run --pipe --wait --collect \
+              --property=EnvironmentFile=/etc/default/caddy-env \
+              caddy validate --config /etc/caddy/Caddyfile
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
                 echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
@@ -254,7 +289,10 @@ jobs:
             fi
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
+            sudo systemctl enable pir-apm
             sudo systemctl restart nullifier-query-server
+            sudo systemctl restart pir-apm
+            sudo systemctl reload caddy
             echo "Deployed ${{ inputs.release_tag }} to backup"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
@@ -266,6 +304,8 @@ jobs:
           PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
           LWD_URLS: ${{ vars.LWD_URLS }}
+          PIR_APM_SLACK_WEBHOOK_URL: ${{ secrets.PIR_APM_SLACK_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+          PIR_APM_DASHBOARD_PASSWORD: ${{ secrets.PIR_APM_DASHBOARD_PASSWORD }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -299,6 +339,8 @@ jobs:
                 echo "No logs available"
               exit 1
             fi
+            curl -sf http://127.0.0.1:3002/healthz > /dev/null
+            sudo systemctl is-active --quiet pir-apm
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
@@ -351,16 +393,23 @@ jobs:
         run: |
           set -euo pipefail
           cp docs/nullifier-query-server.service .
+          cp deploy/systemd/pir-apm.service .
+          cp deploy/caddy/Caddyfile pir-apm.Caddyfile
           rm -rf nf-server/
-          rm -f nf-server-linux-amd64 SHA256SUMS
+          rm -f nf-server-linux-amd64 pir-apm-linux-amd64 SHA256SUMS
           curl -fL --retry 5 -o nf-server-linux-amd64 \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+          curl -fL --retry 5 -o pir-apm-linux-amd64 \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/pir-apm-linux-amd64"
           curl -fL --retry 5 -o SHA256SUMS \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/SHA256SUMS"
           # The fleet binary targets x86-64-v4, so hosted runners only verify its checksum.
           grep ' nf-server-linux-amd64$' SHA256SUMS | sha256sum --check -
+          grep ' pir-apm-linux-amd64$' SHA256SUMS | sha256sum --check -
           mv nf-server-linux-amd64 nf-server
+          mv pir-apm-linux-amd64 pir-apm
           chmod +x nf-server
+          chmod +x pir-apm
 
       - name: Deploy via SSH
         uses: appleboy/scp-action@v0.1.7
@@ -368,7 +417,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          source: "nf-server,nullifier-query-server.service"
+          source: "nf-server,nullifier-query-server.service,pir-apm,pir-apm.service,pir-apm.Caddyfile"
           target: ${{ env.DEPLOY_PATH }}
 
       - name: Install and restart
@@ -377,7 +426,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,PIR_APM_DASHBOARD_PASSWORD
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -398,7 +447,13 @@ jobs:
             sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
             rm -f "$tmp"
             sudo chmod +x /opt/nf-ingest/nf-server
+            sudo chmod +x /opt/nf-ingest/pir-apm
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+            sudo cp /opt/nf-ingest/pir-apm.service /etc/systemd/system/pir-apm.service
+            if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ] || [ -z "$PIR_APM_DASHBOARD_PASSWORD" ]; then
+              echo "PIR APM Slack webhook and dashboard password are required." >&2
+              exit 1
+            fi
             DEFAULTS_FILE=/etc/default/nf-server
             case "$TARGET_ENVIRONMENT" in
               production) PIR_ENV=prod ;;
@@ -428,6 +483,28 @@ jobs:
             sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
             rm -f "$tmp"
             sudo install -d -m 0755 "$PIR_DATA_DIR"
+            tmp=$(mktemp)
+            {
+              echo "PIR_APM_SCRAPE_URL=http://127.0.0.1:3000"
+              echo "PIR_APM_LISTEN=127.0.0.1:3002"
+              echo "PIR_APM_ENVIRONMENT=$TARGET_ENVIRONMENT"
+              echo "PIR_APM_HOSTNAME=$(hostname -f)"
+              echo "PIR_APM_DATA_DIR=$PIR_DATA_DIR"
+              echo "PIR_APM_DASHBOARD=1"
+              echo "PIR_APM_SLACK_WEBHOOK_URL=$PIR_APM_SLACK_WEBHOOK_URL"
+            } > "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /etc/default/pir-apm
+            rm -f "$tmp"
+            CADDY_HASH=$(caddy hash-password --plaintext "$PIR_APM_DASHBOARD_PASSWORD")
+            tmp=$(mktemp)
+            sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
+            printf 'PIR_APM_BASIC_AUTH_HASH=%s\n' "$CADDY_HASH" >> "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
+            rm -f "$tmp"
+            sudo install -m 0644 -o root -g root /opt/nf-ingest/pir-apm.Caddyfile /etc/caddy/Caddyfile
+            sudo systemd-run --pipe --wait --collect \
+              --property=EnvironmentFile=/etc/default/caddy-env \
+              caddy validate --config /etc/caddy/Caddyfile
             if [ -n "$FORCED_HEIGHT" ]; then
               if [ -z "$PRECOMPUTED_BASE_URL" ]; then
                 echo "PRECOMPUTED_BASE_URL is required when forcing a snapshot height." >&2
@@ -449,7 +526,10 @@ jobs:
             fi
             sudo systemctl daemon-reload
             sudo systemctl enable nullifier-query-server
+            sudo systemctl enable pir-apm
             sudo systemctl restart nullifier-query-server
+            sudo systemctl restart pir-apm
+            sudo systemctl reload caddy
             echo "Deployed ${{ inputs.release_tag }} to primary"
         env:
           SENTRY_DSN: ${{ secrets.NF_SENTRY_DSN }}
@@ -461,6 +541,8 @@ jobs:
           PIR_CONFIG_URL: ${{ vars.PIR_CONFIG_URL }}
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
           LWD_URLS: ${{ vars.LWD_URLS }}
+          PIR_APM_SLACK_WEBHOOK_URL: ${{ secrets.PIR_APM_SLACK_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+          PIR_APM_DASHBOARD_PASSWORD: ${{ secrets.PIR_APM_DASHBOARD_PASSWORD }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -488,6 +570,8 @@ jobs:
                 echo "No logs available"
               exit 1
             fi
+            curl -sf http://127.0.0.1:3002/healthz > /dev/null
+            sudo systemctl is-active --quiet pir-apm
 
             ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
             if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
