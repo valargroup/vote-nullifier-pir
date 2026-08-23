@@ -3,10 +3,9 @@
 		respond 404
 	}
 
+	# The APM dashboard is served without authentication. It exposes only
+	# aggregate metrics and host health, never per-request or per-user data.
 	handle_path /apm* {
-		basic_auth {
-			admin {$PIR_APM_BASIC_AUTH_HASH}
-		}
 		reverse_proxy 127.0.0.1:3002
 	}
 

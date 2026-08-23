@@ -48,6 +48,17 @@ never printed.
 not read by the binary. Configure the proxy to route `/apm/` to
 `http://127.0.0.1:3002`; keep the sidecar listener on loopback.
 
+## Access
+
+The dashboard has no authentication. Whatever the reverse proxy exposes is
+world-readable, which is the intended configuration in
+[`deploy/caddy/Caddyfile`](caddy/Caddyfile): `/apm*` proxies straight through
+while the public `/metrics` route stays blocked. The page renders only the
+aggregate data described under [Privacy](#privacy), so exposure is limited to
+service health rather than anything about individual queries. To keep it
+private instead, drop the `/apm*` handler from the proxy and reach the sidecar
+over an SSH tunnel to `127.0.0.1:3002`.
+
 Useful commands:
 
 ```sh
@@ -66,5 +77,7 @@ The dashboard contains only aggregate metrics from the three allowlisted PIR
 endpoints (`tier0`, `params_tier1`, and `tier1_query`), snapshot gauges, process
 resident memory, and local host capacity. It does not collect or render request
 bodies, nullifiers, IP addresses, headers, query identifiers, or other
-per-user data. HTML is rendered entirely by the sidecar; browsers do not call
-the PIR server or `/metrics`.
+per-user data. HTML is rendered entirely by the sidecar; the browser re-polls
+this dashboard every 15 seconds to refresh in place, and never calls the PIR
+server or `/metrics`. With scripting disabled the page falls back to a plain
+meta refresh.

@@ -189,7 +189,7 @@ jobs:
           host: ${{ secrets.PIR_BACKUP_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,PIR_APM_DASHBOARD_PASSWORD
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -213,8 +213,8 @@ jobs:
             sudo chmod +x /opt/nf-ingest/pir-apm
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             sudo cp /opt/nf-ingest/pir-apm.service /etc/systemd/system/pir-apm.service
-            if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ] || [ -z "$PIR_APM_DASHBOARD_PASSWORD" ]; then
-              echo "PIR APM Slack webhook and dashboard password are required." >&2
+            if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ]; then
+              echo "PIR APM Slack webhook is required." >&2
               exit 1
             fi
             DEFAULTS_FILE=/etc/default/nf-server
@@ -258,12 +258,15 @@ jobs:
             } > "$tmp"
             sudo install -m 0600 -o root -g root "$tmp" /etc/default/pir-apm
             rm -f "$tmp"
-            CADDY_HASH=$(caddy hash-password --plaintext "$PIR_APM_DASHBOARD_PASSWORD")
-            tmp=$(mktemp)
-            sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
-            printf 'PIR_APM_BASIC_AUTH_HASH=%s\n' "$CADDY_HASH" >> "$tmp"
-            sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
-            rm -f "$tmp"
+            # The dashboard no longer uses basic auth. Drop any hash left over
+            # from an earlier deploy so a credential-derived value does not
+            # linger on the host.
+            if sudo grep -q '^PIR_APM_BASIC_AUTH_HASH=' /etc/default/caddy-env 2>/dev/null; then
+              tmp=$(mktemp)
+              sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
+              sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
+              rm -f "$tmp"
+            fi
             sudo install -m 0644 -o root -g root /opt/nf-ingest/pir-apm.Caddyfile /etc/caddy/Caddyfile
             sudo systemd-run --pipe --wait --collect \
               --property=EnvironmentFile=/etc/default/caddy-env \
@@ -305,7 +308,6 @@ jobs:
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
           LWD_URLS: ${{ vars.LWD_URLS }}
           PIR_APM_SLACK_WEBHOOK_URL: ${{ secrets.PIR_APM_SLACK_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
-          PIR_APM_DASHBOARD_PASSWORD: ${{ secrets.PIR_APM_DASHBOARD_PASSWORD }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3
@@ -426,7 +428,7 @@ jobs:
           host: ${{ secrets.PIR_PRIMARY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,PIR_APM_DASHBOARD_PASSWORD
+          envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL
           script: |
             set -eu
             DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
@@ -450,8 +452,8 @@ jobs:
             sudo chmod +x /opt/nf-ingest/pir-apm
             sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
             sudo cp /opt/nf-ingest/pir-apm.service /etc/systemd/system/pir-apm.service
-            if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ] || [ -z "$PIR_APM_DASHBOARD_PASSWORD" ]; then
-              echo "PIR APM Slack webhook and dashboard password are required." >&2
+            if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ]; then
+              echo "PIR APM Slack webhook is required." >&2
               exit 1
             fi
             DEFAULTS_FILE=/etc/default/nf-server
@@ -495,12 +497,15 @@ jobs:
             } > "$tmp"
             sudo install -m 0600 -o root -g root "$tmp" /etc/default/pir-apm
             rm -f "$tmp"
-            CADDY_HASH=$(caddy hash-password --plaintext "$PIR_APM_DASHBOARD_PASSWORD")
-            tmp=$(mktemp)
-            sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
-            printf 'PIR_APM_BASIC_AUTH_HASH=%s\n' "$CADDY_HASH" >> "$tmp"
-            sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
-            rm -f "$tmp"
+            # The dashboard no longer uses basic auth. Drop any hash left over
+            # from an earlier deploy so a credential-derived value does not
+            # linger on the host.
+            if sudo grep -q '^PIR_APM_BASIC_AUTH_HASH=' /etc/default/caddy-env 2>/dev/null; then
+              tmp=$(mktemp)
+              sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
+              sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
+              rm -f "$tmp"
+            fi
             sudo install -m 0644 -o root -g root /opt/nf-ingest/pir-apm.Caddyfile /etc/caddy/Caddyfile
             sudo systemd-run --pipe --wait --collect \
               --property=EnvironmentFile=/etc/default/caddy-env \
@@ -542,7 +547,6 @@ jobs:
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
           LWD_URLS: ${{ vars.LWD_URLS }}
           PIR_APM_SLACK_WEBHOOK_URL: ${{ secrets.PIR_APM_SLACK_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
-          PIR_APM_DASHBOARD_PASSWORD: ${{ secrets.PIR_APM_DASHBOARD_PASSWORD }}
 
       - name: Readiness check
         uses: appleboy/ssh-action@v1.0.3

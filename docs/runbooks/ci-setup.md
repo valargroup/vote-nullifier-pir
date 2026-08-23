@@ -70,7 +70,6 @@ restart workflows read secrets and variables from the selected environment
 | `NF_SENTRY_DSN` | `deploy.yml` | Sentry DSN written to `/opt/nf-ingest/.env` as `SENTRY_DSN` on deploy. |
 | `SENTRY_AUTH_TOKEN` | `deploy.yml` | Optional Sentry token for `sentry-cli` deploy markers. If omitted, deploys skip marker creation. |
 | `PIR_APM_SLACK_WEBHOOK_URL` | `deploy.yml` | Optional dedicated incoming webhook for PIR APM incidents in `#thv-alert`; falls back to repository `SLACK_WEBHOOK_URL`. |
-| `PIR_APM_DASHBOARD_PASSWORD` | `deploy.yml` | Password for the `admin` basic-auth user on each host's `/apm/` dashboard. |
 | `DO_ACCESS_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces access key. Required for snapshot publishing and release artifact mirroring. |
 | `DO_SECRET_KEY` | `release.yml`, `publish-snapshot.yml` | DigitalOcean Spaces secret key. Required for snapshot publishing and release artifact mirroring. |
 
@@ -115,10 +114,16 @@ writes its root-only environment file, and configures Caddy to serve it at
 - production: `https://pir-primary.valargroup.org/apm/` and
   `https://pir-backup.valargroup.org/apm/`
 
-The dashboard is protected by Caddy basic auth (`admin` plus
-`PIR_APM_DASHBOARD_PASSWORD`). The sidecar binds only to
+The dashboard is served without authentication and is reachable by anyone who
+knows the URL. It renders only aggregate metrics and host health, never
+per-request or per-user data. The sidecar itself binds only to
 `127.0.0.1:3002`, and Caddy blocks the public `/metrics` route. No DNS,
 firewall, or `vote-infrastructure` changes are required.
+
+Deploys strip any `PIR_APM_BASIC_AUTH_HASH` left in `/etc/default/caddy-env`
+by an earlier release, so no stale credential hash remains on the hosts. The
+`PIR_APM_DASHBOARD_PASSWORD` secret is no longer read by any workflow and can
+be deleted from both GitHub Environments.
 
 The sidecar scrapes localhost and sends threshold/recovery messages directly
 to `#thv-alert`. Metrics use fixed endpoint labels only; IP addresses,
