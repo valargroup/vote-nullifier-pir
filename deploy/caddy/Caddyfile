@@ -3,6 +3,11 @@
 		respond 404
 	}
 
+	# Raw tier rows are not privacy-preserving. Keep them off the public proxy.
+	handle /tier1/row/* {
+		respond 403
+	}
+
 	# The APM dashboard is served without authentication. It exposes only
 	# aggregate metrics and host health, never per-request or per-user data.
 	handle_path /apm* {

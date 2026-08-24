@@ -20,7 +20,7 @@ sudo systemctl enable --now pir-apm
 ```
 
 For a release built from inside `deploy/pir-apm`, the binary is at
-`deploy/pir-apm/target/release/pir-apm`. The crate supports stable Rust 1.85 or
+`deploy/pir-apm/target/release/pir-apm`. The crate supports stable Rust 1.88 or
 newer.
 
 ## Configuration
@@ -52,8 +52,9 @@ not read by the binary. Configure the proxy to route `/apm/` to
 
 The dashboard has no authentication. Whatever the reverse proxy exposes is
 world-readable, which is the intended configuration in
-[`deploy/caddy/Caddyfile`](caddy/Caddyfile): `/apm*` proxies straight through
-while the public `/metrics` route stays blocked. The page renders only the
+[`deploy/caddy/Caddyfile`](caddy/Caddyfile): `/apm*` proxies straight through,
+the public `/metrics` route stays blocked, and `GET /tier1/row/*` is rejected
+because that debug endpoint is not privacy-preserving. The page renders only the
 aggregate data described under [Privacy](#privacy), so exposure is limited to
 service health rather than anything about individual queries. To keep it
 private instead, drop the `/apm*` handler from the proxy and reach the sidecar
