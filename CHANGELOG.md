@@ -1,4 +1,4 @@
-# Unreleased
+# v0.0.45
 
 - Add privacy-preserving PIR APM metrics for the tier0 and tier1 client
   endpoints without recording client identifiers.
@@ -12,6 +12,8 @@
   and `PIR_APM_DASHBOARD_PASSWORD` is no longer used.
 - Package and deploy the sidecar through the existing release and
   environment-targeted fleet workflows.
+- Block public `GET /tier1/row/*` at Caddy. That debug route is not
+  privacy-preserving and must not reach `nf-server` through the public proxy.
 
 # v0.0.44
 
