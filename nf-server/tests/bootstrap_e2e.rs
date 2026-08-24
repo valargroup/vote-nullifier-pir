@@ -631,7 +631,7 @@ async fn no_active_round_ignores_rounds_list_without_explicit_override() {
         http_timeout: Duration::from_secs(5),
     };
 
-    let err = bootstrap::run(&cfg).await.err().expect("expected error");
+    let err = bootstrap::run(&cfg).await.expect_err("expected error");
     let s = format!("{err:#}");
     assert!(
         s.contains("no configured snapshot_height"),
@@ -660,7 +660,7 @@ async fn no_active_round_without_local_or_override_errors() {
         http_timeout: Duration::from_secs(5),
     };
 
-    let err = bootstrap::run(&cfg).await.err().expect("expected error");
+    let err = bootstrap::run(&cfg).await.expect_err("expected error");
     let s = format!("{err:#}");
     assert!(
         s.contains("no configured snapshot_height"),
@@ -682,7 +682,7 @@ async fn unreachable_voting_config_errors() {
         http_timeout: Duration::from_secs(1),
     };
 
-    let err = bootstrap::run(&cfg).await.err().expect("expected error");
+    let err = bootstrap::run(&cfg).await.expect_err("expected error");
     let s = format!("{err:#}");
     assert!(
         s.contains("strict bootstrap") || s.contains("voting-config"),

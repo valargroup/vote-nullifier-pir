@@ -1,5 +1,18 @@
 # Unreleased
 
+- Add privacy-preserving PIR APM metrics for the tier0 and tier1 client
+  endpoints without recording client identifiers.
+- Add the `pir-apm` host sidecar with a dashboard, host and service health
+  summaries, coded outlier thresholds, and Slack alert/recovery notifications.
+- Restyle the PIR APM dashboard in the Valar Group visual language, add a
+  headline KPI strip, grade endpoint latency against the same budgets that
+  drive alerts, and refresh in place instead of hard-reloading the page.
+- Serve the PIR APM dashboard without authentication. Deploys remove the Caddy
+  basic-auth credentials, so `/apm/` is reachable by anyone who knows the URL
+  and `PIR_APM_DASHBOARD_PASSWORD` is no longer used.
+- Package and deploy the sidecar through the existing release and
+  environment-targeted fleet workflows.
+
 # v0.0.44
 
 - Bump `voting-crypto-deps` to `0.1.2` so Zakura builds use cryptography RC.3.

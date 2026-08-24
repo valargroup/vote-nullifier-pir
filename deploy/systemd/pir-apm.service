@@ -1,0 +1,35 @@
+[Unit]
+Description=PIR local APM dashboard and alerting sidecar
+After=network-online.target nullifier-query-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/nf-ingest
+Environment=PIR_APM_LISTEN=127.0.0.1:3002
+Environment=PIR_APM_SCRAPE_URL=http://127.0.0.1:3000
+EnvironmentFile=-/etc/default/pir-apm
+ExecStart=/opt/nf-ingest/pir-apm
+Restart=on-failure
+RestartSec=5
+
+# Keep local /proc, filesystem-stat, and outbound-network access available for
+# sysinfo, PIR scraping, and Slack while removing unnecessary privileges.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

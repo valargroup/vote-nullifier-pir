@@ -392,6 +392,18 @@ Caddy obtains a certificate automatically. For nginx, use any standard `proxy_pa
 
 Browse `/metrics` once after install for the full series list; names are stable across patch releases.
 
+Fleet deploys also install the localhost-only `pir-apm` sidecar. It scrapes
+`/metrics`, `/health`, and `/ready` every 15 seconds, renders service/host
+health and tier0/tier1 latency at `/apm/` on the existing HTTPS host, and
+sends coded-threshold incidents and recoveries to `#thv-alert`. The dashboard
+is served without authentication on `/apm/`; Caddy still blocks public
+`/metrics`, and direct port 3002 access is not exposed by the firewall.
+
+The request metrics are deliberately limited to fixed endpoint, method, and
+status labels. They never include a client IP, request ID, User-Agent, or
+other request header. See [`../../deploy/README.md`](../../deploy/README.md)
+for sidecar configuration and alert thresholds.
+
 **Sentry**: optional. Create a project at [sentry.io](https://sentry.io), set `SENTRY_DSN` in `/opt/nf-ingest/.env`, set `SENTRY_ENVIRONMENT` to `staging` or `production`, and set `SENTRY_RELEASE` to the deployed release tag. Sentry tracing is disabled; only process errors and explicit operational messages are sent, so proxy-added client identity headers never leave the PIR service. The in-process snapshot watchdog emits stale-snapshot events when `SVOTE_PIR_STALE_THRESHOLD_SECS` is non-zero; `SVOTE_PIR_WATCHDOG_TICK_SECS` controls how often it checks.
 
 **Logs**: the server logs to stdout; `journalctl -u nullifier-query-server -f` follows them. Verbosity is controlled by `RUST_LOG` (e.g. `RUST_LOG=info,nf_server=debug`); set it in `/etc/default/nf-server` and restart.

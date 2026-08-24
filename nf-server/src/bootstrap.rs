@@ -907,7 +907,7 @@ mod tests {
             pir_data_dir: tmp.path().to_path_buf(),
             http_timeout: Duration::from_secs(5),
         };
-        let err = run(&cfg).await.err().expect("expected error");
+        let err = run(&cfg).await.expect_err("expected error");
         let s = format!("{err:#}");
         assert!(s.contains("vote_servers"), "unexpected error message: {s}");
     }
