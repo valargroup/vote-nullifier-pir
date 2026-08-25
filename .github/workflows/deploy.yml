@@ -1,11 +1,11 @@
 # Deploy a tagged nf-server release to PIR hosts via SSH.
 # Triggered automatically after a release build, or manually via workflow_dispatch.
-# Requires environment secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST, DEPLOY_USER, SSH_KEY, NF_SENTRY_DSN.
+# Requires environment secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST,
+# PIR_PRIMARY_BETA_HOST, PIR_BACKUP_BETA_HOST, DEPLOY_USER, SSH_KEY,
+# NF_SENTRY_DSN.
 # See docs/runbooks/ci-setup.md for one-time remote setup.
 #
-# Ordering: when targets=both, backup is deployed and readiness-checked first,
-# then primary. Matches restart.yml so release automation does not restart
-# primary while backup still runs an old binary or fails readiness.
+# Ordering: when targets=both, backup-beta, backup, primary-beta, then primary.
 
 name: Deploy nf-server
 
@@ -37,6 +37,8 @@ on:
           - both
           - primary
           - backup
+          - primary-beta
+          - backup-beta
         default: both
   workflow_call:
     inputs:
@@ -78,8 +80,14 @@ jobs:
         env:
           REQUESTED_HEIGHT: ${{ inputs.height }}
           LWD_URLS: ${{ vars.LWD_URLS }}
+          TARGETS: ${{ inputs.targets }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
           set -euo pipefail
+          if [ "$TARGET_ENVIRONMENT" != production ] && [[ "$TARGETS" == *-beta ]]; then
+            echo "Beta PIR targets exist only in production." >&2
+            exit 1
+          fi
           if [ -z "${LWD_URLS//[[:space:],]/}" ]; then
             echo "LWD_URLS must name at least one lightwalletd endpoint." >&2
             exit 1
@@ -142,10 +150,38 @@ jobs:
           echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
           echo "$SVOTE_ZCASH_NETWORK snapshot $HEIGHT is published and has all required tier files."
 
+  deploy_backup_beta:
+    name: Deploy ${{ inputs.release_tag }} to backup-beta
+    needs: validate_height
+    if: inputs.target_environment == 'production' && (inputs.targets == 'both' || inputs.targets == 'backup-beta')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy-pir-host
+        with:
+          host: ${{ secrets.PIR_BACKUP_BETA_HOST }}
+          host_role: backup-beta
+          deploy_user: ${{ secrets.DEPLOY_USER }}
+          ssh_key: ${{ secrets.SSH_KEY }}
+          release_tag: ${{ inputs.release_tag }}
+          target_environment: ${{ inputs.target_environment }}
+          forced_height: ${{ needs.validate_height.outputs.forced_height }}
+          sentry_dsn: ${{ secrets.NF_SENTRY_DSN }}
+          precomputed_base_url: ${{ vars.PRECOMPUTED_BASE_URL }}
+          pir_config_url: ${{ vars.PIR_CONFIG_URL }}
+          voting_config_url: ${{ vars.VOTING_CONFIG_URL }}
+          lwd_urls: ${{ vars.LWD_URLS }}
+          pir_apm_slack_webhook_url: ${{ secrets.PIR_APM_SLACK_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+
   deploy_backup:
     name: Deploy ${{ inputs.release_tag }} to backup
-    needs: validate_height
-    if: inputs.targets == 'both' || inputs.targets == 'backup'
+    needs: [validate_height, deploy_backup_beta]
+    if: |
+      always() &&
+      (inputs.targets == 'both' || inputs.targets == 'backup') &&
+      needs.validate_height.result == 'success' &&
+      (needs.deploy_backup_beta.result == 'success' || needs.deploy_backup_beta.result == 'skipped')
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
@@ -377,14 +413,43 @@ jobs:
         env:
           FORCED_HEIGHT: ${{ needs.validate_height.outputs.forced_height }}
 
+  deploy_primary_beta:
+    name: Deploy ${{ inputs.release_tag }} to primary-beta
+    needs: [validate_height, deploy_backup]
+    if: |
+      always() &&
+      inputs.target_environment == 'production' &&
+      (inputs.targets == 'both' || inputs.targets == 'primary-beta') &&
+      needs.validate_height.result == 'success' &&
+      (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy-pir-host
+        with:
+          host: ${{ secrets.PIR_PRIMARY_BETA_HOST }}
+          host_role: primary-beta
+          deploy_user: ${{ secrets.DEPLOY_USER }}
+          ssh_key: ${{ secrets.SSH_KEY }}
+          release_tag: ${{ inputs.release_tag }}
+          target_environment: ${{ inputs.target_environment }}
+          forced_height: ${{ needs.validate_height.outputs.forced_height }}
+          sentry_dsn: ${{ secrets.NF_SENTRY_DSN }}
+          precomputed_base_url: ${{ vars.PRECOMPUTED_BASE_URL }}
+          pir_config_url: ${{ vars.PIR_CONFIG_URL }}
+          voting_config_url: ${{ vars.VOTING_CONFIG_URL }}
+          lwd_urls: ${{ vars.LWD_URLS }}
+          pir_apm_slack_webhook_url: ${{ secrets.PIR_APM_SLACK_WEBHOOK_URL || secrets.SLACK_WEBHOOK_URL }}
+
   deploy_primary:
     name: Deploy ${{ inputs.release_tag }} to primary
-    needs: [validate_height, deploy_backup]
+    needs: [validate_height, deploy_primary_beta]
     if: |
       always() &&
       (inputs.targets == 'both' || inputs.targets == 'primary') &&
       needs.validate_height.result == 'success' &&
-      (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped')
+      (needs.deploy_primary_beta.result == 'success' || needs.deploy_primary_beta.result == 'skipped')
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
@@ -613,7 +678,7 @@ jobs:
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [validate_height, deploy_backup, deploy_primary]
+    needs: [validate_height, deploy_backup_beta, deploy_backup, deploy_primary_beta, deploy_primary]
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
@@ -640,7 +705,7 @@ jobs:
                 },
                 {
                   "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBackup: `${{ needs.deploy_backup.result }}` | Primary: `${{ needs.deploy_primary.result }}`" }
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBackup beta: `${{ needs.deploy_backup_beta.result }}` | Backup: `${{ needs.deploy_backup.result }}` | Primary beta: `${{ needs.deploy_primary_beta.result }}` | Primary: `${{ needs.deploy_primary.result }}`" }
                 }
               ]
             }
@@ -650,9 +715,11 @@ jobs:
     if: |
       always() &&
       needs.validate_height.result == 'success' &&
+      (needs.deploy_backup_beta.result == 'success' || needs.deploy_backup_beta.result == 'skipped') &&
       (needs.deploy_backup.result == 'success' || needs.deploy_backup.result == 'skipped') &&
+      (needs.deploy_primary_beta.result == 'success' || needs.deploy_primary_beta.result == 'skipped') &&
       (needs.deploy_primary.result == 'success' || needs.deploy_primary.result == 'skipped')
-    needs: [validate_height, deploy_backup, deploy_primary]
+    needs: [validate_height, deploy_backup_beta, deploy_backup, deploy_primary_beta, deploy_primary]
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     env:
