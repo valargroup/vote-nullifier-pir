@@ -1,7 +1,7 @@
 # Runbook: restart the PIR fleet
 
-A rolling restart of the production PIR replicas
-(`vote-nullifier-pir-primary`, `vote-nullifier-pir-backup`).
+A rolling restart of the four production PIR replicas: primary, primary-beta,
+backup, and backup-beta.
 
 The canonical trigger is the
 [**Restart PIR fleet**](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/restart.yml)
@@ -29,7 +29,7 @@ snapshot. There is no harm in running it again.
 
 | Input | Default | Notes |
 |-------|---------|-------|
-| `targets` | `both` | `both`, `primary`, or `backup`. |
+| `targets` | `both` | `both`, `primary`, `backup`, `primary-beta`, or `backup-beta`. |
 | `verify_height_converged` | `true` | After restart, fail the job if `nf_snapshot_served_height < nf_snapshot_expected_height`. Set `false` if you intentionally want to restart without checking convergence (e.g. you're rolling back to an older config and `expected` is going to be lower than `served`). |
 | `height` | *(empty)* | Optional forced DO snapshot height. Must be numeric, a multiple of 10, and already published under the environment's `SNAPSHOTS_BASE_URL`. |
 
@@ -54,14 +54,10 @@ loaded snapshot, but future restarts return to normal config-driven behavior.
 If the host fails before readiness/verification, the drop-in is left in place so
 the failed state is inspectable and a retry uses the same forced settings.
 
-For `targets=both` the workflow restarts **backup first**, waits for
-it to come back healthy *and* converge on the expected snapshot
-height, then restarts primary. Primary is gated on backup succeeding
-— if backup fails, primary is **not** restarted, so the fleet never
-loses both replicas at once. The convenience alias `pir.<domain>`
-points at primary, so primary carries traffic while backup is
-restarting; once primary restarts, backup is already serving the new
-snapshot.
+For `targets=both` the workflow rolls **backup-beta → backup →
+primary-beta → primary**. Every host must become ready and converge on the
+expected snapshot before its successor starts. A failure stops the chain,
+leaving the remaining hosts untouched.
 
 For each host the SSH session:
 
@@ -89,7 +85,7 @@ On failure the SSH step dumps `systemctl status` and the most recent
 3. Pick `targets` (default `both`) and leave `verify_height_converged`
    on unless you have a specific reason to disable it.
    To force a published DO snapshot, fill in `height`.
-4. Watch the two jobs in the run page. Each takes 2–3 minutes.
+4. Watch the four host jobs in the run page. Each takes 2–3 minutes.
 
 ### From the CLI
 
@@ -121,13 +117,14 @@ Even with `verify_height_converged=true` it's worth eyeballing the
 public endpoints once the workflow is green:
 
 ```bash
-for host in pir-primary pir-backup; do
+for host in pir-primary pir-primary-beta pir-backup pir-backup-beta; do
     echo "=== $host ==="
     curl -s "https://$host.valargroup.org/root" | jq '{zcash_network, nullifier_pool, dataset_version, height, pir_root}'
 done
 ```
 
-Both should report the expected `zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 2`, and identical heights and roots.
+All four should report the expected `zcash_network`, `nullifier_pool:
+"ironwood"`, `dataset_version: 2`, and identical heights and roots.
 
 ## Failure modes
 
@@ -149,31 +146,24 @@ If GitHub Actions is down, you can do the same rolling restart from a
 laptop with SSH access:
 
 ```bash
-# Pre-flight: confirm both replicas are healthy on the current height
-for host in pir-primary pir-backup; do
+# Pre-flight: confirm all replicas are healthy on the current height
+for host in pir-primary pir-primary-beta pir-backup pir-backup-beta; do
     curl -s "https://$host.valargroup.org/root" | jq '{nullifier_pool, dataset_version, height}'
 done
 
-# Backup first
-ssh root@pir-backup.valargroup.org sudo systemctl restart nullifier-query-server
-
-# Wait for backup to be ready (tier files mmapped) AND on the new
-# height before touching primary. /ready — not /health — is the
-# gate: /health returns 200 as soon as the listener binds, whereas
-# /ready only flips to 200 once queries can be served.
-until curl -sf --max-time 4 https://pir-backup.valargroup.org/ready > /dev/null; do
-    echo "waiting for backup..."; sleep 5
+# Follow the same order used by CI.
+for host in pir-backup-beta pir-backup pir-primary-beta pir-primary; do
+    ssh "root@$host.valargroup.org" sudo systemctl restart nullifier-query-server
+    until curl -sf --max-time 4 "https://$host.valargroup.org/ready" > /dev/null; do
+        echo "waiting for $host..."; sleep 5
+    done
+    ssh "root@$host.valargroup.org" \
+        'curl -sf http://localhost:3000/metrics | awk "/^nf_snapshot_(served|expected)_height/ {print}"'
 done
-ssh root@pir-backup.valargroup.org \
-    'curl -sf http://localhost:3000/metrics | awk "/^nf_snapshot_(served|expected)_height/ {print}"'
+
 # If expected > 0, served must be >= expected. If expected == 0,
 # /ready plus served > 0 means "no configured height; serving local snapshot".
 
-# Primary
-ssh root@pir-primary.valargroup.org sudo systemctl restart nullifier-query-server
-until curl -sf --max-time 4 https://pir-primary.valargroup.org/ready > /dev/null; do
-    echo "waiting for primary..."; sleep 5
-done
 ```
 
 Same convergence check at the end as in [Confirming convergence
@@ -189,5 +179,5 @@ externally](#confirming-convergence-externally).
   in `shielded-vote-book` — end-to-end procedure for publishing a snapshot,
   updating `<env>/pir.json`, and moving the fleet from one height to the next.
 - [`Publish nullifier snapshot`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/publish-snapshot.yml) — what to run before this workflow if no snapshot exists at the new height yet.
-- [`Deploy nf-server`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/deploy.yml) — what to run instead of this workflow when shipping a new binary (it does the binary swap *and* the restart). Note: `deploy.yml` runs both hosts in parallel; if you need rolling order during a binary deploy, run it twice with `targets=backup` then `targets=primary`.
+- [`Deploy nf-server`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/deploy.yml) — what to run instead of this workflow when shipping a new binary; it uses the same four-host rolling order.
 - Snapshot-stale watchdog: [`docs/runbooks/ci-setup.md#snapshot-stale-alerting`](ci-setup.md#snapshot-stale-alerting).

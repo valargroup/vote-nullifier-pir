@@ -7,15 +7,14 @@
 # This workflow exists so that step doesn't require ssh access from
 # every operator's laptop.
 #
-# Ordering: when targets=both, backup is restarted first and primary
-# only starts once backup is healthy AND has converged on the
-# expected height. That keeps at least one replica online throughout
+# Ordering: when targets=both, backup-beta, backup, primary-beta, then primary.
+# Each successor starts only after the previous host is healthy and converged.
 # (pir.<domain> is the convenience alias for primary, so primary
 # carries traffic while backup is restarting; once primary restarts,
 # backup is already serving the new snapshot).
 #
-# Requires repository secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST,
-# DEPLOY_USER, SSH_KEY. See docs/runbooks/restart-pir-fleet.md.
+# Requires environment secrets: PIR_PRIMARY_HOST, PIR_BACKUP_HOST,
+# PIR_PRIMARY_BETA_HOST, PIR_BACKUP_BETA_HOST, DEPLOY_USER, SSH_KEY.
 
 name: Restart PIR fleet
 
@@ -38,6 +37,8 @@ on:
           - both
           - primary
           - backup
+          - primary-beta
+          - backup-beta
         default: both
       verify_height_converged:
         description: "After restart, fail the job if served_height < expected_height"
@@ -89,8 +90,14 @@ jobs:
         env:
           REQUESTED_HEIGHT: ${{ inputs.height }}
           LWD_URLS: ${{ vars.LWD_URLS }}
+          TARGETS: ${{ inputs.targets }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
         run: |
           set -euo pipefail
+          if [ "$TARGET_ENVIRONMENT" != production ] && [[ "$TARGETS" == *-beta ]]; then
+            echo "Beta PIR targets exist only in production." >&2
+            exit 1
+          fi
           if [ -z "${LWD_URLS//[[:space:],]/}" ]; then
             echo "LWD_URLS must name at least one lightwalletd endpoint." >&2
             exit 1
@@ -153,10 +160,36 @@ jobs:
           echo "forced_height=$HEIGHT" >> "$GITHUB_OUTPUT"
           echo "$SVOTE_ZCASH_NETWORK snapshot $HEIGHT is published and has all required tier files."
 
+  restart_backup_beta:
+    name: Restart backup-beta
+    needs: validate_height
+    if: inputs.target_environment == 'production' && (inputs.targets == 'both' || inputs.targets == 'backup-beta')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/restart-pir-host
+        with:
+          host: ${{ secrets.PIR_BACKUP_BETA_HOST }}
+          host_role: backup-beta
+          deploy_user: ${{ secrets.DEPLOY_USER }}
+          ssh_key: ${{ secrets.SSH_KEY }}
+          target_environment: ${{ inputs.target_environment }}
+          verify_height: ${{ inputs.verify_height_converged }}
+          forced_height: ${{ needs.validate_height.outputs.forced_height }}
+          precomputed_base_url: ${{ vars.PRECOMPUTED_BASE_URL }}
+          pir_config_url: ${{ vars.PIR_CONFIG_URL }}
+          voting_config_url: ${{ vars.VOTING_CONFIG_URL }}
+          lwd_urls: ${{ vars.LWD_URLS }}
+
   restart_backup:
     name: Restart backup
-    needs: validate_height
-    if: inputs.targets == 'both' || inputs.targets == 'backup'
+    needs: [validate_height, restart_backup_beta]
+    if: |
+      always() &&
+      (inputs.targets == 'both' || inputs.targets == 'backup') &&
+      needs.validate_height.result == 'success' &&
+      (needs.restart_backup_beta.result == 'success' || needs.restart_backup_beta.result == 'skipped')
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
@@ -335,9 +368,36 @@ jobs:
           VOTING_CONFIG_URL: ${{ vars.VOTING_CONFIG_URL }}
           LWD_URLS: ${{ vars.LWD_URLS }}
 
+  restart_primary_beta:
+    name: Restart primary-beta
+    needs: [validate_height, restart_backup]
+    if: |
+      always() &&
+      inputs.target_environment == 'production' &&
+      (inputs.targets == 'both' || inputs.targets == 'primary-beta') &&
+      needs.validate_height.result == 'success' &&
+      (needs.restart_backup.result == 'success' || needs.restart_backup.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/restart-pir-host
+        with:
+          host: ${{ secrets.PIR_PRIMARY_BETA_HOST }}
+          host_role: primary-beta
+          deploy_user: ${{ secrets.DEPLOY_USER }}
+          ssh_key: ${{ secrets.SSH_KEY }}
+          target_environment: ${{ inputs.target_environment }}
+          verify_height: ${{ inputs.verify_height_converged }}
+          forced_height: ${{ needs.validate_height.outputs.forced_height }}
+          precomputed_base_url: ${{ vars.PRECOMPUTED_BASE_URL }}
+          pir_config_url: ${{ vars.PIR_CONFIG_URL }}
+          voting_config_url: ${{ vars.VOTING_CONFIG_URL }}
+          lwd_urls: ${{ vars.LWD_URLS }}
+
   restart_primary:
     name: Restart primary
-    needs: [validate_height, restart_backup]
+    needs: [validate_height, restart_primary_beta]
     # Run when:
     #  - target includes primary, AND
     #  - backup either succeeded OR was skipped (target=primary only).
@@ -348,7 +408,7 @@ jobs:
       always() &&
       (inputs.targets == 'both' || inputs.targets == 'primary') &&
       needs.validate_height.result == 'success' &&
-      (needs.restart_backup.result == 'success' || needs.restart_backup.result == 'skipped')
+      (needs.restart_primary_beta.result == 'success' || needs.restart_primary_beta.result == 'skipped')
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
@@ -521,7 +581,7 @@ jobs:
   notify-slack:
     name: Slack Notification
     if: ${{ always() && contains(join(needs.*.result, ','), 'failure') }}
-    needs: [validate_height, restart_backup, restart_primary]
+    needs: [validate_height, restart_backup_beta, restart_backup, restart_primary_beta, restart_primary]
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
@@ -547,7 +607,7 @@ jobs:
                 },
                 {
                   "type": "section",
-                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBackup: `${{ needs.restart_backup.result }}` | Primary: `${{ needs.restart_primary.result }}`" }
+                  "text": { "type": "mrkdwn", "text": "*Job Results:*\nBackup beta: `${{ needs.restart_backup_beta.result }}` | Backup: `${{ needs.restart_backup.result }}` | Primary beta: `${{ needs.restart_primary_beta.result }}` | Primary: `${{ needs.restart_primary.result }}`" }
                 }
               ]
             }

@@ -64,6 +64,8 @@ restart workflows read secrets and variables from the selected environment
 |--------|---------|-------------|
 | `PIR_PRIMARY_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR primary server. |
 | `PIR_BACKUP_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR backup server. |
+| `PIR_PRIMARY_BETA_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR primary-beta replica. |
+| `PIR_BACKUP_BETA_HOST` | `deploy.yml`, `restart.yml` | Hostname or IP of the PIR backup-beta replica. |
 | `PIR_SNAPSHOT_PUBLISHER_HOST` | `publish-snapshot.yml` | Canonical host used to build and publish global PIR snapshot artifacts. |
 | `DEPLOY_USER` | all | SSH username on the remote hosts. |
 | `SSH_KEY` | all | SSH private key for authentication. |
@@ -112,7 +114,9 @@ writes its root-only environment file, and configures Caddy to serve it at
 - staging: `https://stage.pir-primary.valargroup.org/apm/` and
   `https://stage.pir-backup.valargroup.org/apm/`
 - production: `https://pir-primary.valargroup.org/apm/` and
-  `https://pir-backup.valargroup.org/apm/`
+  `https://pir-backup.valargroup.org/apm/`, plus
+  `https://pir-primary-beta.valargroup.org/apm/` and
+  `https://pir-backup-beta.valargroup.org/apm/`
 
 The dashboard is served without authentication and is reachable by anyone who
 knows the URL. It renders only aggregate metrics and host health, never
@@ -186,7 +190,7 @@ To move to a new configured snapshot height, run
 for the new height, update the matching environment `pir.json` in
 `token-holder-voting-config` to that `snapshot_height`, then trigger
 [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/actions/workflows/restart.yml)
-to roll the fleet (backup-then-primary, with per-host
+to roll the fleet (backup-beta, backup, primary-beta, then primary, with per-host
 `served_height >= expected_height` verification when a configured height exists).
 See the
 [in-repo restart runbook](restart-pir-fleet.md) for the
@@ -201,8 +205,8 @@ For the one-time Orchard-to-Ironwood migration:
 1. Configure environment `LWD_URLS` with post-NU6.3 endpoints for the selected network.
 2. Install the new `nf-server` on the publisher host.
 3. Publish with `reset_dataset=true` and record the resulting height.
-4. Deploy the same release at that forced height, backup first and then primary.
-5. Verify both `/root` responses, then update the environment `pir.json`.
+4. Deploy the same release at that forced height in fleet rollout order.
+5. Verify all four `/root` responses, then update the environment `pir.json`.
 
 Leave `reset_dataset` false for later bumps. Published manifests use schema 2
 and identify `nullifier_pool: "ironwood"` with `dataset_version: 2`.
@@ -322,30 +326,32 @@ flowchart LR
     manual["workflow_dispatch"] -.-> deploy["deploy.yml\nSSH binary push\nto PIR hosts"]
     deploy --> health["health check\nlocalhost:3000/health"]
     publish["publish-snapshot.yml\nnf-server sync + upload\nto DO Spaces"] -.-> bucket["snapshots/<network>/<height>/"]
-    restart["restart.yml\nbackup → primary\nrolling restart"] -.-> pirHosts["PIR hosts\n(self-bootstrap from bucket)"]
+    restart["restart.yml\nfour-host rolling restart"] -.-> pirHosts["PIR hosts\n(self-bootstrap from bucket)"]
     bucket -.-> pirHosts
 ```
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | [`release.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/release.yml) | `v*` tag push | Builds `nf-server` for linux/darwin x amd64/arm64, creates a GitHub Release with binaries + systemd unit, and mirrors release artifacts to DO Spaces. It does **not** deploy to any fleet; operators run `deploy.yml` explicitly. |
-| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, writes environment-aware `/etc/default/nf-server` PIR config defaults, copies systemd unit, restarts service, runs readiness check on `/ready`. Supports deploying to primary, backup, or both. Optional `height` validates a published PIR snapshot, forces bootstrap to that height during deploy, verifies `nf_snapshot_served_height == height`, then clears the temporary override. Hosts are rolled backup-then-primary so the readiness gate on one host completes before the next is touched. |
+| [`deploy.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/deploy.yml) | Manual `workflow_dispatch` | Downloads binary from GitHub Releases, SCPs to PIR hosts, writes `.env`, writes environment-aware `/etc/default/nf-server` PIR config defaults, copies systemd unit, restarts service, and checks `/ready`. Supports individual hosts or the full fleet. Optional `height` validates and forces a published snapshot. Full-fleet order is backup-beta, backup, primary-beta, then primary. |
 | [`publish-snapshot.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/publish-snapshot.yml) | Manual `workflow_dispatch` (optional `height`, `include_nullifier_artifacts`, `reset_dataset`) | Uses environment `LWD_URLS`, syncs the selected network, and uploads under `snapshots/<network>/<height>`. `include_nullifier_artifacts` also uploads the raw artifacts. |
-| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (`targets` = `both` / `primary` / `backup`, optional `height`) | Rolling restart of the PIR fleet. Writes environment-specific `/etc/default/nf-server` PIR config defaults, restarts backup first, waits for `/ready` (tier files mmapped and queries serving) and verifies either the forced `height` or `nf_snapshot_served_height >= nf_snapshot_expected_height` when a canonical expected height exists, then restarts primary. Primary is gated on backup succeeding so the fleet never loses both replicas at once. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
+| [`restart.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/restart.yml) | Manual `workflow_dispatch` (individual host or `both`, optional `height`) | Rolling restart of the four-host PIR fleet in backup-beta, backup, primary-beta, primary order. Every successor is gated on `/ready` and snapshot convergence. See [`restart-pir-fleet.md`](restart-pir-fleet.md). |
 | [`loadtest.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/loadtest.yml) | Manual `workflow_dispatch` | Builds `pir-test`, downloads matching network artifacts from **`snapshots/<network>/<snapshot_height>/`**, validates the target server root, and runs the load test. |
 | [`start-pir-installer-smoke.yml`](https://github.com/valargroup/vote-nullifier-pir/blob/main/.github/workflows/start-pir-installer-smoke.yml) | `pull_request` (paths), `workflow_dispatch` | Renders `start_pir.sh` like a tag release, runs it in a clean `ubuntu:24.04` container with `systemd` mocked, and asserts the binary installs and `nf-server --help` runs (validates apt bootstrap for `curl` / `ca-certificates`). |
 
 ## Infrastructure
 
 PIR infrastructure (droplets, volumes, firewalls, DNS) is managed by Terraform in the
-[vote-infrastructure](https://github.com/valargroup/vote-infrastructure) repo. Two
-DigitalOcean droplets (primary + backup) sit in the `vote-sdk-vpc` VPC with Cloudflare
-DNS records:
+[vote-infrastructure](https://github.com/valargroup/vote-infrastructure) repo. Four
+DigitalOcean droplets form two independently load-balanceable pairs with direct
+Cloudflare DNS records:
 
 | Hostname | Droplet | Size |
 |----------|---------|------|
 | `pir-primary.<domain>` | `vote-nullifier-pir-primary` | `g-8vcpu-32gb-intel` (Premium Intel, AVX-512) |
+| `pir-primary-beta.<domain>` | `vote-nullifier-pir-primary-beta` | `g-8vcpu-32gb-intel` (Premium Intel, AVX-512) |
 | `pir-backup.<domain>` | `vote-nullifier-pir-backup` | `m-4vcpu-32gb-intel` (Premium Intel, AVX-512) |
+| `pir-backup-beta.<domain>` | `vote-nullifier-pir-backup-beta` | `m-4vcpu-32gb-intel` (Premium Intel, AVX-512) |
 | `pir.<domain>` | `pir-primary` (DNS points here) | -- |
 
 Cloud-init templates in `vote-infrastructure/cloud-init/pir.yaml` handle first-boot
