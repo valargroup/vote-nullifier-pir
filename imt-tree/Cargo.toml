@@ -8,8 +8,8 @@ repository = "https://github.com/valargroup/vote-nullifier-pir"
 
 [features]
 default = ["zakura"]
-upstream = ["voting-crypto-deps/upstream-vct"]
-zakura = ["voting-crypto-deps/zakura-vct"]
+upstream = ["voting-crypto-deps/lrz-vct"]
+zakura = ["voting-crypto-deps/vct"]
 
 [dependencies]
 anyhow = "1.0"

@@ -10,13 +10,13 @@ readme = "README.md"
 [features]
 default = ["zakura"]
 upstream = [
-    "voting-crypto-deps/upstream-vct",
+    "voting-crypto-deps/lrz-vct",
     "pir-types/upstream",
     "imt-tree/upstream",
     "pir-export/upstream",
 ]
 zakura = [
-    "voting-crypto-deps/zakura-vct",
+    "voting-crypto-deps/vct",
     "pir-types/zakura",
     "imt-tree/zakura",
     "pir-export/zakura",

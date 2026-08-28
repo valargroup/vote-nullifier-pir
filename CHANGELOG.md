@@ -1,7 +1,9 @@
-# Unreleased
+# v0.11.0
 
 - Split Tier1 body receive latency from server processing latency in PIR APM,
   and page only when server processing after upload exceeds its latency budget.
+- Align the PIR cryptography backend with `voting-circuits` `0.11.0` by
+  upgrading `voting-crypto-deps` to `0.2.0` and Zakura cryptography RC.4.
 
 # v0.0.45
 

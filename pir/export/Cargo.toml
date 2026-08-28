@@ -10,13 +10,13 @@ tempfile = "3"
 [features]
 default = ["zakura"]
 upstream = [
-    "voting-crypto-deps/upstream-vct",
+    "voting-crypto-deps/lrz-vct",
     "pir-types/upstream",
     "imt-tree/upstream",
     "nf-ingest?/upstream",
 ]
 zakura = [
-    "voting-crypto-deps/zakura-vct",
+    "voting-crypto-deps/vct",
     "pir-types/zakura",
     "imt-tree/zakura",
     "nf-ingest?/zakura",
