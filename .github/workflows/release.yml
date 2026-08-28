@@ -436,10 +436,16 @@ jobs:
           public_base_url="${DO_PUBLIC_BASE_URL:-https://${DO_BUCKET}.${DO_REGION}.digitaloceanspaces.com}"
           public_base_url="${public_base_url%/}"
 
-          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/start_pir.sh" \
-            | grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'"
-          curl -fsSL --retry 3 --retry-delay 2 "${public_base_url}/update_pir.sh" \
-            | grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${GITHUB_REF_NAME}'"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/start_pir.sh" \
+            -o /tmp/verify-start_pir.sh
+          grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'" \
+            /tmp/verify-start_pir.sh
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/update_pir.sh" \
+            -o /tmp/verify-update_pir.sh
+          grep -Fq "readonly UPDATE_DEFAULT_RELEASE_TAG='${GITHUB_REF_NAME}'" \
+            /tmp/verify-update_pir.sh
 
           case "$SNAPSHOT_HEIGHT" in
             ""|*[!0-9]*)
@@ -449,7 +455,9 @@ jobs:
           esac
           curl -fsSL --retry 3 --retry-delay 2 \
             "${public_base_url}/scripts/start_pir/${SNAPSHOT_HEIGHT}/start_pir.sh" \
-            | grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'"
+            -o /tmp/verify-snapshot-start_pir.sh
+          grep -Fq "readonly START_RELEASE_TAG='${GITHUB_REF_NAME}'" \
+            /tmp/verify-snapshot-start_pir.sh
 
       - name: Mark GitHub release latest
         if: needs.release-metadata.outputs.make_latest == 'true'
