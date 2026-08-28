@@ -5,6 +5,12 @@
 - Align the PIR cryptography backend with `voting-circuits` `0.11.0` by
   upgrading `voting-crypto-deps` to `0.2.0` and Zakura cryptography RC.4.
 
+# imt-tree 0.5.0, pir-types 0.6.0, and pir-client 0.7.0
+
+- Update the public PIR crates to `voting-crypto-deps` `0.2.0`, preserving the
+  existing `zakura` and `upstream` feature names over the new `vct` and
+  `lrz-vct` backend features.
+
 # v0.0.45
 
 - Add privacy-preserving PIR APM metrics for the tier0 and tier1 client
