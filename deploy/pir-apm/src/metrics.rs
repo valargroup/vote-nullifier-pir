@@ -30,6 +30,7 @@ pub struct MetricsSnapshot {
     pub endpoints: BTreeMap<String, EndpointCumulative>,
     pub snapshot_gauges: BTreeMap<String, f64>,
     pub resident_memory_bytes: Option<f64>,
+    pub process_start_time_seconds: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -100,18 +101,21 @@ impl RollingMetrics {
                 let mut requests = 0.0;
                 let mut errors = 0.0;
                 for index in (oldest_index + 1)..self.snapshots.len() {
-                    let previous = self.snapshots[index - 1]
+                    let previous_snapshot = &self.snapshots[index - 1];
+                    let next_snapshot = &self.snapshots[index];
+                    let reset = process_generation_changed(previous_snapshot, next_snapshot);
+                    let previous = previous_snapshot
                         .endpoints
                         .get(*endpoint)
                         .cloned()
                         .unwrap_or_default();
-                    let next = self.snapshots[index]
+                    let next = next_snapshot
                         .endpoints
                         .get(*endpoint)
                         .cloned()
                         .unwrap_or_default();
-                    requests += counter_delta(next.requests, previous.requests);
-                    errors += counter_delta(next.errors_5xx, previous.errors_5xx);
+                    requests += counter_delta(next.requests, previous.requests, reset);
+                    errors += counter_delta(next.errors_5xx, previous.errors_5xx, reset);
                 }
                 (
                     (*endpoint).to_string(),
@@ -186,19 +190,22 @@ fn latency_window(
         .collect();
     let mut samples = 0.0;
     for index in (oldest_index + 1)..snapshots.len() {
-        let previous = snapshots[index - 1]
+        let previous_snapshot = &snapshots[index - 1];
+        let next_snapshot = &snapshots[index];
+        let generation_changed = process_generation_changed(previous_snapshot, next_snapshot);
+        let previous = previous_snapshot
             .endpoints
             .get(endpoint)
             .cloned()
             .unwrap_or_default();
-        let next = snapshots[index]
+        let next = next_snapshot
             .endpoints
             .get(endpoint)
             .cloned()
             .unwrap_or_default();
         let previous = histogram(&previous);
         let next = histogram(&next);
-        let reset = next.count < previous.count;
+        let reset = generation_changed || next.count < previous.count;
         samples += if reset {
             next.count
         } else {
@@ -227,11 +234,21 @@ fn latency_window(
     }
 }
 
-fn counter_delta(current: f64, previous: f64) -> f64 {
-    if current >= previous {
-        current - previous
-    } else {
+fn process_generation_changed(previous: &MetricsSnapshot, next: &MetricsSnapshot) -> bool {
+    matches!(
+        (
+            previous.process_start_time_seconds,
+            next.process_start_time_seconds,
+        ),
+        (Some(previous), Some(next)) if previous != next
+    )
+}
+
+fn counter_delta(current: f64, previous: f64, reset: bool) -> f64 {
+    if reset || current < previous {
         current
+    } else {
+        current - previous
     }
 }
 
@@ -244,7 +261,7 @@ pub fn histogram_delta(current: &[(f64, f64)], previous: &[(f64, f64)]) -> Vec<(
                 .find(|(old_upper, _)| old_upper == upper)
                 .map(|(_, value)| *value)
                 .unwrap_or(0.0);
-            (*upper, counter_delta(*value, old))
+            (*upper, counter_delta(*value, old, false))
         })
         .collect()
 }
@@ -291,6 +308,7 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
         .collect();
     let mut snapshot_gauges = BTreeMap::new();
     let mut resident_memory_bytes = None;
+    let mut process_start_time_seconds = None;
 
     for (line_number, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -368,6 +386,7 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
                 })
             }
             "process_resident_memory_bytes" => resident_memory_bytes = Some(sample.value),
+            "process_start_time_seconds" => process_start_time_seconds = Some(sample.value),
             name if name.starts_with("nf_snapshot_") => {
                 snapshot_gauges.insert(name.to_string(), sample.value);
             }
@@ -393,6 +412,7 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
         endpoints,
         snapshot_gauges,
         resident_memory_bytes,
+        process_start_time_seconds,
     })
 }
 
@@ -568,6 +588,7 @@ nf_http_processing_in_flight{endpoint="tier1_query"} 2
 nf_snapshot_served_height 123
 nf_snapshot_expected_height 124
 process_resident_memory_bytes 1048576
+process_start_time_seconds 1787880000
 "#;
         let parsed = parse_prometheus(text, Instant::now()).unwrap();
         let tier0 = &parsed.endpoints["tier0"];
@@ -585,6 +606,7 @@ process_resident_memory_bytes 1048576
         assert_eq!(tier1.processing_in_flight, 2.0);
         assert_eq!(parsed.snapshot_gauges["nf_snapshot_served_height"], 123.0);
         assert_eq!(parsed.resident_memory_bytes, Some(1_048_576.0));
+        assert_eq!(parsed.process_start_time_seconds, Some(1_787_880_000.0));
     }
 
     #[test]
@@ -641,6 +663,7 @@ process_resident_memory_bytes 1048576
                 endpoints,
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
+                process_start_time_seconds: None,
             });
         }
 
@@ -717,6 +740,7 @@ process_resident_memory_bytes 1048576
                 endpoints,
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
+                process_start_time_seconds: None,
             });
         }
 
@@ -728,6 +752,50 @@ process_resident_memory_bytes 1048576
         assert!(window.observed.p99.unwrap() < 10.0);
         assert!(window.body_receive.p99.unwrap() < 10.0);
         assert!(window.processing.p99.unwrap() < 0.5);
+    }
+
+    #[test]
+    fn process_start_time_detects_restart_when_counts_increase() {
+        fn histogram(count: f64, fast: f64) -> HistogramCumulative {
+            HistogramCumulative {
+                buckets: vec![
+                    (0.5, fast),
+                    (2.0, fast),
+                    (5.0, count),
+                    (f64::INFINITY, count),
+                ],
+                sum: count * 3.0,
+                count,
+            }
+        }
+
+        let start = Instant::now();
+        let mut rolling = RollingMetrics::default();
+        for (index, count) in [10.0, 25.0].into_iter().enumerate() {
+            let mut endpoints = BTreeMap::new();
+            endpoints.insert(
+                "tier1_query".to_string(),
+                EndpointCumulative {
+                    requests: count,
+                    errors_5xx: if index == 0 { 1.0 } else { 3.0 },
+                    processing: histogram(count, if index == 0 { count } else { 0.0 }),
+                    ..Default::default()
+                },
+            );
+            rolling.push(MetricsSnapshot {
+                at: start + Duration::from_secs(index as u64 * 15),
+                endpoints,
+                snapshot_gauges: BTreeMap::new(),
+                resident_memory_bytes: None,
+                process_start_time_seconds: Some(100.0 + index as f64),
+            });
+        }
+
+        let window = &rolling.windows()["tier1_query"];
+        assert_eq!(window.requests, 25.0);
+        assert_eq!(window.errors_5xx, 3.0);
+        assert_eq!(window.processing.samples, 25.0);
+        assert!(window.processing.p99.unwrap() > 2.0);
     }
 
     #[test]
@@ -768,6 +836,7 @@ nf_http_request_duration_seconds_count{endpoint="tier1_query"} 20
                 endpoints,
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
+                process_start_time_seconds: None,
             });
         }
         assert_eq!(rolling.len(), 21);
