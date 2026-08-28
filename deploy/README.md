@@ -7,8 +7,10 @@ default and serves the dashboard at `/`, `/apm`, and `/apm/`; its own health
 check is `/healthz`.
 
 Tier1 latency is split into observed total time, request-body receive time, and
-post-upload server processing time. The dashboard retains all three views, but
-only server processing is evaluated by the Tier1 high-latency alert.
+post-upload server processing time. The public dashboard shows observed total
+and server processing latency, while body-receive timing remains available in
+nf-server operator metrics. Only server processing is evaluated by the Tier1
+high-latency alert.
 
 ## Build and install
 
@@ -83,7 +85,8 @@ endpoints (`tier0`, `params_tier1`, and `tier1_query`), snapshot gauges, process
 resident memory, and local host capacity. It does not collect or render request
 bodies, nullifiers, IP addresses, headers, query identifiers, or other
 per-user data. The Tier1 timing split uses aggregate histograms with the same
-fixed endpoint label. HTML is rendered entirely by the sidecar; the browser
-re-polls this dashboard every 15 seconds to refresh in place, and never calls
-the PIR server or `/metrics`. With scripting disabled the page falls back to a
-plain meta refresh.
+fixed endpoint label, and the public dashboard does not render the body-receive
+distribution. HTML is rendered entirely by the sidecar; the browser re-polls
+this dashboard every 15 seconds to refresh in place, and never calls the PIR
+server or `/metrics`. With scripting disabled the page falls back to a plain
+meta refresh.

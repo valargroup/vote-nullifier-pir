@@ -350,11 +350,6 @@ mod tests {
                     p99: Some(10.0),
                     ..Default::default()
                 },
-                body_receive: LatencyWindow {
-                    samples: 20.0,
-                    p99: Some(9.8),
-                    ..Default::default()
-                },
                 processing: LatencyWindow {
                     samples: 20.0,
                     p99: Some(0.3),
@@ -376,7 +371,6 @@ mod tests {
 
         endpoints.get_mut("tier1_query").unwrap().requests = 100.0;
         endpoints.get_mut("tier1_query").unwrap().processing.samples = 19.0;
-        endpoints.get_mut("tier1_query").unwrap().body_receive.p99 = Some(0.1);
         endpoints.get_mut("tier1_query").unwrap().processing.p99 = Some(3.0);
         assert!(engine
             .evaluate(AlertInput {

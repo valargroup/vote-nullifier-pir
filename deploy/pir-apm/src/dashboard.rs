@@ -413,19 +413,11 @@ fn tier1_latency_split(data: &DashboardData) -> String {
         .get("tier1_query")
         .cloned()
         .unwrap_or_default();
-    let receiving_in_flight = (values.in_flight - values.processing_in_flight).max(0.0);
     let rows = [
         latency_split_row(
             "Observed total",
             &values.observed,
             values.in_flight,
-            None,
-            "informational",
-        ),
-        latency_split_row(
-            "Body receive (upload proxy)",
-            &values.body_receive,
-            receiving_in_flight,
             None,
             "informational",
         ),
@@ -443,7 +435,7 @@ fn tier1_latency_split(data: &DashboardData) -> String {
 <div class=\"wrap\"><table><thead><tr><th>Stage</th><th>Samples</th><th>Inflight</th>\
 <th>p50</th><th>p95</th><th>p99</th><th>Alerting</th></tr></thead>\
 <tbody>{rows}</tbody></table></div>\
-<p class=\"note\"><strong>Alert basis.</strong> Body receive tracks ingress after request headers reach nf-server. Only server processing is evaluated against the {threshold:.3}s p99 latency threshold.</p></section>",
+<p class=\"note\"><strong>Alert basis.</strong> Server processing begins after the complete request body reaches nf-server and is the only distribution evaluated against the {threshold:.3}s p99 latency threshold. Body-receive timing remains available in nf-server operator metrics and is not rendered here.</p></section>",
         threshold = thresholds::TIER1_PROCESSING_P99_SECONDS,
     )
 }
@@ -828,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn tier1_split_marks_only_processing_as_the_alert_basis() {
+    fn tier1_split_keeps_body_receive_timing_off_the_public_dashboard() {
         let mut data = sample();
         data.endpoints.insert(
             "tier1_query".to_string(),
@@ -836,11 +828,6 @@ mod tests {
                 observed: LatencyWindow {
                     samples: 20.0,
                     p99: Some(10.0),
-                    ..Default::default()
-                },
-                body_receive: LatencyWindow {
-                    samples: 20.0,
-                    p99: Some(9.8),
                     ..Default::default()
                 },
                 processing: LatencyWindow {
@@ -855,10 +842,10 @@ mod tests {
         );
         let html = render(&data);
         assert!(html.contains("Tier1 latency split"));
-        assert!(html.contains("Body receive (upload proxy)"));
+        assert!(!html.contains("Body receive (upload proxy)"));
         assert!(html.contains("Server processing"));
-        assert!(html.contains("Only server processing is evaluated"));
-        assert!(html.contains("Body receive (upload proxy)</th><td>20</td><td>2</td>"));
+        assert!(html.contains("only distribution evaluated"));
+        assert!(html.contains("Body-receive timing remains available in nf-server operator metrics"));
         assert_eq!(html.matches("<td class=\"bad\">").count(), 1);
     }
 

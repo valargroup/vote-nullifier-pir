@@ -18,7 +18,6 @@ pub struct EndpointCumulative {
     pub requests: f64,
     pub errors_5xx: f64,
     pub observed: HistogramCumulative,
-    pub body_receive: HistogramCumulative,
     pub processing: HistogramCumulative,
     pub in_flight: f64,
     pub processing_in_flight: f64,
@@ -48,7 +47,6 @@ pub struct EndpointWindow {
     pub errors_5xx: f64,
     pub error_ratio: f64,
     pub observed: LatencyWindow,
-    pub body_receive: LatencyWindow,
     pub processing: LatencyWindow,
     pub in_flight: f64,
     pub processing_in_flight: f64,
@@ -134,12 +132,6 @@ impl RollingMetrics {
                             endpoint,
                             observed_histogram,
                         ),
-                        body_receive: latency_window(
-                            &self.snapshots,
-                            oldest_index,
-                            endpoint,
-                            body_receive_histogram,
-                        ),
                         processing: latency_window(
                             &self.snapshots,
                             oldest_index,
@@ -162,10 +154,6 @@ impl RollingMetrics {
 
 fn observed_histogram(values: &EndpointCumulative) -> &HistogramCumulative {
     &values.observed
-}
-
-fn body_receive_histogram(values: &EndpointCumulative) -> &HistogramCumulative {
-    &values.body_receive
 }
 
 fn processing_histogram(values: &EndpointCumulative) -> &HistogramCumulative {
@@ -347,21 +335,6 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
                 |values| &mut values.observed,
                 |h| h.count = sample.value,
             ),
-            "nf_http_request_body_receive_duration_seconds_bucket" => {
-                set_histogram_bucket(&mut endpoints, &sample, |values| &mut values.body_receive)?
-            }
-            "nf_http_request_body_receive_duration_seconds_sum" => set_histogram_value(
-                &mut endpoints,
-                &sample,
-                |values| &mut values.body_receive,
-                |histogram| histogram.sum = sample.value,
-            ),
-            "nf_http_request_body_receive_duration_seconds_count" => set_histogram_value(
-                &mut endpoints,
-                &sample,
-                |values| &mut values.body_receive,
-                |histogram| histogram.count = sample.value,
-            ),
             "nf_http_request_processing_duration_seconds_bucket" => {
                 set_histogram_bucket(&mut endpoints, &sample, |values| &mut values.processing)?
             }
@@ -396,10 +369,6 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
     for endpoint in endpoints.values_mut() {
         endpoint
             .observed
-            .buckets
-            .sort_by(|(left, _), (right, _)| left.total_cmp(right));
-        endpoint
-            .body_receive
             .buckets
             .sort_by(|(left, _), (right, _)| left.total_cmp(right));
         endpoint
@@ -576,10 +545,6 @@ nf_http_request_duration_seconds_bucket{endpoint="tier0",le="+Inf"} 100
 nf_http_request_duration_seconds_sum{endpoint="tier0"} 40
 nf_http_request_duration_seconds_count{endpoint="tier0"} 100
 nf_http_in_flight{endpoint="tier0"} 3
-nf_http_request_body_receive_duration_seconds_bucket{endpoint="tier1_query",le="5"} 7
-nf_http_request_body_receive_duration_seconds_bucket{endpoint="tier1_query",le="+Inf"} 10
-nf_http_request_body_receive_duration_seconds_sum{endpoint="tier1_query"} 42
-nf_http_request_body_receive_duration_seconds_count{endpoint="tier1_query"} 10
 nf_http_request_processing_duration_seconds_bucket{endpoint="tier1_query",le="0.5"} 9
 nf_http_request_processing_duration_seconds_bucket{endpoint="tier1_query",le="+Inf"} 10
 nf_http_request_processing_duration_seconds_sum{endpoint="tier1_query"} 2
@@ -599,8 +564,6 @@ process_start_time_seconds 1787880000
         assert_eq!(tier0.observed.count, 100.0);
         assert_eq!(tier0.observed.buckets.len(), 3);
         let tier1 = &parsed.endpoints["tier1_query"];
-        assert_eq!(tier1.body_receive.sum, 42.0);
-        assert_eq!(tier1.body_receive.count, 10.0);
         assert_eq!(tier1.processing.sum, 2.0);
         assert_eq!(tier1.processing.count, 10.0);
         assert_eq!(tier1.processing_in_flight, 2.0);
@@ -633,7 +596,7 @@ process_start_time_seconds 1787880000
     }
 
     #[test]
-    fn keeps_observed_receive_and_processing_latency_separate() {
+    fn keeps_observed_and_processing_latency_separate() {
         let start = Instant::now();
         let histogram = |count: f64, slow_upper: f64| HistogramCumulative {
             buckets: vec![
@@ -652,7 +615,6 @@ process_start_time_seconds 1787880000
                 EndpointCumulative {
                     requests: count,
                     observed: histogram(count, 10.0),
-                    body_receive: histogram(count, 10.0),
                     processing: histogram(count, 0.5),
                     processing_in_flight: index as f64,
                     ..Default::default()
@@ -669,10 +631,8 @@ process_start_time_seconds 1787880000
 
         let window = &rolling.windows()["tier1_query"];
         assert_eq!(window.observed.samples, 20.0);
-        assert_eq!(window.body_receive.samples, 20.0);
         assert_eq!(window.processing.samples, 20.0);
         assert!(window.observed.p99.unwrap() > 9.0);
-        assert!(window.body_receive.p99.unwrap() > 9.0);
         assert!(window.processing.p99.unwrap() < 0.5);
         assert_eq!(
             window.alert_latency("tier1_query").p99,
@@ -722,11 +682,6 @@ process_start_time_seconds 1787880000
                     } else {
                         after_restart(10.0)
                     },
-                    body_receive: if index == 0 {
-                        before_restart(10.0)
-                    } else {
-                        after_restart(10.0)
-                    },
                     processing: if index == 0 {
                         before_restart(0.5)
                     } else {
@@ -747,10 +702,8 @@ process_start_time_seconds 1787880000
         let window = &rolling.windows()["tier1_query"];
         assert_eq!(window.requests, 20.0);
         assert_eq!(window.observed.samples, 20.0);
-        assert_eq!(window.body_receive.samples, 20.0);
         assert_eq!(window.processing.samples, 20.0);
         assert!(window.observed.p99.unwrap() < 10.0);
-        assert!(window.body_receive.p99.unwrap() < 10.0);
         assert!(window.processing.p99.unwrap() < 0.5);
     }
 
@@ -814,7 +767,6 @@ nf_http_request_duration_seconds_count{endpoint="tier1_query"} 20
 
         let tier1 = &parsed.endpoints["tier1_query"];
         assert_eq!(tier1.observed.count, 20.0);
-        assert_eq!(tier1.body_receive.count, 0.0);
         assert_eq!(tier1.processing.count, 0.0);
     }
 
