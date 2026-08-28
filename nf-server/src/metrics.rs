@@ -17,8 +17,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use prometheus::{
-    Encoder, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
-    Registry, TextEncoder,
+    Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    IntGaugeVec, Opts, Registry, TextEncoder,
 };
 
 struct Metrics {
@@ -32,7 +32,10 @@ struct Metrics {
     stale_seconds: IntGauge,
     http_requests: IntCounterVec,
     http_request_duration: HistogramVec,
+    http_request_body_receive_duration: HistogramVec,
+    http_request_processing_duration: HistogramVec,
     http_in_flight: IntGaugeVec,
+    http_processing_in_flight: IntGaugeVec,
 }
 
 fn build_metrics() -> Metrics {
@@ -116,7 +119,29 @@ fn build_metrics() -> Metrics {
     let http_request_duration = HistogramVec::new(
         HistogramOpts::new(
             "nf_http_request_duration_seconds",
-            "End-to-end request duration for allowlisted PIR API endpoints.",
+            "Time from nf-server receiving request headers until the route produces a response. \
+             Includes request body receive time but excludes response transmission.",
+        )
+        .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]),
+        &["endpoint"],
+    )
+    .expect("valid metric");
+    let http_request_body_receive_duration = HistogramVec::new(
+        HistogramOpts::new(
+            "nf_http_request_body_receive_duration_seconds",
+            "Time from nf-server receiving request headers until the complete request body is \
+             available for processing.",
+        )
+        .buckets(vec![
+            0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0,
+        ]),
+        &["endpoint"],
+    )
+    .expect("valid metric");
+    let http_request_processing_duration = HistogramVec::new(
+        HistogramOpts::new(
+            "nf_http_request_processing_duration_seconds",
+            "Time spent processing an allowlisted PIR request after its complete body is available.",
         )
         .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]),
         &["endpoint"],
@@ -125,7 +150,15 @@ fn build_metrics() -> Metrics {
     let http_in_flight = IntGaugeVec::new(
         Opts::new(
             "nf_http_in_flight",
-            "Currently executing requests for allowlisted PIR API endpoints.",
+            "Requests received by nf-server that have not produced a response.",
+        ),
+        &["endpoint"],
+    )
+    .expect("valid metric");
+    let http_processing_in_flight = IntGaugeVec::new(
+        Opts::new(
+            "nf_http_processing_in_flight",
+            "Requests being processed after their complete bodies have been received.",
         ),
         &["endpoint"],
     )
@@ -159,8 +192,17 @@ fn build_metrics() -> Metrics {
         .register(Box::new(http_request_duration.clone()))
         .expect("register http_request_duration");
     registry
+        .register(Box::new(http_request_body_receive_duration.clone()))
+        .expect("register http_request_body_receive_duration");
+    registry
+        .register(Box::new(http_request_processing_duration.clone()))
+        .expect("register http_request_processing_duration");
+    registry
         .register(Box::new(http_in_flight.clone()))
         .expect("register http_in_flight");
+    registry
+        .register(Box::new(http_processing_in_flight.clone()))
+        .expect("register http_processing_in_flight");
     #[cfg(target_os = "linux")]
     registry
         .register(Box::new(
@@ -179,7 +221,10 @@ fn build_metrics() -> Metrics {
         stale_seconds,
         http_requests,
         http_request_duration,
+        http_request_body_receive_duration,
+        http_request_processing_duration,
         http_in_flight,
+        http_processing_in_flight,
     }
 }
 
@@ -240,10 +285,69 @@ fn allowlisted_endpoint(method: &axum::http::Method, path: &str) -> Option<&'sta
     }
 }
 
+/// Timestamp captured when an allowlisted request first reaches nf-server.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RequestStarted(Instant);
+
+struct GaugeGuard(IntGauge);
+
+impl GaugeGuard {
+    fn new(gauge: IntGauge) -> Self {
+        gauge.inc();
+        Self(gauge)
+    }
+}
+
+impl Drop for GaugeGuard {
+    fn drop(&mut self) {
+        self.0.dec();
+    }
+}
+
+/// Observes Tier1 processing time and keeps its post-upload concurrency gauge balanced.
+pub(crate) struct ProcessingTimer {
+    started: Instant,
+    histogram: Histogram,
+    _in_flight: GaugeGuard,
+}
+
+impl Drop for ProcessingTimer {
+    fn drop(&mut self) {
+        self.histogram.observe(self.started.elapsed().as_secs_f64());
+    }
+}
+
+fn start_tier1_processing_with(
+    metrics: &Metrics,
+    request_started: RequestStarted,
+) -> ProcessingTimer {
+    const ENDPOINT: &str = "tier1_query";
+    metrics
+        .http_request_body_receive_duration
+        .with_label_values(&[ENDPOINT])
+        .observe(request_started.0.elapsed().as_secs_f64());
+    ProcessingTimer {
+        started: Instant::now(),
+        histogram: metrics
+            .http_request_processing_duration
+            .with_label_values(&[ENDPOINT]),
+        _in_flight: GaugeGuard::new(
+            metrics
+                .http_processing_in_flight
+                .with_label_values(&[ENDPOINT]),
+        ),
+    }
+}
+
+/// Start measuring Tier1 work after Axum has received the complete request body.
+pub(crate) fn start_tier1_processing(request_started: RequestStarted) -> ProcessingTimer {
+    start_tier1_processing_with(metrics(), request_started)
+}
+
 /// Record only the fixed PIR client routes. Deliberately excludes request IDs,
 /// remote addresses, headers, and arbitrary paths from metric labels.
 pub async fn track_pir_request(
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let Some(endpoint) = allowlisted_endpoint(request.method(), request.uri().path()) else {
@@ -251,11 +355,10 @@ pub async fn track_pir_request(
     };
     let method = request.method().as_str().to_owned();
     let m = metrics();
-    let in_flight = m.http_in_flight.with_label_values(&[endpoint]);
-    in_flight.inc();
     let started = Instant::now();
+    request.extensions_mut().insert(RequestStarted(started));
+    let _in_flight = GaugeGuard::new(m.http_in_flight.with_label_values(&[endpoint]));
     let response = next.run(request).await;
-    in_flight.dec();
     m.http_request_duration
         .with_label_values(&[endpoint])
         .observe(started.elapsed().as_secs_f64());
@@ -295,6 +398,8 @@ pub async fn handle_metrics() -> impl axum::response::IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Bytes, extract::Extension, http::StatusCode, routing::post, Router};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn registry_initialises_and_observes() {
@@ -316,7 +421,16 @@ mod tests {
         m.http_request_duration
             .with_label_values(&["tier0"])
             .observe(0.1);
+        m.http_request_body_receive_duration
+            .with_label_values(&["tier1_query"])
+            .observe(1.0);
+        m.http_request_processing_duration
+            .with_label_values(&["tier1_query"])
+            .observe(0.1);
         m.http_in_flight.with_label_values(&["tier0"]).set(1);
+        m.http_processing_in_flight
+            .with_label_values(&["tier1_query"])
+            .set(1);
 
         let mf = m.registry.gather();
         let names: Vec<&str> = mf.iter().map(|f| f.get_name()).collect();
@@ -329,11 +443,128 @@ mod tests {
         assert!(names.contains(&"nf_snapshot_stale_seconds"));
         assert!(names.contains(&"nf_http_requests_total"));
         assert!(names.contains(&"nf_http_request_duration_seconds"));
+        assert!(names.contains(&"nf_http_request_body_receive_duration_seconds"));
+        assert!(names.contains(&"nf_http_request_processing_duration_seconds"));
         assert!(names.contains(&"nf_http_in_flight"));
+        assert!(names.contains(&"nf_http_processing_in_flight"));
 
         // Gauges reflect the most recent set call on this isolated registry.
         assert_eq!(m.served_height.get().max(0) as u64, 100);
         assert_eq!(m.expected_height.get().max(0) as u64, 101);
+    }
+
+    #[test]
+    fn tier1_timing_separates_body_receive_from_processing() {
+        let m = build_metrics();
+        let request_started = RequestStarted(Instant::now() - std::time::Duration::from_secs(1));
+        {
+            let _processing = start_tier1_processing_with(&m, request_started);
+            assert_eq!(
+                m.http_processing_in_flight
+                    .with_label_values(&["tier1_query"])
+                    .get(),
+                1
+            );
+        }
+
+        let receive = m
+            .http_request_body_receive_duration
+            .with_label_values(&["tier1_query"]);
+        let processing = m
+            .http_request_processing_duration
+            .with_label_values(&["tier1_query"]);
+        assert_eq!(receive.get_sample_count(), 1);
+        assert!(receive.get_sample_sum() >= 1.0);
+        assert_eq!(processing.get_sample_count(), 1);
+        assert_eq!(
+            m.http_processing_in_flight
+                .with_label_values(&["tier1_query"])
+                .get(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn middleware_splits_slow_body_receive_from_handler_processing() {
+        async fn timed_handler(
+            request_started: Option<Extension<RequestStarted>>,
+            _body: Bytes,
+        ) -> StatusCode {
+            let Some(Extension(request_started)) = request_started else {
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            };
+            let _processing = start_tier1_processing(request_started);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            StatusCode::OK
+        }
+
+        let endpoint = "tier1_query";
+        let m = metrics();
+        let total_in_flight = m.http_in_flight.with_label_values(&[endpoint]);
+        let processing_in_flight = m.http_processing_in_flight.with_label_values(&[endpoint]);
+        let total_count_before = m
+            .http_request_duration
+            .with_label_values(&[endpoint])
+            .get_sample_count();
+        let receive = m
+            .http_request_body_receive_duration
+            .with_label_values(&[endpoint]);
+        let receive_count_before = receive.get_sample_count();
+        let processing = m
+            .http_request_processing_duration
+            .with_label_values(&[endpoint]);
+        let processing_count_before = processing.get_sample_count();
+
+        let app = Router::new()
+            .route("/tier1/query", post(timed_handler))
+            .layer(axum::middleware::from_fn(track_pir_request));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                b"POST /tier1/query HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\na",
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while total_in_flight.get() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(total_in_flight.get(), 1);
+        assert_eq!(processing_in_flight.get(), 0);
+        assert_eq!(receive.get_sample_count(), receive_count_before);
+
+        stream.write_all(b"bcd").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while processing_in_flight.get() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(processing_in_flight.get(), 1);
+        assert_eq!(receive.get_sample_count(), receive_count_before + 1);
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+        assert_eq!(total_in_flight.get(), 0);
+        assert_eq!(processing_in_flight.get(), 0);
+        assert_eq!(
+            m.http_request_duration
+                .with_label_values(&[endpoint])
+                .get_sample_count(),
+            total_count_before + 1
+        );
+        assert_eq!(processing.get_sample_count(), processing_count_before + 1);
+
+        server.abort();
     }
 
     #[test]

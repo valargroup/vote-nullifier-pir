@@ -7,11 +7,13 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use pir_server::{dispatch_query, read_tier_row, HealthInfo, RootInfo};
+
+use crate::metrics;
 
 use super::state::{AppState, ServerPhase};
 
@@ -40,8 +42,11 @@ pub(crate) async fn get_params_tier1(State(state): State<Arc<AppState>>) -> impl
 /// `POST /tier1/query` — Process an encrypted YPIR query against Tier 1.
 pub(crate) async fn post_tier1_query(
     State(state): State<Arc<AppState>>,
+    request_started: Option<Extension<metrics::RequestStarted>>,
     body: Bytes,
 ) -> impl IntoResponse {
+    let _processing = request_started
+        .map(|Extension(request_started)| metrics::start_tier1_processing(request_started));
     let guard = require_serving!(state);
     let s = guard.as_ref().expect("guaranteed Some by require_serving");
     dispatch_query(
