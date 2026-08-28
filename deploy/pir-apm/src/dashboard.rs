@@ -845,7 +845,9 @@ mod tests {
         assert!(!html.contains("Body receive (upload proxy)"));
         assert!(html.contains("Server processing"));
         assert!(html.contains("only distribution evaluated"));
-        assert!(html.contains("Body-receive timing remains available in nf-server operator metrics"));
+        assert!(
+            html.contains("Body-receive timing remains available in nf-server operator metrics")
+        );
         assert_eq!(html.matches("<td class=\"bad\">").count(), 1);
     }
 
