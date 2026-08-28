@@ -1,3 +1,8 @@
+# Unreleased
+
+- Split Tier1 body receive latency from server processing latency in PIR APM,
+  and page only when server processing after upload exceeds its latency budget.
+
 # v0.0.45
 
 - Add privacy-preserving PIR APM metrics for the tier0 and tier1 client

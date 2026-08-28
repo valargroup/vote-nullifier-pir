@@ -7,7 +7,12 @@ use std::{
 use axum::{extract::State, response::Html};
 use tokio::sync::RwLock;
 
-use crate::{alerts::Alert, host::HostHealth, metrics::EndpointWindow, thresholds};
+use crate::{
+    alerts::Alert,
+    host::HostHealth,
+    metrics::{EndpointWindow, LatencyWindow},
+    thresholds,
+};
 
 pub type SharedDashboard = Arc<RwLock<DashboardData>>;
 
@@ -236,6 +241,7 @@ fn render(data: &DashboardData) -> String {
     out.push_str(&statusbar(data));
     out.push_str(&kpis(data));
     out.push_str(&endpoint_table(data));
+    out.push_str(&tier1_latency_split(data));
     out.push_str("<div class=\"grid\">");
     out.push_str(&service_card(data));
     out.push_str(&host_card(&data.host));
@@ -301,9 +307,13 @@ fn kpis(data: &DashboardData) -> String {
         .filter_map(|endpoint| data.endpoints.get(*endpoint))
         .collect();
     let total_qps: f64 = windows.iter().map(|window| window.qps).sum();
-    let worst_p95 = windows
+    let worst_p95 = crate::metrics::ENDPOINTS
         .iter()
-        .filter_map(|window| window.p95)
+        .filter_map(|endpoint| {
+            data.endpoints
+                .get(*endpoint)
+                .and_then(|window| window.alert_latency(endpoint).p95)
+        })
         .fold(None::<f64>, |acc, value| {
             Some(acc.map_or(value, |current: f64| current.max(value)))
         });
@@ -324,11 +334,11 @@ fn kpis(data: &DashboardData) -> String {
         "",
     ));
     out.push_str(&kpi(
-        "Worst p95",
+        "Worst server p95",
         &worst_p95
             .map(|value| format!("{value:.3}s"))
             .unwrap_or_else(|| "—".to_string()),
-        "slowest PIR endpoint",
+        "slowest alert basis",
         "",
     ));
     out.push_str(&kpi(
@@ -382,28 +392,88 @@ fn endpoint_table(data: &DashboardData) -> String {
                 qps = values.qps,
                 in_flight = values.in_flight,
                 requests = values.requests,
-                p50 = latency_cell(values.p50, budget),
-                p95 = latency_cell(values.p95, budget),
-                p99 = latency_cell(values.p99, budget),
+                p50 = latency_cell(values.observed.p50, budget),
+                p95 = latency_cell(values.observed.p95, budget),
+                p99 = latency_cell(values.observed.p99, budget),
                 errors = error_cell(&values),
             )
         })
         .collect::<String>();
     format!(
-        "<section class=\"card\"><p class=\"eyebrow\">PIR endpoints &middot; 5 minute window</p>\
+        "<section class=\"card\"><p class=\"eyebrow\">Observed PIR request latency &middot; 5 minute window</p>\
 <div class=\"wrap\"><table><thead><tr><th>Endpoint</th><th>QPS</th><th>Inflight</th>\
 <th>Requests</th><th>p50</th><th>p95</th><th>p99</th><th>5xx</th></tr></thead>\
 <tbody>{rows}</tbody></table></div></section>"
     )
 }
 
-/// p99 alert threshold for an endpoint, mirroring the mapping in `alerts.rs` so
-/// the table grades latency against the same budget that pages an operator.
+fn tier1_latency_split(data: &DashboardData) -> String {
+    let values = data
+        .endpoints
+        .get("tier1_query")
+        .cloned()
+        .unwrap_or_default();
+    let receiving_in_flight = (values.in_flight - values.processing_in_flight).max(0.0);
+    let rows = [
+        latency_split_row(
+            "Observed total",
+            &values.observed,
+            values.in_flight,
+            None,
+            "informational",
+        ),
+        latency_split_row(
+            "Body receive (upload proxy)",
+            &values.body_receive,
+            receiving_in_flight,
+            None,
+            "informational",
+        ),
+        latency_split_row(
+            "Server processing",
+            &values.processing,
+            values.processing_in_flight,
+            Some(thresholds::TIER1_PROCESSING_P99_SECONDS),
+            "pages on p99",
+        ),
+    ]
+    .join("");
+    format!(
+        "<section class=\"card\"><p class=\"eyebrow\">Tier1 latency split &middot; 5 minute window</p>\
+<div class=\"wrap\"><table><thead><tr><th>Stage</th><th>Samples</th><th>Inflight</th>\
+<th>p50</th><th>p95</th><th>p99</th><th>Alerting</th></tr></thead>\
+<tbody>{rows}</tbody></table></div>\
+<p class=\"note\"><strong>Alert basis.</strong> Body receive tracks ingress after request headers reach nf-server. Only server processing is evaluated against the {threshold:.3}s p99 latency threshold.</p></section>",
+        threshold = thresholds::TIER1_PROCESSING_P99_SECONDS,
+    )
+}
+
+fn latency_split_row(
+    label: &str,
+    latency: &LatencyWindow,
+    in_flight: f64,
+    budget: Option<f64>,
+    policy: &str,
+) -> String {
+    format!(
+        "<tr><th>{label}</th><td>{samples:.0}</td><td>{in_flight:.0}</td>\
+{p50}{p95}{p99}<td class=\"muted\">{policy}</td></tr>",
+        label = escape(label),
+        samples = latency.samples,
+        p50 = latency_cell(latency.p50, budget),
+        p95 = latency_cell(latency.p95, budget),
+        p99 = latency_cell(latency.p99, budget),
+        policy = escape(policy),
+    )
+}
+
+/// p99 alert threshold for the observed-duration table. Tier1 observed latency
+/// is informational because its alert uses the processing-only distribution.
 fn latency_budget(endpoint: &str) -> Option<f64> {
     match endpoint {
         "tier0" => Some(thresholds::TIER0_P99_SECONDS),
         "params_tier1" => Some(thresholds::PARAMS_P99_SECONDS),
-        "tier1_query" => Some(thresholds::TIER1_P99_SECONDS),
+        "tier1_query" => None,
         _ => None,
     }
 }
@@ -700,10 +770,14 @@ mod tests {
                 requests: 450.0,
                 errors_5xx: 0.0,
                 error_ratio: 0.0,
-                p50: Some(0.01),
-                p95: Some(0.05),
-                p99: Some(0.09),
+                observed: LatencyWindow {
+                    samples: 450.0,
+                    p50: Some(0.01),
+                    p95: Some(0.05),
+                    p99: Some(0.09),
+                },
                 in_flight: 2.0,
+                ..Default::default()
             },
         );
         data
@@ -749,7 +823,43 @@ mod tests {
     #[test]
     fn unknown_endpoints_have_no_latency_budget() {
         assert!(latency_budget("nope").is_none());
+        assert!(latency_budget("tier1_query").is_none());
         assert!(!latency_cell(Some(99.0), None).contains("bad"));
+    }
+
+    #[test]
+    fn tier1_split_marks_only_processing_as_the_alert_basis() {
+        let mut data = sample();
+        data.endpoints.insert(
+            "tier1_query".to_string(),
+            EndpointWindow {
+                observed: LatencyWindow {
+                    samples: 20.0,
+                    p99: Some(10.0),
+                    ..Default::default()
+                },
+                body_receive: LatencyWindow {
+                    samples: 20.0,
+                    p99: Some(9.8),
+                    ..Default::default()
+                },
+                processing: LatencyWindow {
+                    samples: 20.0,
+                    p99: Some(3.0),
+                    ..Default::default()
+                },
+                in_flight: 3.0,
+                processing_in_flight: 1.0,
+                ..Default::default()
+            },
+        );
+        let html = render(&data);
+        assert!(html.contains("Tier1 latency split"));
+        assert!(html.contains("Body receive (upload proxy)"));
+        assert!(html.contains("Server processing"));
+        assert!(html.contains("Only server processing is evaluated"));
+        assert!(html.contains("Body receive (upload proxy)</th><td>20</td><td>2</td>"));
+        assert_eq!(html.matches("<td class=\"bad\">").count(), 1);
     }
 
     #[test]

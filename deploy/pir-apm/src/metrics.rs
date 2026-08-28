@@ -7,13 +7,21 @@ pub const ENDPOINTS: [&str; 3] = ["tier0", "params_tier1", "tier1_query"];
 const MAX_SNAPSHOTS: usize = 21;
 
 #[derive(Clone, Debug, Default)]
-pub struct EndpointCumulative {
-    pub requests: f64,
-    pub errors_5xx: f64,
+pub struct HistogramCumulative {
     pub buckets: Vec<(f64, f64)>,
     pub sum: f64,
     pub count: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EndpointCumulative {
+    pub requests: f64,
+    pub errors_5xx: f64,
+    pub observed: HistogramCumulative,
+    pub body_receive: HistogramCumulative,
+    pub processing: HistogramCumulative,
     pub in_flight: f64,
+    pub processing_in_flight: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -25,15 +33,35 @@ pub struct MetricsSnapshot {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct LatencyWindow {
+    pub samples: f64,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct EndpointWindow {
     pub qps: f64,
     pub requests: f64,
     pub errors_5xx: f64,
     pub error_ratio: f64,
-    pub p50: Option<f64>,
-    pub p95: Option<f64>,
-    pub p99: Option<f64>,
+    pub observed: LatencyWindow,
+    pub body_receive: LatencyWindow,
+    pub processing: LatencyWindow,
     pub in_flight: f64,
+    pub processing_in_flight: f64,
+}
+
+impl EndpointWindow {
+    /// Latency distribution used for paging this endpoint.
+    pub fn alert_latency(&self, endpoint: &str) -> &LatencyWindow {
+        if endpoint == "tier1_query" {
+            &self.processing
+        } else {
+            &self.observed
+        }
+    }
 }
 
 #[derive(Default)]
@@ -71,12 +99,6 @@ impl RollingMetrics {
                 let current = newest.endpoints.get(*endpoint).cloned().unwrap_or_default();
                 let mut requests = 0.0;
                 let mut errors = 0.0;
-                let mut count = 0.0;
-                let mut buckets: Vec<(f64, f64)> = current
-                    .buckets
-                    .iter()
-                    .map(|(upper, _)| (*upper, 0.0))
-                    .collect();
                 for index in (oldest_index + 1)..self.snapshots.len() {
                     let previous = self.snapshots[index - 1]
                         .endpoints
@@ -90,13 +112,6 @@ impl RollingMetrics {
                         .unwrap_or_default();
                     requests += counter_delta(next.requests, previous.requests);
                     errors += counter_delta(next.errors_5xx, previous.errors_5xx);
-                    count += counter_delta(next.count, previous.count);
-                    for ((_, total), (_, delta)) in buckets
-                        .iter_mut()
-                        .zip(histogram_delta(&next.buckets, &previous.buckets))
-                    {
-                        *total += delta;
-                    }
                 }
                 (
                     (*endpoint).to_string(),
@@ -109,10 +124,26 @@ impl RollingMetrics {
                         } else {
                             0.0
                         },
-                        p50: histogram_quantile(0.50, &buckets, count),
-                        p95: histogram_quantile(0.95, &buckets, count),
-                        p99: histogram_quantile(0.99, &buckets, count),
+                        observed: latency_window(
+                            &self.snapshots,
+                            oldest_index,
+                            endpoint,
+                            observed_histogram,
+                        ),
+                        body_receive: latency_window(
+                            &self.snapshots,
+                            oldest_index,
+                            endpoint,
+                            body_receive_histogram,
+                        ),
+                        processing: latency_window(
+                            &self.snapshots,
+                            oldest_index,
+                            endpoint,
+                            processing_histogram,
+                        ),
                         in_flight: current.in_flight,
+                        processing_in_flight: current.processing_in_flight,
                     },
                 )
             })
@@ -122,6 +153,77 @@ impl RollingMetrics {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.snapshots.len()
+    }
+}
+
+fn observed_histogram(values: &EndpointCumulative) -> &HistogramCumulative {
+    &values.observed
+}
+
+fn body_receive_histogram(values: &EndpointCumulative) -> &HistogramCumulative {
+    &values.body_receive
+}
+
+fn processing_histogram(values: &EndpointCumulative) -> &HistogramCumulative {
+    &values.processing
+}
+
+fn latency_window(
+    snapshots: &VecDeque<MetricsSnapshot>,
+    oldest_index: usize,
+    endpoint: &str,
+    histogram: fn(&EndpointCumulative) -> &HistogramCumulative,
+) -> LatencyWindow {
+    let current_endpoint = snapshots
+        .back()
+        .and_then(|snapshot| snapshot.endpoints.get(endpoint))
+        .cloned()
+        .unwrap_or_default();
+    let mut buckets: Vec<(f64, f64)> = histogram(&current_endpoint)
+        .buckets
+        .iter()
+        .map(|(upper, _)| (*upper, 0.0))
+        .collect();
+    let mut samples = 0.0;
+    for index in (oldest_index + 1)..snapshots.len() {
+        let previous = snapshots[index - 1]
+            .endpoints
+            .get(endpoint)
+            .cloned()
+            .unwrap_or_default();
+        let next = snapshots[index]
+            .endpoints
+            .get(endpoint)
+            .cloned()
+            .unwrap_or_default();
+        let previous = histogram(&previous);
+        let next = histogram(&next);
+        let reset = next.count < previous.count;
+        samples += if reset {
+            next.count
+        } else {
+            next.count - previous.count
+        };
+        // A histogram resets as one metric family. Differencing its buckets
+        // independently across a process restart can make them non-monotonic.
+        let delta = if reset {
+            next.buckets.clone()
+        } else {
+            histogram_delta(&next.buckets, &previous.buckets)
+        };
+        for (upper, total) in &mut buckets {
+            *total += delta
+                .iter()
+                .find(|(delta_upper, _)| delta_upper == upper)
+                .map(|(_, value)| *value)
+                .unwrap_or(0.0);
+        }
+    }
+    LatencyWindow {
+        samples,
+        p50: histogram_quantile(0.50, &buckets, samples),
+        p95: histogram_quantile(0.95, &buckets, samples),
+        p99: histogram_quantile(0.99, &buckets, samples),
     }
 }
 
@@ -213,31 +315,58 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
                 }
             }
             "nf_http_request_duration_seconds_bucket" => {
-                if let (Some(endpoint), Some(le)) =
-                    (sample.labels.get("endpoint"), sample.labels.get("le"))
-                {
-                    if let Some(values) = endpoints.get_mut(endpoint) {
-                        let upper = if le == "+Inf" {
-                            f64::INFINITY
-                        } else {
-                            le.parse::<f64>()
-                                .map_err(|_| format!("invalid histogram bound {le:?}"))?
-                        };
-                        values.buckets.push((upper, sample.value));
-                    }
-                }
+                set_histogram_bucket(&mut endpoints, &sample, |values| &mut values.observed)?
             }
-            "nf_http_request_duration_seconds_sum" => {
-                set_endpoint_value(&mut endpoints, &sample, |values| values.sum = sample.value)
+            "nf_http_request_duration_seconds_sum" => set_histogram_value(
+                &mut endpoints,
+                &sample,
+                |values| &mut values.observed,
+                |h| h.sum = sample.value,
+            ),
+            "nf_http_request_duration_seconds_count" => set_histogram_value(
+                &mut endpoints,
+                &sample,
+                |values| &mut values.observed,
+                |h| h.count = sample.value,
+            ),
+            "nf_http_request_body_receive_duration_seconds_bucket" => {
+                set_histogram_bucket(&mut endpoints, &sample, |values| &mut values.body_receive)?
             }
-            "nf_http_request_duration_seconds_count" => {
-                set_endpoint_value(&mut endpoints, &sample, |values| {
-                    values.count = sample.value
-                })
+            "nf_http_request_body_receive_duration_seconds_sum" => set_histogram_value(
+                &mut endpoints,
+                &sample,
+                |values| &mut values.body_receive,
+                |histogram| histogram.sum = sample.value,
+            ),
+            "nf_http_request_body_receive_duration_seconds_count" => set_histogram_value(
+                &mut endpoints,
+                &sample,
+                |values| &mut values.body_receive,
+                |histogram| histogram.count = sample.value,
+            ),
+            "nf_http_request_processing_duration_seconds_bucket" => {
+                set_histogram_bucket(&mut endpoints, &sample, |values| &mut values.processing)?
             }
+            "nf_http_request_processing_duration_seconds_sum" => set_histogram_value(
+                &mut endpoints,
+                &sample,
+                |values| &mut values.processing,
+                |histogram| histogram.sum = sample.value,
+            ),
+            "nf_http_request_processing_duration_seconds_count" => set_histogram_value(
+                &mut endpoints,
+                &sample,
+                |values| &mut values.processing,
+                |histogram| histogram.count = sample.value,
+            ),
             "nf_http_in_flight" => set_endpoint_value(&mut endpoints, &sample, |values| {
                 values.in_flight = sample.value
             }),
+            "nf_http_processing_in_flight" => {
+                set_endpoint_value(&mut endpoints, &sample, |values| {
+                    values.processing_in_flight = sample.value
+                })
+            }
             "process_resident_memory_bytes" => resident_memory_bytes = Some(sample.value),
             name if name.starts_with("nf_snapshot_") => {
                 snapshot_gauges.insert(name.to_string(), sample.value);
@@ -247,6 +376,15 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
     }
     for endpoint in endpoints.values_mut() {
         endpoint
+            .observed
+            .buckets
+            .sort_by(|(left, _), (right, _)| left.total_cmp(right));
+        endpoint
+            .body_receive
+            .buckets
+            .sort_by(|(left, _), (right, _)| left.total_cmp(right));
+        endpoint
+            .processing
             .buckets
             .sort_by(|(left, _), (right, _)| left.total_cmp(right));
     }
@@ -256,6 +394,43 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
         snapshot_gauges,
         resident_memory_bytes,
     })
+}
+
+fn set_histogram_bucket(
+    endpoints: &mut BTreeMap<String, EndpointCumulative>,
+    sample: &ParsedSample,
+    histogram: fn(&mut EndpointCumulative) -> &mut HistogramCumulative,
+) -> Result<(), String> {
+    let (Some(endpoint), Some(le)) = (sample.labels.get("endpoint"), sample.labels.get("le"))
+    else {
+        return Ok(());
+    };
+    let Some(values) = endpoints.get_mut(endpoint) else {
+        return Ok(());
+    };
+    let upper = if le == "+Inf" {
+        f64::INFINITY
+    } else {
+        le.parse::<f64>()
+            .map_err(|_| format!("invalid histogram bound {le:?}"))?
+    };
+    histogram(values).buckets.push((upper, sample.value));
+    Ok(())
+}
+
+fn set_histogram_value(
+    endpoints: &mut BTreeMap<String, EndpointCumulative>,
+    sample: &ParsedSample,
+    histogram: fn(&mut EndpointCumulative) -> &mut HistogramCumulative,
+    set: impl FnOnce(&mut HistogramCumulative),
+) {
+    if let Some(values) = sample
+        .labels
+        .get("endpoint")
+        .and_then(|endpoint| endpoints.get_mut(endpoint))
+    {
+        set(histogram(values));
+    }
 }
 
 fn set_endpoint_value(
@@ -381,6 +556,15 @@ nf_http_request_duration_seconds_bucket{endpoint="tier0",le="+Inf"} 100
 nf_http_request_duration_seconds_sum{endpoint="tier0"} 40
 nf_http_request_duration_seconds_count{endpoint="tier0"} 100
 nf_http_in_flight{endpoint="tier0"} 3
+nf_http_request_body_receive_duration_seconds_bucket{endpoint="tier1_query",le="5"} 7
+nf_http_request_body_receive_duration_seconds_bucket{endpoint="tier1_query",le="+Inf"} 10
+nf_http_request_body_receive_duration_seconds_sum{endpoint="tier1_query"} 42
+nf_http_request_body_receive_duration_seconds_count{endpoint="tier1_query"} 10
+nf_http_request_processing_duration_seconds_bucket{endpoint="tier1_query",le="0.5"} 9
+nf_http_request_processing_duration_seconds_bucket{endpoint="tier1_query",le="+Inf"} 10
+nf_http_request_processing_duration_seconds_sum{endpoint="tier1_query"} 2
+nf_http_request_processing_duration_seconds_count{endpoint="tier1_query"} 10
+nf_http_processing_in_flight{endpoint="tier1_query"} 2
 nf_snapshot_served_height 123
 nf_snapshot_expected_height 124
 process_resident_memory_bytes 1048576
@@ -390,9 +574,15 @@ process_resident_memory_bytes 1048576
         assert_eq!(tier0.requests, 100.0);
         assert_eq!(tier0.errors_5xx, 10.0);
         assert_eq!(tier0.in_flight, 3.0);
-        assert_eq!(tier0.sum, 40.0);
-        assert_eq!(tier0.count, 100.0);
-        assert_eq!(tier0.buckets.len(), 3);
+        assert_eq!(tier0.observed.sum, 40.0);
+        assert_eq!(tier0.observed.count, 100.0);
+        assert_eq!(tier0.observed.buckets.len(), 3);
+        let tier1 = &parsed.endpoints["tier1_query"];
+        assert_eq!(tier1.body_receive.sum, 42.0);
+        assert_eq!(tier1.body_receive.count, 10.0);
+        assert_eq!(tier1.processing.sum, 2.0);
+        assert_eq!(tier1.processing.count, 10.0);
+        assert_eq!(tier1.processing_in_flight, 2.0);
         assert_eq!(parsed.snapshot_gauges["nf_snapshot_served_height"], 123.0);
         assert_eq!(parsed.resident_memory_bytes, Some(1_048_576.0));
     }
@@ -418,6 +608,146 @@ process_resident_memory_bytes 1048576
             histogram_quantile(0.99, &[(1.0, 5.0), (f64::INFINITY, 10.0)], 10.0),
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn keeps_observed_receive_and_processing_latency_separate() {
+        let start = Instant::now();
+        let histogram = |count: f64, slow_upper: f64| HistogramCumulative {
+            buckets: vec![
+                (slow_upper / 2.0, 0.0),
+                (slow_upper, count),
+                (f64::INFINITY, count),
+            ],
+            sum: count * slow_upper,
+            count,
+        };
+        let mut rolling = RollingMetrics::default();
+        for (index, count) in [0.0, 20.0].into_iter().enumerate() {
+            let mut endpoints = BTreeMap::new();
+            endpoints.insert(
+                "tier1_query".to_string(),
+                EndpointCumulative {
+                    requests: count,
+                    observed: histogram(count, 10.0),
+                    body_receive: histogram(count, 10.0),
+                    processing: histogram(count, 0.5),
+                    processing_in_flight: index as f64,
+                    ..Default::default()
+                },
+            );
+            rolling.push(MetricsSnapshot {
+                at: start + Duration::from_secs(index as u64 * 15),
+                endpoints,
+                snapshot_gauges: BTreeMap::new(),
+                resident_memory_bytes: None,
+            });
+        }
+
+        let window = &rolling.windows()["tier1_query"];
+        assert_eq!(window.observed.samples, 20.0);
+        assert_eq!(window.body_receive.samples, 20.0);
+        assert_eq!(window.processing.samples, 20.0);
+        assert!(window.observed.p99.unwrap() > 9.0);
+        assert!(window.body_receive.p99.unwrap() > 9.0);
+        assert!(window.processing.p99.unwrap() < 0.5);
+        assert_eq!(
+            window.alert_latency("tier1_query").p99,
+            window.processing.p99
+        );
+        assert_eq!(window.processing_in_flight, 1.0);
+    }
+
+    #[test]
+    fn histogram_reset_uses_only_the_new_process_distribution() {
+        fn before_restart(upper: f64) -> HistogramCumulative {
+            HistogramCumulative {
+                buckets: vec![
+                    (upper, 15.0),
+                    (upper * 2.0, 18.0),
+                    (upper * 4.0, 20.0),
+                    (f64::INFINITY, 100.0),
+                ],
+                sum: 500.0,
+                count: 100.0,
+            }
+        }
+
+        fn after_restart(upper: f64) -> HistogramCumulative {
+            HistogramCumulative {
+                buckets: vec![
+                    (upper, 20.0),
+                    (upper * 2.0, 20.0),
+                    (upper * 4.0, 20.0),
+                    (f64::INFINITY, 20.0),
+                ],
+                sum: upper * 10.0,
+                count: 20.0,
+            }
+        }
+
+        let start = Instant::now();
+        let mut rolling = RollingMetrics::default();
+        for index in 0..2 {
+            let mut endpoints = BTreeMap::new();
+            endpoints.insert(
+                "tier1_query".to_string(),
+                EndpointCumulative {
+                    requests: if index == 0 { 100.0 } else { 20.0 },
+                    observed: if index == 0 {
+                        before_restart(10.0)
+                    } else {
+                        after_restart(10.0)
+                    },
+                    body_receive: if index == 0 {
+                        before_restart(10.0)
+                    } else {
+                        after_restart(10.0)
+                    },
+                    processing: if index == 0 {
+                        before_restart(0.5)
+                    } else {
+                        after_restart(0.5)
+                    },
+                    ..Default::default()
+                },
+            );
+            rolling.push(MetricsSnapshot {
+                at: start + Duration::from_secs(index as u64 * 15),
+                endpoints,
+                snapshot_gauges: BTreeMap::new(),
+                resident_memory_bytes: None,
+            });
+        }
+
+        let window = &rolling.windows()["tier1_query"];
+        assert_eq!(window.requests, 20.0);
+        assert_eq!(window.observed.samples, 20.0);
+        assert_eq!(window.body_receive.samples, 20.0);
+        assert_eq!(window.processing.samples, 20.0);
+        assert!(window.observed.p99.unwrap() < 10.0);
+        assert!(window.body_receive.p99.unwrap() < 10.0);
+        assert!(window.processing.p99.unwrap() < 0.5);
+    }
+
+    #[test]
+    fn old_server_metrics_leave_tier1_processing_unavailable() {
+        let parsed = parse_prometheus(
+            r#"
+nf_http_requests_total{endpoint="tier1_query",method="POST",status="200"} 20
+nf_http_request_duration_seconds_bucket{endpoint="tier1_query",le="10"} 20
+nf_http_request_duration_seconds_bucket{endpoint="tier1_query",le="+Inf"} 20
+nf_http_request_duration_seconds_sum{endpoint="tier1_query"} 180
+nf_http_request_duration_seconds_count{endpoint="tier1_query"} 20
+"#,
+            Instant::now(),
+        )
+        .unwrap();
+
+        let tier1 = &parsed.endpoints["tier1_query"];
+        assert_eq!(tier1.observed.count, 20.0);
+        assert_eq!(tier1.body_receive.count, 0.0);
+        assert_eq!(tier1.processing.count, 0.0);
     }
 
     #[test]

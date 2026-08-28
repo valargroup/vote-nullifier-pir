@@ -90,23 +90,41 @@ impl AlertEngine {
                     ),
                 ),
             );
-            let latency_threshold = match endpoint {
-                "tier0" => thresholds::TIER0_P99_SECONDS,
-                "params_tier1" => thresholds::PARAMS_P99_SECONDS,
-                "tier1_query" => thresholds::TIER1_P99_SECONDS,
+            let (latency_check, latency_label, latency_threshold) = match endpoint {
+                "tier0" => (
+                    "tier0_high_latency".to_string(),
+                    "p99",
+                    thresholds::TIER0_P99_SECONDS,
+                ),
+                "params_tier1" => (
+                    "params_tier1_high_latency".to_string(),
+                    "p99",
+                    thresholds::PARAMS_P99_SECONDS,
+                ),
+                "tier1_query" => (
+                    "tier1_query_high_latency".to_string(),
+                    "processing p99",
+                    thresholds::TIER1_PROCESSING_P99_SECONDS,
+                ),
                 _ => unreachable!(),
             };
+            let latency = window.alert_latency(endpoint);
             conditions.insert(
-                format!("{endpoint}_high_latency"),
+                latency_check,
                 (
-                    window.requests >= thresholds::LATENCY_MIN_REQUESTS
-                        && window.p99.is_some_and(|p99| p99 > latency_threshold),
-                    window
+                    latency.samples >= thresholds::LATENCY_MIN_REQUESTS
+                        && latency.p99.is_some_and(|p99| p99 > latency_threshold),
+                    latency
                         .p99
-                        .map(|p99| format!("p99 {p99:.3}s over {:.0} requests", window.requests))
-                        .unwrap_or_else(|| "p99 unavailable".to_string()),
+                        .map(|p99| {
+                            format!(
+                                "{latency_label} {p99:.3}s over {:.0} samples",
+                                latency.samples
+                            )
+                        })
+                        .unwrap_or_else(|| format!("{latency_label} unavailable")),
                     format!(
-                        "> {latency_threshold:.3}s over 5m, min {:.0}",
+                        "{latency_label} > {latency_threshold:.3}s over 5m, min {:.0}",
                         thresholds::LATENCY_MIN_REQUESTS
                     ),
                 ),
@@ -175,6 +193,7 @@ impl AlertEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::LatencyWindow;
 
     fn healthy_host() -> HostHealth {
         HostHealth {
@@ -287,7 +306,11 @@ mod tests {
                 requests: 9.0,
                 errors_5xx: 9.0,
                 error_ratio: 1.0,
-                p99: Some(9.0),
+                observed: LatencyWindow {
+                    samples: 9.0,
+                    p99: Some(9.0),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         );
@@ -302,6 +325,7 @@ mod tests {
             })
             .is_empty());
         endpoints.get_mut("tier0").unwrap().requests = 20.0;
+        endpoints.get_mut("tier0").unwrap().observed.samples = 20.0;
         let fired = engine.evaluate(AlertInput {
             now: now + Duration::from_secs(15),
             scrape_ok: true,
@@ -310,5 +334,102 @@ mod tests {
             host: &host,
         });
         assert_eq!(fired.len(), 2);
+    }
+
+    #[test]
+    fn tier1_upload_latency_is_informational_but_processing_latency_pages() {
+        let now = Instant::now();
+        let host = healthy_host();
+        let mut endpoints = BTreeMap::new();
+        endpoints.insert(
+            "tier1_query".into(),
+            EndpointWindow {
+                requests: 20.0,
+                observed: LatencyWindow {
+                    samples: 20.0,
+                    p99: Some(10.0),
+                    ..Default::default()
+                },
+                body_receive: LatencyWindow {
+                    samples: 20.0,
+                    p99: Some(9.8),
+                    ..Default::default()
+                },
+                processing: LatencyWindow {
+                    samples: 20.0,
+                    p99: Some(0.3),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let mut engine = AlertEngine::default();
+        assert!(engine
+            .evaluate(AlertInput {
+                now,
+                scrape_ok: true,
+                ready_ok: true,
+                endpoints: &endpoints,
+                host: &host,
+            })
+            .is_empty());
+
+        endpoints.get_mut("tier1_query").unwrap().requests = 100.0;
+        endpoints.get_mut("tier1_query").unwrap().processing.samples = 19.0;
+        endpoints.get_mut("tier1_query").unwrap().body_receive.p99 = Some(0.1);
+        endpoints.get_mut("tier1_query").unwrap().processing.p99 = Some(3.0);
+        assert!(engine
+            .evaluate(AlertInput {
+                now: now + Duration::from_secs(15),
+                scrape_ok: true,
+                ready_ok: true,
+                endpoints: &endpoints,
+                host: &host,
+            })
+            .is_empty());
+
+        endpoints.get_mut("tier1_query").unwrap().processing.samples = 20.0;
+        let fired = engine.evaluate(AlertInput {
+            now: now + Duration::from_secs(30),
+            scrape_ok: true,
+            ready_ok: true,
+            endpoints: &endpoints,
+            host: &host,
+        });
+        let [AlertTransition::Fired(alert)] = fired.as_slice() else {
+            panic!("expected one processing-latency alert");
+        };
+        assert_eq!(alert.check, "tier1_query_high_latency");
+        assert!(alert.observed.contains("processing p99"));
+    }
+
+    #[test]
+    fn old_server_metrics_do_not_fall_back_to_observed_tier1_latency() {
+        let now = Instant::now();
+        let host = healthy_host();
+        let mut endpoints = BTreeMap::new();
+        endpoints.insert(
+            "tier1_query".into(),
+            EndpointWindow {
+                requests: 100.0,
+                observed: LatencyWindow {
+                    samples: 100.0,
+                    p99: Some(10.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let mut engine = AlertEngine::default();
+        assert!(engine
+            .evaluate(AlertInput {
+                now,
+                scrape_ok: true,
+                ready_ok: true,
+                endpoints: &endpoints,
+                host: &host,
+            })
+            .is_empty());
     }
 }

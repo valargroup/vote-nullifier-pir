@@ -394,8 +394,10 @@ Browse `/metrics` once after install for the full series list; names are stable 
 
 Fleet deploys also install the localhost-only `pir-apm` sidecar. It scrapes
 `/metrics`, `/health`, and `/ready` every 15 seconds, renders service/host
-health and tier0/tier1 latency at `/apm/` on the existing HTTPS host, and
-sends coded-threshold incidents and recoveries to `#thv-alert`. The dashboard
+health and tier0/tier1 latency at `/apm/` on the existing HTTPS host, and sends
+coded threshold incidents and recoveries to `#thv-alert`. Tier1 body receive
+latency remains visible for user path diagnosis, while only server processing
+latency after upload can fire the Tier1 high latency alert. The dashboard
 is served without authentication on `/apm/`; Caddy still blocks public
 `/metrics`, and direct port 3002 access is not exposed by the firewall.
 
