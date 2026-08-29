@@ -1,6 +1,6 @@
 [package]
 name = "imt-tree"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 rust-version.workspace = true
 description = "Indexed Merkle Tree for nullifier non-membership proofs"
