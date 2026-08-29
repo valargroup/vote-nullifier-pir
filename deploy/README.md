@@ -26,7 +26,7 @@ sudo systemctl enable --now pir-apm
 ```
 
 For a release built from inside `deploy/pir-apm`, the binary is at
-`deploy/pir-apm/target/release/pir-apm`. The crate supports stable Rust 1.88 or
+`deploy/pir-apm/target/release/pir-apm`. The crate supports stable Rust 1.91 or
 newer.
 
 ## Configuration

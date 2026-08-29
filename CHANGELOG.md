@@ -1,3 +1,15 @@
+# v0.11.1
+
+- Align the PIR cryptography backend with `voting-circuits` `0.11.1` by
+  upgrading `voting-crypto-deps` to `0.2.1` and Zakura cryptography RC.5.
+- Require Rust 1.91 across workspace packages, CI, release builds, and the PIR
+  APM sidecar.
+
+# imt-tree 0.5.1, pir-types 0.6.1, and pir-client 0.7.1
+
+- Publish the Rust 1.91-compatible public PIR crates against
+  `voting-crypto-deps` `0.2.1`.
+
 # v0.11.0
 
 - Split Tier1 body receive latency from server processing latency in PIR APM,
