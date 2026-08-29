@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Vote Nullifier PIR.
 
 ## Prerequisites
 
-- **Rust stable** toolchain (most crates)
+- **Rust 1.91 or newer** toolchain (most crates)
 - **Rust nightly** toolchain (only needed for the `avx512` feature flag, used in production deployment)
 
 Install both with [rustup](https://rustup.rs/):
