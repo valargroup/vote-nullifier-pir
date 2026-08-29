@@ -1,6 +1,6 @@
 [package]
 name = "pir-types"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 rust-version.workspace = true
 description = "Shared wire types and tier-layout constants for Ironwood nullifier non-membership proofs."
