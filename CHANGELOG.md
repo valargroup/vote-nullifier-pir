@@ -1,3 +1,14 @@
+# v0.12.0-rc.2
+
+- Align with `voting-circuits` `0.12.0-rc.2` by upgrading
+  `voting-crypto-deps` to `0.2.3` and the Zakura cryptography libraries to
+  `1.2.0`.
+
+# imt-tree 0.5.3, pir-types 0.6.3, and pir-client 0.7.3
+
+- Publish the Zakura `1.2.0` cryptography backend through
+  `voting-crypto-deps` `0.2.3`.
+
 # v0.11.2
 
 - Align with `voting-circuits` `0.11.2` by upgrading `voting-crypto-deps` to
