@@ -208,9 +208,8 @@ the existing unverified ingest path.
 The initial implementation (using parser version 5.0.0) passed 96 tests across `nf-server`, `nf-ingest`, `pir-export`,
 and `imt-tree` with the default backend, plus 23 `nf-server` tests with the
 upstream backend. Clippy with warnings denied, formatting, and the `serve` feature
-build check passed on Rust 1.91.0. The
-[machine-readable evidence](validation/verify-root-mainnet-2026-09-10.json)
-records source-file fingerprints and the manual outcomes.
+build check passed on Rust 1.91.0. The fixtures above retain the independently
+sourced block data, expected roots, and nullifiers for regression testing.
 
 
 ## Production snapshot validation
