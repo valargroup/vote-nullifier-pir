@@ -1,0 +1,113 @@
+{
+  "date": "2026-09-10",
+  "base_commit": "d75ce485a5005a87727db560991f27cf0b72f99b",
+  "implementation_state": "uncommitted working-tree implementation identified by the source and fixture hashes below",
+  "rust_version": "1.91.0",
+  "platform": "macOS arm64",
+  "live_source": "archival zcashd on roman-zcashd-compat-mainnet through an authenticated SSH bridge",
+  "independent_compact_source": "https://zec.rocks:443",
+  "live_positive_elapsed_seconds": 20.998,
+  "live_positive": {
+    "computed_circuit_root": "79a308958ff5fe3f0e17a1688b4151fc9a59cca8ce3b7d7de8d77d0c5814893b",
+    "computed_pir_root": "e4c6ed4495514613ee8b04e7678423ba391f6cb22faf1dcef1ae82a9825edf04",
+    "dataset_version": 2,
+    "expected_circuit_root": "79a308958ff5fe3f0e17a1688b4151fc9a59cca8ce3b7d7de8d77d0c5814893b",
+    "height": 3428150,
+    "ironwood_actions": 43,
+    "matches": true,
+    "nullifier_pool": "ironwood",
+    "trusted_block_hash": "00000000004c828d2e62a4782c9668cc794e318f5b214a90f29322c925a3b553",
+    "verified_blocks": 8,
+    "zcash_network": "main"
+  },
+  "live_wrong_root_elapsed_seconds": 23.937,
+  "live_wrong_root": {
+    "computed_circuit_root": "79a308958ff5fe3f0e17a1688b4151fc9a59cca8ce3b7d7de8d77d0c5814893b",
+    "computed_pir_root": "e4c6ed4495514613ee8b04e7678423ba391f6cb22faf1dcef1ae82a9825edf04",
+    "dataset_version": 2,
+    "expected_circuit_root": "0000000000000000000000000000000000000000000000000000000000000000",
+    "height": 3428150,
+    "ironwood_actions": 43,
+    "matches": false,
+    "nullifier_pool": "ironwood",
+    "trusted_block_hash": "00000000004c828d2e62a4782c9668cc794e318f5b214a90f29322c925a3b553",
+    "verified_blocks": 8,
+    "zcash_network": "main"
+  },
+  "manual_replays": [
+    {
+      "mode": "valid",
+      "exit_code": 0,
+      "elapsed_seconds": 0.104,
+      "result": {
+        "computed_circuit_root": "79a308958ff5fe3f0e17a1688b4151fc9a59cca8ce3b7d7de8d77d0c5814893b",
+        "computed_pir_root": "e4c6ed4495514613ee8b04e7678423ba391f6cb22faf1dcef1ae82a9825edf04",
+        "dataset_version": 2,
+        "expected_circuit_root": "79a308958ff5fe3f0e17a1688b4151fc9a59cca8ce3b7d7de8d77d0c5814893b",
+        "height": 3428150,
+        "ironwood_actions": 43,
+        "matches": true,
+        "nullifier_pool": "ironwood",
+        "trusted_block_hash": "00000000004c828d2e62a4782c9668cc794e318f5b214a90f29322c925a3b553",
+        "verified_blocks": 8,
+        "zcash_network": "main"
+      },
+      "last_error": null
+    },
+    {
+      "mode": "omit-transaction",
+      "exit_code": 1,
+      "elapsed_seconds": 0.02,
+      "result": null,
+      "last_error": "Error: transaction Merkle root mismatch at height 3428150"
+    },
+    {
+      "mode": "omit-action",
+      "exit_code": 1,
+      "elapsed_seconds": 0.022,
+      "result": null,
+      "last_error": "Error: transaction Merkle root mismatch at height 3428150"
+    },
+    {
+      "mode": "change-nullifier",
+      "exit_code": 1,
+      "elapsed_seconds": 0.023,
+      "result": null,
+      "last_error": "Error: transaction Merkle root mismatch at height 3428150"
+    },
+    {
+      "mode": "missing-middle",
+      "exit_code": 1,
+      "elapsed_seconds": 0.05,
+      "result": null,
+      "last_error": "    block RPC reported an error (block may be unavailable)"
+    }
+  ],
+  "checks": {
+    "default_targeted_tests": 96,
+    "upstream_nf_server_tests": 23,
+    "clippy_warnings_denied": "passed",
+    "rustfmt": "passed",
+    "serve_feature_check": "passed"
+  },
+  "file_sha256": {
+    "Cargo.lock": "4ed2bc6f44e60662d3a507841260d414fb68a8013145f17c4e1d9c14a009f35a",
+    "nf-server/Cargo.toml": "3bc1f9620f04b6e3bfce5a2f0e11396b23f42a9a366935b74321014e4676fb15",
+    "nf-server/src/main.rs": "854a06bff95bbd7b6c620362ff69740aba0f7d6b729f318222326b86350c54b2",
+    "nf-server/src/cmd_verify_root.rs": "1cd60e41b3082338652df0009dcc8ab5eeb3b4a7609c5458f12590768b06b261",
+    "nf-server/src/raw_block_rpc.rs": "260afcbed2184da518ec39d4381079b016cf7955e47a55e890374643c68f4bdb",
+    "nf-server/src/root_verifier.rs": "894bcf719d5b2df79a27650efbd765f3d48c093e7ddd0e1af5dcc45d8e071aee",
+    "nf-server/tests/verify_root.rs": "f2e79a897a72c42fefdaa92886cf209e198deb05e05c6a74fb3d0fe901b8600e",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428143.bin": "d57cc1739167d31531c68d5629c15cbb5a0259957925319829b96e8b9ed7a510",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428143.json": "40b45525c7c1c4939ac608dffa9e08aeff7972d362bf70ac6b6e75ca6ad2c7e6",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428144.bin": "92d29e81bab8c7641f427a79e3e82ab0caa6628bfab8cbffe8a647f7c08c79bf",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428145.bin": "d661c697cd2a40603ecc276fe3ba47acb2467deeb3a9955d412a86717e43a37b",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428146.bin": "04ab35834312df83b49f069676f87d83e2011df0f62e1857bae79b08e5e73f09",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428147.bin": "02fdaec22236dd4eff7a0c29adfc4d8799bcf76bf96b6126a8a7235d4287851d",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428148.bin": "5fbc44664a3c6b6a9bcb9e6a5802d7562aea35020cd0411f315a039c3f11bde0",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428149.bin": "20f68dc4232f903d8a126bd4c4b964af6e8619d1cb34d2bdde6e759f739b40f1",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428150.bin": "22b559bc26dee6f630a102dd4cb740ffcc41157e74de665aec676d9f491e5dc7",
+    "nf-server/tests/fixtures/verify-root/mainnet-3428150.json": "be4d2115adc1783acc8ab0a8f7991f474f020f595ff5ddf38956509e0cd8ea21",
+    "nf-server/tests/fixtures/verify-root/snapshot.json": "0ad1d1dfe04af9ef859e17b2c535d4c05e3b4e29bd709bc5c7f3c0b2bd28d364"
+  }
+}

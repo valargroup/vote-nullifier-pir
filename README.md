@@ -50,7 +50,7 @@ graph TD
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides an async `PirClient` API and a local in-process mode. |
 | **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |
-| **nf-server** | `nf-server/` | Unified CLI: `dataset-info`, `sync` (lightwalletd → `nullifiers.tree` → tier files), and `serve` (PIR HTTP server, feature-gated). |
+| **nf-server** | `nf-server/` | Unified CLI: `dataset-info`, `sync` (lightwalletd → `nullifiers.tree` → tier files), `verify-root` (raw blocks → authenticated root comparison), and `serve` (PIR HTTP server, feature-gated). |
 | **pir-test** | `pir/test/` | End-to-end test harness with `small`, `local`, `server`, and `bench` modes. |
 
 ## Pipeline
@@ -63,6 +63,13 @@ nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ─
 
 1. **`nf-server sync`** — Streams Ironwood nullifiers into `nullifiers.bin` (with dataset marker, checkpoint, and index), builds a versioned **`nullifiers.tree`** checkpoint, then writes `tier0.bin`, `tier1.bin`, and `pir_root.json` under `--pir-data-dir`. The dataset marker and root metadata identify the Zcash network. Reruns skip completed stages.
 2. **`nf-server serve`** — Starts an HTTP server that serves tier data and answers YPIR queries. The client downloads tier 0 in plaintext, then privately retrieves one tier 1 row with a single encrypted PIR query.
+
+`nf-server verify-root` independently rebuilds an Ironwood circuit root from raw
+blocks anchored to a caller-authenticated snapshot block hash. It is available in
+every build and is separate from the pipeline above: verification adds no calls,
+fields, or payload to standard lightwalletd sync and writes no sync artifacts.
+See [root verification](docs/verify-root.md) for the trust contract, CLI examples,
+failure behavior, and recorded mainnet validation.
 
 ## Build & Run
 

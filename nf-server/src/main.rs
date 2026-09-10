@@ -4,7 +4,12 @@
 //!   - `doctor` — Pre-flight host checks vs runbook hardware guidance.
 //!   - `dataset-info` — Print the supported nullifier dataset identity.
 //!   - `sync` — Resumable ingest, `nullifiers.tree` checkpoint, PIR tier export.
+//!   - `verify-root` — Rebuild an Ironwood root against a trusted snapshot block hash.
 //!   - `serve` — Start the PIR HTTP server (feature-gated behind `serve`).
+
+// Keep parser selection aligned with the workspace's mutually exclusive backends.
+#[cfg(feature = "upstream")]
+extern crate upstream_chain as zakura_chain;
 
 #[cfg(feature = "serve")]
 mod bootstrap;
@@ -12,10 +17,13 @@ mod cmd_doctor;
 #[cfg(feature = "serve")]
 mod cmd_serve;
 mod cmd_sync;
+mod cmd_verify_root;
 #[cfg(feature = "serve")]
 mod metrics;
 #[cfg(feature = "serve")]
 mod pir_config;
+mod raw_block_rpc;
+mod root_verifier;
 #[cfg(feature = "serve")]
 mod serve;
 mod sync_pipeline;
@@ -31,7 +39,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "nf-server",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Nullifier PIR pipeline: inspect, sync, and serve"
+    about = "Nullifier PIR pipeline: inspect, sync, verify, and serve"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,6 +55,8 @@ enum Command {
     DatasetInfo,
     /// Ingest nullifiers, build tree checkpoint, export PIR tiers (resumable)
     Sync(cmd_sync::Args),
+    /// Independently verify an Ironwood circuit root against a trusted block hash
+    VerifyRoot(cmd_verify_root::Args),
     /// Start the PIR HTTP server (requires --features serve)
     #[cfg(feature = "serve")]
     Serve(cmd_serve::Args),
@@ -80,7 +90,14 @@ fn init_sentry(command: &Command) -> sentry::ClientInitGuard {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let _ = tracing_subscriber::fmt().try_init();
+    if matches!(&cli.command, Command::VerifyRoot(_)) {
+        // The verifier reserves stdout for its machine-readable result.
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt().try_init();
+    }
 
     #[cfg(feature = "serve")]
     let _sentry_guard = init_sentry(&cli.command);
@@ -102,6 +119,7 @@ fn main() -> anyhow::Result<()> {
                     Ok(())
                 }
                 Command::Sync(args) => cmd_sync::run(args).await,
+                Command::VerifyRoot(args) => cmd_verify_root::run(args).await,
                 #[cfg(feature = "serve")]
                 Command::Serve(args) => cmd_serve::run(args).await,
             }
