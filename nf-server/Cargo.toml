@@ -7,6 +7,7 @@ rust-version.workspace = true
 [features]
 default = ["zakura"]
 upstream = [
+    "dep:upstream-chain",
     "voting-crypto-deps/lrz-vct",
     "pir-server?/upstream",
     "pir-export/upstream",
@@ -15,6 +16,7 @@ upstream = [
     "imt-tree/upstream",
 ]
 zakura = [
+    "dep:zakura-chain",
     "voting-crypto-deps/vct",
     "pir-server?/zakura",
     "pir-export/zakura",
@@ -44,6 +46,10 @@ sha2               = { version = "0.10", optional = true }
 prometheus         = { version = "0.13", default-features = false, features = ["process"], optional = true }
 
 # Always needed
+# Select the protocol parser matching the tree's crypto backend. Both versions
+# support Ironwood; neither backend may pull the other's crypto dependency graph.
+zakura-chain = { version = "=6.1.0", default-features = false, optional = true }
+upstream-chain = { package = "zakura-chain", version = "=5.0.0", default-features = false, optional = true }
 pir-export        = { path = "../pir/export", default-features = false }
 pir-types         = { path = "../pir/types", default-features = false }
 nf-ingest = { path = "../nf-ingest", default-features = false }

@@ -1,0 +1,314 @@
+{
+  "recorded_at": "2026-09-10T20:35:45.304741+00:00",
+  "round": {
+    "title": "NU7 Scope",
+    "snapshot_height": 3459350,
+    "status": 1,
+    "vote_end_time": 1789412400,
+    "vote_round_id_hex": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+    "snapshot_blockhash_hex": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+    "nullifier_imt_root_hex": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09"
+  },
+  "verification": {
+    "computed_circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+    "computed_pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+    "dataset_version": 2,
+    "expected_circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+    "height": 3459350,
+    "ironwood_actions": 101583,
+    "matches": true,
+    "nullifier_pool": "ironwood",
+    "trusted_block_hash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+    "verified_blocks": 31208,
+    "zcash_network": "main"
+  },
+  "run": {
+    "exit_code": 0,
+    "elapsed_seconds": 691.435,
+    "started_at": "2026-09-10T20:23:32.533172+00:00",
+    "finished_at": "2026-09-10T20:35:03.968532+00:00"
+  },
+  "execution": {
+    "started_at": "2026-09-10T20:23:32.533172+00:00",
+    "binary_sha256": "a19c524e7d7669b77b09e95b321c37ec5b92940f1a759f547c757cc825128c88",
+    "command": [
+      "target/release/nf-server",
+      "verify-root",
+      "--zcash-network",
+      "main",
+      "--height",
+      "3459350",
+      "--trusted-block-hash",
+      "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+      "--expected-circuit-root",
+      "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+      "--block-rpc-url",
+      "http://127.0.0.1:52725"
+    ]
+  },
+  "source": {
+    "node": "roman-zcashd-compat-mainnet",
+    "method": "Archival zcashd getblock(hash, 0), streamed over SSH through a temporary local HTTP RPC bridge. Cookie authentication stayed on the source host. Each returned raw block was independently verified by nf-server verify-root.",
+    "first_height": 3428143,
+    "last_height": 3459350
+  },
+  "source_sha256": {
+    "nf-server/src/cmd_verify_root.rs": "1cd60e41b3082338652df0009dcc8ab5eeb3b4a7609c5458f12590768b06b261",
+    "nf-server/src/raw_block_rpc.rs": "260afcbed2184da518ec39d4381079b016cf7955e47a55e890374643c68f4bdb",
+    "nf-server/src/root_verifier.rs": "894bcf719d5b2df79a27650efbd765f3d48c093e7ddd0e1af5dcc45d8e071aee",
+    "nf-server/src/main.rs": "854a06bff95bbd7b6c620362ff69740aba0f7d6b729f318222326b86350c54b2",
+    "nf-server/Cargo.toml": "3bc1f9620f04b6e3bfce5a2f0e11396b23f42a9a366935b74321014e4676fb15",
+    "Cargo.lock": "4ed2bc6f44e60662d3a507841260d414fb68a8013145f17c4e1d9c14a009f35a"
+  },
+  "precheck_endpoints": [
+    {
+      "label": "stardust-staking",
+      "url": "https://zvote-1.stardust.rest/shielded-vote/v1/rounds/active",
+      "kind": "round",
+      "data": {
+        "title": "NU7 Scope",
+        "height": 3459350,
+        "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+        "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+        "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09"
+      }
+    },
+    {
+      "label": "Keplr",
+      "url": "https://zvote.keplr.app/shielded-vote/v1/rounds/active",
+      "kind": "round",
+      "data": {
+        "title": "NU7 Scope",
+        "height": 3459350,
+        "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+        "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+        "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09"
+      }
+    },
+    {
+      "label": "ZF",
+      "url": "https://zvote.zfnd.org/shielded-vote/v1/rounds/active",
+      "kind": "round",
+      "data": {
+        "title": "NU7 Scope",
+        "height": 3459350,
+        "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+        "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+        "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09"
+      }
+    },
+    {
+      "label": "PIR primary",
+      "url": "https://lb-pir-primary.valargroup.org/root",
+      "kind": "pir",
+      "data": {
+        "zcash_network": "main",
+        "nullifier_pool": "ironwood",
+        "dataset_version": 2,
+        "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+        "pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+        "num_ranges": 50808,
+        "pir_layout": {
+          "pir_depth": 19,
+          "tier0_layers": 12,
+          "tier1_layers": 7,
+          "poly_len": 4096
+        },
+        "pir_depth": 19,
+        "tier1_rows": 4096,
+        "tier1_row_bytes": 12288,
+        "height": 3459350
+      }
+    },
+    {
+      "label": "PIR backup",
+      "url": "https://lb-pir-backup.valargroup.org/root",
+      "kind": "pir",
+      "data": {
+        "zcash_network": "main",
+        "nullifier_pool": "ironwood",
+        "dataset_version": 2,
+        "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+        "pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+        "num_ranges": 50808,
+        "pir_layout": {
+          "pir_depth": 19,
+          "tier0_layers": 12,
+          "tier1_layers": 7,
+          "poly_len": 4096
+        },
+        "pir_depth": 19,
+        "tier1_rows": 4096,
+        "tier1_row_bytes": 12288,
+        "height": 3459350
+      }
+    },
+    {
+      "label": "stardust-staking",
+      "url": "https://zpir-1.stardust.rest/root",
+      "kind": "pir",
+      "data": {
+        "zcash_network": "main",
+        "nullifier_pool": "ironwood",
+        "dataset_version": 2,
+        "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+        "pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+        "num_ranges": 50808,
+        "pir_layout": {
+          "pir_depth": 19,
+          "tier0_layers": 12,
+          "tier1_layers": 7,
+          "poly_len": 4096
+        },
+        "pir_depth": 19,
+        "tier1_rows": 4096,
+        "tier1_row_bytes": 12288,
+        "height": 3459350
+      }
+    }
+  ],
+  "anchor_checks": [
+    {
+      "url": "http://104.131.184.123:8232",
+      "height": 3459350,
+      "block_hash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968"
+    },
+    {
+      "url": "http://143.244.184.176:8232",
+      "height": 3459350,
+      "block_hash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968"
+    }
+  ],
+  "postcheck": {
+    "checked_at": "2026-09-10T20:35:20.332259+00:00",
+    "same_round_and_roots": true,
+    "endpoints": [
+      {
+        "label": "stardust-staking",
+        "url": "https://zvote-1.stardust.rest/shielded-vote/v1/rounds/active",
+        "kind": "round",
+        "data": {
+          "title": "NU7 Scope",
+          "height": 3459350,
+          "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+          "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "status": 1
+        }
+      },
+      {
+        "label": "Keplr",
+        "url": "https://zvote.keplr.app/shielded-vote/v1/rounds/active",
+        "kind": "round",
+        "data": {
+          "title": "NU7 Scope",
+          "height": 3459350,
+          "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+          "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "status": 1
+        }
+      },
+      {
+        "label": "ZF",
+        "url": "https://zvote.zfnd.org/shielded-vote/v1/rounds/active",
+        "kind": "round",
+        "data": {
+          "title": "NU7 Scope",
+          "height": 3459350,
+          "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+          "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "status": 1
+        }
+      },
+      {
+        "label": "PIR primary",
+        "url": "https://lb-pir-primary.valargroup.org/root",
+        "kind": "pir",
+        "data": {
+          "zcash_network": "main",
+          "nullifier_pool": "ironwood",
+          "dataset_version": 2,
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+          "num_ranges": 50808,
+          "pir_layout": {
+            "pir_depth": 19,
+            "tier0_layers": 12,
+            "tier1_layers": 7,
+            "poly_len": 4096
+          },
+          "pir_depth": 19,
+          "tier1_rows": 4096,
+          "tier1_row_bytes": 12288,
+          "height": 3459350
+        }
+      },
+      {
+        "label": "PIR backup",
+        "url": "https://lb-pir-backup.valargroup.org/root",
+        "kind": "pir",
+        "data": {
+          "zcash_network": "main",
+          "nullifier_pool": "ironwood",
+          "dataset_version": 2,
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+          "num_ranges": 50808,
+          "pir_layout": {
+            "pir_depth": 19,
+            "tier0_layers": 12,
+            "tier1_layers": 7,
+            "poly_len": 4096
+          },
+          "pir_depth": 19,
+          "tier1_rows": 4096,
+          "tier1_row_bytes": 12288,
+          "height": 3459350
+        }
+      },
+      {
+        "label": "stardust-staking",
+        "url": "https://zpir-1.stardust.rest/root",
+        "kind": "pir",
+        "data": {
+          "zcash_network": "main",
+          "nullifier_pool": "ironwood",
+          "dataset_version": 2,
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "pir_root": "f1fbecef2471fadd1a03bd07e4695b9256dc685e02ccd73229df02f880b74b39",
+          "num_ranges": 50808,
+          "pir_layout": {
+            "pir_depth": 19,
+            "tier0_layers": 12,
+            "tier1_layers": 7,
+            "poly_len": 4096
+          },
+          "pir_depth": 19,
+          "tier1_rows": 4096,
+          "tier1_row_bytes": 12288,
+          "height": 3459350
+        }
+      },
+      {
+        "label": "production primary vote chain",
+        "url": "https://prod.vote-chain-primary.valargroup.org/shielded-vote/v1/rounds/active",
+        "kind": "round",
+        "data": {
+          "title": "NU7 Scope",
+          "height": 3459350,
+          "round_id": "16eef7ebc77e0e04fb1c7329abfcc390f4a0c002964671ebb360914a3e5a3f11",
+          "snapshot_blockhash": "000000000079f151b017b515d0084713d19bd596a76ecfd75f82fd32bf43d968",
+          "circuit_root": "362eaf14c595d4df74932bbcc184b5cd5d1896592668c2dba7dcd7bac685da09",
+          "status": 1
+        }
+      }
+    ]
+  },
+  "assurance": {
+    "verified": "All blocks from Ironwood activation through the round snapshot, backward header-hash links, transaction IDs and Merkle commitments, Ironwood action extraction, and reconstructed circuit and PIR roots.",
+    "trust_boundary": "The network, snapshot height and ending block hash are trusted inputs cross-checked against the recorded endpoints. This does not independently validate proof of work, best-chain selection, signatures, proofs, or full consensus. Endpoint agreement is corroboration, not an independently authenticated consensus proof.",
+    "production_changes": "None; verification used a separate optional CLI and read-only source access."
+  }
+}
