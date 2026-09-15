@@ -3,8 +3,9 @@
 Automatic updates are optional. The host follows the `binary_tag` and
 `snapshot_height` selected in its configured `pir.json`, only when an adjacent
 `pir_attestations.json` verifies under the compiled **valargroup** coordinator
-public key. This applies to both production and staging; signatures are scoped
-so they cannot be reused between environments.
+public key for the configured environment. Production and staging pin separate
+valargroup keys; signatures are also scoped so they cannot be reused between
+environments.
 
 ## Maintainer workflow
 
@@ -19,9 +20,9 @@ so they cannot be reused between environments.
    appropriate for the active voting round.
 4. Connect the valargroup coordinator's Keplr wallet, then **Sign and create
    pull request**. Signing uses the existing local coordinator derivation flow.
-   When signing staging with the same key, set **Signing key’s original chain ID**
-   to the chain where the pinned valargroup key was derived; connect that chain
-   in Keplr first. The signing identity and deployment environment are independent.
+   Use the valargroup key pinned for the selected environment. If its derivation
+   chain differs from the connected chain, set **Signing key’s original chain ID**
+   to the chain where that key was derived and connect that chain in Keplr first.
 5. Review and merge the PR in token-holder-voting-config. The PR commits both
    files together. Publication validates signatures; enrolled hosts validate
    them again independently before changing anything.
