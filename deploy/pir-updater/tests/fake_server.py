@@ -4,13 +4,17 @@ import json
 from pathlib import Path
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
-folder=Path(__file__).resolve().parent
+folder=Path('/proc/self/exe').resolve().parent
 target=json.loads((folder/'target.json').read_bytes())
+legacy = (folder/'legacy').exists() or 'legacy_binary_sha256' in target
+if 'build-info' in sys.argv and legacy: raise SystemExit(2)
 if 'build-info' in sys.argv:
     print(json.dumps({'release_tag':target['binary_tag'],'pir_update_protocol':1}));raise SystemExit()
 if (folder/'fail').exists():raise SystemExit(1)
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == '/metadata' and legacy:
+            self.send_response(404);self.end_headers();return
         self.send_response(200);self.end_headers()
         if self.path=='/metadata':self.wfile.write(json.dumps({'release_tag':target['binary_tag'],'snapshot_height':target['snapshot_height'],'zcash_network':'main'}).encode())
         else:self.wfile.write(b'{"status":"ok"}')

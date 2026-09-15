@@ -10,15 +10,26 @@ command -v flock >/dev/null || { echo 'Install util-linux before enrollment' >&2
 exec 9>/run/lock/pir-update.lock
 flock -n 9 || { echo 'Another PIR operation is running' >&2; exit 1; }
 if [[ -f /opt/pir-updater/settings.json && ! -f /opt/pir-updater/enrollment.json ]]; then
-  echo 'Already enrolled. Use systemctl enable --now pir-updater.timer to re-enable.'
-  exit 0
+  # Reuse installed trust; rerunning a different installer cannot rotate keys.
+  exec python3 /opt/pir-updater/install.py --lock-fd 9 "$@"
 fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 curl -fsSL "$BASE/SHA256SUMS-$TAG" -o "$work/SHA256SUMS" || curl -fsSL "https://github.com/$REPO/releases/download/$TAG/SHA256SUMS" -o "$work/SHA256SUMS"
 curl -fsSL "$BASE/pir-updater-$TAG.tar.gz" -o "$work/pir-updater.tar.gz" || curl -fsSL "https://github.com/$REPO/releases/download/$TAG/pir-updater.tar.gz" -o "$work/pir-updater.tar.gz"
 (cd "$work"; awk '$2 == "pir-updater.tar.gz" {print}' SHA256SUMS > package.sha256; test -s package.sha256; sha256sum -c package.sha256)
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) echo 'Unsupported architecture' >&2; exit 1 ;;
+esac
+curl -fsSL "$BASE/nf-server-$TAG-linux-$arch" -o "$work/nf-server-linux-$arch" || curl -fsSL "https://github.com/$REPO/releases/download/$TAG/nf-server-linux-$arch" -o "$work/nf-server-linux-$arch"
+(cd "$work"; awk -v name="nf-server-linux-$arch" '$2 == name {print}' SHA256SUMS > verifier.sha256; test -s verifier.sha256; sha256sum -c verifier.sha256)
 mkdir -p /opt/pir-updater
+# The verifier is bootstrapped from this trusted installer release, independently
+# of both the old serving binary and the version selected by signed config.
+install -m 0755 "$work/nf-server-linux-$arch" /opt/pir-updater/verifier.new
+mv -f /opt/pir-updater/verifier.new /opt/pir-updater/verifier
 # Explicit filenames prevent archive paths from controlling installation destinations.
 for file in pir_updater.py install.py; do
   tar -xOzf "$work/pir-updater.tar.gz" "$file" > "$work/$file"
