@@ -47,9 +47,18 @@ this implementation.
 
 ## Enrollment
 
-First update an existing `start_pir.sh` installation to a compatible release
-using the manual updater. It must be ready and its running build identity must
-match the installed binary before enrollment.
+An existing `start_pir.sh` installation can enroll directly, including older
+servers without `build-info` or `/metadata`. The service must be ready, its
+running executable must match the installed file, and its local snapshot must
+match the configured network. A manual application upgrade is not required.
+
+The versioned installer downloads and checksum-verifies its own release's
+`nf-server` as a separate `/opt/pir-updater/verifier`. That pinned verifier
+validates the signed config; the application version is selected by `binary_tag`
+and can differ from the installer release. The existing process keeps serving
+while authenticated artifacts are staged. The installer then activates the
+signed target, waits for exact readiness, and leaves future polling enabled.
+It exits nonzero on failure and restores the original service if activation began.
 
 Download the trusted installer from the released assets or Spaces, inspect it,
 and run as root:
@@ -72,9 +81,17 @@ The installer requires Linux/systemd, Python 3, curl, CA certificates, and
 forced snapshot settings, custom ExecStart commands, and existing systemd
 overrides that need an operator migration.
 
-If enrollment is interrupted, rerun the same installer. Its enrollment journal
-restores the prior executable before retrying. A repeated installer invocation
-on an enrolled host does not replace the pinned verifier or updater code.
+If enrollment is interrupted before activation, the original service remains
+unchanged. Once activation begins, the installed timer also handles recovery
+after a crash or reboot. Recovery restores the original executable, unit, and
+data path; a legacy server is checked using its executable hash and `/ready`
+without requiring `/metadata`. Rerun the installer to retry a restored migration.
+
+A repeated invocation of this installer on an enrolled host immediately
+reconciles the signed target and enables polling after success. It reuses the
+installed updater and verifier; it does not implicitly rotate keys or replace
+updater code. Hosts enrolled with older installers retain their older rerun
+behavior and need an explicit operator-managed updater migration.
 
 ## Operation and recovery
 
@@ -164,7 +181,9 @@ python3 -m unittest discover -s deploy/pir-updater -p 'test_*.py'
 scripts/test_pir_updater_systemd.sh
 ```
 
-The systemd test runs in a disposable privileged Docker container with a fixture
-HTTP server, exercising actual enrollment and service lifecycle without touching
+The systemd test runs in a disposable privileged Docker container with a native
+executable HTTP fixture, exercising legacy bootstrap, installed/running identity
+mismatch, rejection before activation, failed activation rollback without
+metadata, interrupted enrollment recovery, and installer reruns without touching
 live infrastructure. Unit tests cover signature-before-execution, file mismatches,
 backoff, interrupted transactions, fallback downloads, and target changes.

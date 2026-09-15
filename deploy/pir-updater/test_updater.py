@@ -13,7 +13,7 @@ class UpdateTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        for name, value in [('ROOT', self.root), ('STATUS', self.root / 'status.json'), ('SERVICE', self.root / 'unit')]:
+        for name, value in [('ROOT', self.root), ('STATUS', self.root / 'status.json'), ('SERVICE', self.root / 'unit'), ('DROPIN', self.root / 'dropin'), ('BINARY', self.root / 'binary')]:
             p = patch.object(u, name, value); p.start(); self.addCleanup(p.stop)
         u.SERVICE.write_bytes(b'previous unit')
         u.save(self.root / 'settings.json', {'scope':'prod', 'network':'main', 'config_url':'https://example.com/prod/pir.json','timeout_secs':1})

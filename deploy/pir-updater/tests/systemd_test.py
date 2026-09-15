@@ -1,86 +1,161 @@
 #!/usr/bin/python3
-"""Runs only inside the disposable systemd container built from tests/Dockerfile."""
+"""Real systemd migration from a legacy process; downloads use local fixtures."""
+import base64
+import fcntl
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
-sys.path.insert(0,'/opt/pir-updater')
+import time
+import urllib.request
+from unittest.mock import patch
+sys.path.insert(0, '/opt/pir-updater')
 import pir_updater as u
 import install
+
 assert Path('/run/systemd/system').is_dir()
-Path('/opt/nf-ingest/pir-data/main').mkdir(parents=True)
-u.atomic(Path('/opt/nf-ingest/pir-data/main/pir_root.json'),b'{}')
-u.atomic(Path('/opt/nf-ingest/nf-server'),Path('/opt/pir-updater/tests/fake_server.py').read_bytes(),0o755)
-u.save(Path('/opt/nf-ingest/target.json'),{'binary_tag':'v1','snapshot_height':3484440})
-u.atomic(Path('/etc/default/nf-server'),b'SVOTE_ZCASH_NETWORK=main\nSVOTE_PIR_CONFIG_URL=https://example.com/prod/pir.json\nSVOTE_PIR_DATA_DIR=/opt/nf-ingest/pir-data/main\n')
-unit=b'[Unit]\nDescription=PIR fixture\n[Service]\nExecStart=/opt/nf-ingest/nf-server serve --port 3000\nRestart=no\n[Install]\nWantedBy=multi-user.target\n'
-u.atomic(u.SERVICE,unit)
+# Own the operation lock just as the installer does. The timer cannot race tests.
+lock = u.LOCK.open('w')
+fcntl.flock(lock, fcntl.LOCK_EX)
+data = Path('/opt/nf-ingest/pir-data/main')
+data.mkdir(parents=True)
+u.save(data/'pir_root.json', {'height':3484440, 'zcash_network':'main'})
+# Use a real native executable so /proc identity checks are exercised. Python
+# interprets /serve, while each executable's folder supplies the fixture target.
+u.atomic(Path('/serve'), Path('/opt/pir-updater/tests/fake_server.py').read_bytes())
+original = Path(sys.executable).read_bytes()
+u.atomic(u.BINARY, original, 0o755)
+u.save(u.BINARY.parent/'target.json', {'binary_tag':'v1','snapshot_height':3484440})
+(u.BINARY.parent/'legacy').touch()
+u.atomic(Path('/etc/default/nf-server'), b'SVOTE_ZCASH_NETWORK=main\nSVOTE_PIR_CONFIG_URL=https://example.com/prod/pir.json\nSVOTE_PIR_DATA_DIR=/opt/nf-ingest/pir-data/main\n')
+unit = b'[Unit]\nDescription=PIR fixture\n[Service]\nExecStart=/opt/nf-ingest/nf-server serve --port 3000\nRestart=no\n[Install]\nWantedBy=multi-user.target\n'
+u.atomic(u.SERVICE, unit)
+# Bootstrap verifier is independent of the legacy executable and target version.
+u.atomic(u.ROOT/'verifier', b'#!/bin/sh\nprintf \'{"release_tag":"v-bootstrap","pir_update_protocol":1}\\n\'\n', 0o755)
 u.run('systemctl','daemon-reload');u.run('systemctl','start',u.NAME)
-import time
-for _ in range(30):
+for _ in range(40):
     try:
-        import urllib.request
         urllib.request.urlopen('http://127.0.0.1:3000/ready').close();break
     except Exception:time.sleep(.1)
-# Fault immediately after creating the temporary managed link. Recovery must
-# remove that link, restore the original executable, and allow enrollment retry.
-from unittest.mock import patch
-replace = os.replace
-def interrupt_replace(source, destination):
-    if str(source).endswith('nf-server.managed'):
-        raise RuntimeError('simulated enrollment interruption')
-    return replace(source, destination)
-with patch.object(install.os, 'replace', side_effect=interrupt_replace):
-    try:
-        install.install(3)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError('interruption not reached')
-assert Path('/opt/nf-ingest/nf-server.managed').is_symlink()
-install.recover_enrollment()
-assert not Path('/opt/nf-ingest/nf-server.managed').is_symlink()
-assert not Path('/opt/nf-ingest/nf-server').is_symlink()
-# Failure after settings are durable must not make a retry report false success.
-real_run = install.run
-def interrupt_enable(*args, **kwargs):
-    if args[:2] == ('systemctl', 'enable'):
-        raise RuntimeError('simulated timer enable failure')
-    return real_run(*args, **kwargs)
-with patch.object(install, 'run', side_effect=interrupt_enable):
-    try:
-        install.install(3)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError('enable interruption not reached')
-assert (u.ROOT / 'settings.json').exists()
-install.recover_enrollment()
-assert not (u.ROOT / 'settings.json').exists()
-install.install(3)
-u.run('systemctl','stop','pir-updater.timer')
-r=u.Reconciler()
-initial=(u.ROOT/'current').resolve()
-# Seed retained initial fixture target; the installer created this record itself.
-assert (initial/'target.json').exists()
-for name,tag,height,fail in [('good','v2',3484450,False),('bad','v3',3484460,True)]:
-    path=u.ROOT/'generations'/name;path.mkdir();(path/'data').mkdir()
-    u.atomic(path/'nf-server',Path('/opt/pir-updater/tests/fake_server.py').read_bytes(),0o755)
-    u.atomic(path/'service',unit);u.save(path/'target.json',{'binary_tag':tag,'snapshot_height':height})
-    if fail:(path/'fail').touch()
-    try:r.activate(path)
-    except RuntimeError:
-        assert fail
-    else:assert not fail
-assert (u.ROOT/'current').resolve().name=='good'
-assert r.matches({'binary_tag':'v2','snapshot_height':3484450})
+else:raise AssertionError('legacy server failed readiness')
+try:urllib.request.urlopen('http://127.0.0.1:3000/metadata')
+except urllib.error.HTTPError as e:assert e.code == 404
+else:raise AssertionError('fixture must not support metadata')
+
+cfg = {'binary_tag':'v2','snapshot_height':3484450}
+def target(self):return 'good', {'config':cfg}
+def stage(self, identity, verified):
+    path = u.ROOT/'generations'/identity
+    path.mkdir(exist_ok=True);(path/'data').mkdir(exist_ok=True)
+    u.atomic(path/'nf-server', original, 0o755)
+    u.atomic(path/'service', unit)
+    u.save(path/'target.json', verified['config'])
+    (path/'fail').unlink(missing_ok=True)
+    return path
+
+def legacy_restored():
+    assert not u.BINARY.is_symlink()
+    assert u.BINARY.read_bytes() == original
+    assert u.SERVICE.read_bytes() == unit
+    assert not u.DROPIN.exists()
+    assert not (u.ROOT/'settings.json').exists()
+    assert not (u.ROOT/'enrollment.json').exists()
+    urllib.request.urlopen('http://127.0.0.1:3000/ready').close()
+
+def attempt():
+    try:install.install(3)
+    except Exception:
+        install.recover_enrollment();raise
+
+with patch.object(u.Reconciler,'target',target), patch.object(u.Reconciler,'stage',stage):
+    # A file replaced while the old executable is running cannot be a rollback baseline.
+    u.atomic(u.BINARY, original + b'changed on disk', 0o755)
+    with patch.object(u.Reconciler,'target') as proposal:
+        try:install.install(3)
+        except RuntimeError as e:assert 'running and installed' in str(e)
+        else:raise AssertionError('mismatched executable accepted')
+        proposal.assert_not_called()
+    assert not (u.ROOT/'enrollment.json').exists()
+    u.atomic(u.BINARY, original, 0o755)
+    # Invalid authorization or failed downloads must not touch the live process.
+    pid = u.run('systemctl','show',u.NAME,'--property=MainPID','--value')
+    for method in ('target', 'stage'):
+        with patch.object(u.Reconciler,method,side_effect=RuntimeError('rejected')):
+            try:attempt()
+            except RuntimeError:pass
+            else:raise AssertionError('failure expected')
+        legacy_restored()
+        assert u.run('systemctl','show',u.NAME,'--property=MainPID','--value') == pid
+
+    with patch.object(u.Reconciler,'target',side_effect=[('good',{'config':cfg}),('changed',{'config':cfg})]):
+        try:attempt()
+        except RuntimeError as e:assert 'changed during staging' in str(e)
+        else:raise AssertionError('changed target accepted')
+    legacy_restored()
+    assert u.run('systemctl','show',u.NAME,'--property=MainPID','--value') == pid
+
+    # Timer enable failure is still before any serving-path mutation.
+    real_run = install.run
+    def failed_enable(*args, **kwargs):
+        if args[:2] == ('systemctl','enable'):raise RuntimeError('enable failed')
+        return real_run(*args,**kwargs)
+    with patch.object(install,'run',failed_enable):
+        try:attempt()
+        except RuntimeError:pass
+        else:raise AssertionError('enable failure expected')
+    legacy_restored()
+
+    # Candidate cannot become ready; restore a legacy server without metadata.
+    def failed_stage(self,*args):
+        path=stage(self,*args);(path/'fail').touch();return path
+    with patch.object(u.Reconciler,'stage',failed_stage):
+        try:attempt()
+        except RuntimeError:pass
+        else:raise AssertionError('activation failure expected')
+    legacy_restored()
+
+    # Crash after candidate switch bypasses normal exception recovery. Exercise
+    # the same CLI entry point the timer invokes after reboot.
+    switch = u.switch
+    def crashed_switch(path):
+        switch(path)
+        if Path(path).name == 'good':raise KeyboardInterrupt('power loss')
+    with patch.object(u,'switch',crashed_switch):
+        try:install.install(3)
+        except KeyboardInterrupt:pass
+        else:raise AssertionError('interruption expected')
+    assert (u.ROOT/'enrollment.json').exists()
+    u.run('systemctl','stop','pir-updater.timer')
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    import subprocess
+    result = subprocess.run([sys.executable, '/opt/pir-updater/pir_updater.py', 'once'], capture_output=True)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    assert result.returncode != 0
+    assert b'Interrupted enrollment restored' in result.stderr, result.stderr
+    legacy_restored()
+
+    # Retry installs v2 using the separately bootstrapped verifier v-bootstrap.
+    attempt()
+    u.run('systemctl','stop','pir-updater.timer')
+    r=u.Reconciler()
+    assert r.matches(cfg)
+    assert r.status['converged']
+    assert (u.ROOT/'current').resolve().name == 'good'
+    assert b'v-bootstrap' in (u.ROOT/'verifier').read_bytes()
+    # Installer rerun is a no-op for the current target and preserves trust.
+    pid=u.run('systemctl','show',u.NAME,'--property=MainPID','--value')
+    verifier=(u.ROOT/'verifier').read_bytes()
+    install.install(3)
+    u.run('systemctl','stop','pir-updater.timer')
+    assert u.run('systemctl','show',u.NAME,'--property=MainPID','--value') == pid
+    assert (u.ROOT/'verifier').read_bytes() == verifier
+
+# Normal post-enrollment rollback retains strict metadata checking.
+bad=stage(r,'bad',{'config':{'binary_tag':'v3','snapshot_height':3484460}})
+(bad/'fail').touch()
+try:r.activate(bad)
+except RuntimeError:pass
+else:raise AssertionError('failure expected')
+assert r.matches(cfg)
 assert not (u.ROOT/'transaction.json').exists()
-assert r.status['rollbacks']==1
-# Simulate power loss after current pointer switched but before successful activation.
-bad=u.ROOT/'generations'/'bad'; good=u.ROOT/'generations'/'good'
-u.save(u.ROOT/'transaction.json',{'previous':str(good),'target':str(bad),'previous_unit':u.base64.b64encode(unit).decode(),'previous_target':u.read(good/'target.json')})
-u.run('systemctl','stop',u.NAME);u.switch(bad)
-r.recover()
-assert r.matches({'binary_tag':'v2','snapshot_height':3484450})
-print('PASS: real systemd enrollment, activation, failed activation rollback, and interrupted activation recovery')
+print('PASS: legacy bootstrap, authentication/staging failure, timer failure, legacy rollback, crash recovery, rerun, and managed rollback')

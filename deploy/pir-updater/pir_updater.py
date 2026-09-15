@@ -19,6 +19,8 @@ STATUS = Path('/var/lib/pir-updater/status.json')
 SERVICE = Path('/etc/systemd/system/nullifier-query-server.service')
 LOCK = Path('/run/lock/pir-update.lock')
 NAME = 'nullifier-query-server.service'
+DROPIN = SERVICE.parent / 'nullifier-query-server.service.d/90-pir-updater.conf'
+BINARY = Path('/opt/nf-ingest/nf-server')
 
 
 def sync_directory(path):
@@ -132,6 +134,19 @@ def switch(path):
         os.close(fd)
 
 
+def managed_dropin():
+    return ('[Service]\nExecStart=\nExecStart=/opt/nf-ingest/nf-server serve --port 3000 '
+            f'--pir-data-dir {ROOT}/current/data --pir-config-url= --voting-config-url=\n').encode()
+
+
+def restore_dropin(encoded):
+    if encoded is not None:
+        atomic(DROPIN, base64.b64decode(encoded))
+    elif DROPIN.exists():
+        DROPIN.unlink()
+        sync_directory(DROPIN.parent)
+
+
 class Reconciler:
     def __init__(self):
         self.settings = read(ROOT / 'settings.json')
@@ -166,6 +181,16 @@ class Reconciler:
 
     def matches(self, target):
         try:
+            if 'legacy_binary_sha256' in target:
+                # Only locally captured rollback records use this path. Signed
+                # candidates always require exact metadata after activation.
+                with urllib.request.urlopen('http://127.0.0.1:3000/ready', timeout=5) as response:
+                    if response.status != 200:
+                        return False
+                pid = int(run('systemctl', 'show', NAME, '--property=MainPID', '--value'))
+                return (pid > 0 and digest(BINARY) == target['legacy_binary_sha256'] and
+                        digest(Path(f'/proc/{pid}/exe')) == target['running_exe_sha256'] and
+                        digest(Path(target['data_dir']) / 'pir_root.json') == target['root_sha256'])
             m = self.metadata()
             return (m['release_tag'] == target['binary_tag'] and
                     m['snapshot_height'] == target['snapshot_height'] and
@@ -185,6 +210,8 @@ class Reconciler:
         run('systemctl', 'stop', NAME)
         switch(tx['previous'])
         atomic(SERVICE, base64.b64decode(tx['previous_unit']))
+        if 'previous_dropin' in tx:
+            restore_dropin(tx['previous_dropin'])
         run('systemctl', 'daemon-reload')
         run('systemctl', 'reset-failed', NAME, check=False)
         run('systemctl', 'start', NAME)
@@ -246,13 +273,15 @@ class Reconciler:
         previous = (ROOT / 'current').resolve()
         tx = {'previous': str(previous), 'target': str(path),
               'previous_unit': base64.b64encode(SERVICE.read_bytes()).decode(),
-              'previous_target': read(previous / 'target.json')}
+              'previous_target': read(previous / 'target.json'),
+              'previous_dropin': base64.b64encode(DROPIN.read_bytes()).decode() if DROPIN.exists() else None}
         save(ROOT / 'transaction.json', tx)
         self.report(phase='activating', converged=False)
         try:
             run('systemctl', 'stop', NAME)
             switch(path)
             atomic(SERVICE, (path / 'service').read_bytes())
+            atomic(DROPIN, managed_dropin())
             run('systemctl', 'daemon-reload')
             run('systemctl', 'reset-failed', NAME, check=False)
             run('systemctl', 'start', NAME)
@@ -318,6 +347,10 @@ def main():
         except BlockingIOError:
             print('another PIR operation holds the lock', flush=True)
             return
+        if (ROOT / 'enrollment.json').exists():
+            from install import recover_enrollment
+            recover_enrollment()
+            raise SystemExit('Interrupted enrollment restored; rerun the installer')
         updater = Reconciler()
         if args.command in ('disable', 'uninstall'):
             run('systemctl', 'disable', '--now', 'pir-updater.timer')
