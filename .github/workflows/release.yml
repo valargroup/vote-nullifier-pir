@@ -98,6 +98,9 @@ jobs:
             ${{ runner.os }}-${{ matrix.platform }}-nf-server-
 
       - name: Build release binary
+        env:
+          NF_RELEASE_TAG: ${{ github.ref_name }}
+          NF_COMMIT_SHA: ${{ github.sha }}
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
             # Cross-compile without serve feature: YPIR's C++ build uses
@@ -149,6 +152,9 @@ jobs:
           key: ${{ runner.os }}-pir-apm-${{ hashFiles('deploy/pir-apm/Cargo.lock') }}
 
       - name: Build release binary
+        env:
+          NF_RELEASE_TAG: ${{ github.ref_name }}
+          NF_COMMIT_SHA: ${{ github.sha }}
         run: cargo build --release --locked --manifest-path deploy/pir-apm/Cargo.toml
 
       - name: Upload artifact
@@ -185,9 +191,16 @@ jobs:
             chmod +x "nf-server-${PLATFORM}"
           done
           cp docs/nullifier-query-server.service .
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - -C deploy/pir-updater pir_updater.py install.py | gzip -n > pir-updater.tar.gz
           mv pir-apm-artifact/pir-apm pir-apm-linux-amd64
           chmod +x pir-apm-linux-amd64
           cp deploy/systemd/pir-apm.service .
+          sed \
+            -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
+            -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
+            -e "s|__BINARY_BASE_URL__|https://shielded-vote.nyc3.digitaloceanspaces.com/binaries/vote-pir|g" \
+            scripts/install_pir_updater.sh.template > install_pir_updater.sh
+
 
       - name: Generate SHA256SUMS
         run: |
@@ -200,6 +213,8 @@ jobs:
             nullifier-query-server.service \
             pir-apm-linux-amd64 \
             pir-apm.service \
+            pir-updater.tar.gz \
+            install_pir_updater.sh \
             > SHA256SUMS
 
       - name: Create or update release assets
@@ -216,6 +231,8 @@ jobs:
             nullifier-query-server.service
             pir-apm-linux-amd64
             pir-apm.service
+            pir-updater.tar.gz
+            install_pir_updater.sh
             SHA256SUMS
           )
 
@@ -270,6 +287,7 @@ jobs:
             chmod +x "nf-server-${PLATFORM}"
           done
           cp docs/nullifier-query-server.service .
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - -C deploy/pir-updater pir_updater.py install.py | gzip -n > pir-updater.tar.gz
           mv pir-apm-artifact/pir-apm pir-apm-linux-amd64
           chmod +x pir-apm-linux-amd64
           cp deploy/systemd/pir-apm.service .
@@ -281,6 +299,7 @@ jobs:
             nullifier-query-server.service \
             pir-apm-linux-amd64 \
             pir-apm.service \
+            pir-updater.tar.gz \
             > SHA256SUMS
 
       - name: Render PIR helper scripts
@@ -310,6 +329,11 @@ jobs:
             -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
             scripts/update_pir.sh.template > update_pir.sh
           chmod +x update_pir.sh
+          sed \
+            -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
+            -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
+            -e "s|__BINARY_BASE_URL__|${PUBLIC_BASE_URL}/binaries/vote-pir|g" \
+            scripts/install_pir_updater.sh.template > install_pir_updater.sh
 
       - name: Upload to DigitalOcean Spaces
         run: |
@@ -342,6 +366,12 @@ jobs:
           done
           s3cmd -c /tmp/do-spaces.s3cfg put pir-apm-linux-amd64 \
             "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}-linux-amd64" --acl-public --force
+          s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force pir-updater.tar.gz \
+            "s3://${DO_BUCKET}/binaries/vote-pir/pir-updater-${VERSION}.tar.gz"
+          s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force nullifier-query-server.service \
+            "s3://${DO_BUCKET}/binaries/vote-pir/nullifier-query-server-${VERSION}.service"
+          s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force install_pir_updater.sh \
+            "s3://${DO_BUCKET}/scripts/install_pir_updater/${VERSION}/install_pir_updater.sh"
           if [ -f SHA256SUMS ]; then
             s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force SHA256SUMS \
               "s3://${DO_BUCKET}/binaries/vote-pir/SHA256SUMS-${VERSION}"
@@ -416,6 +446,13 @@ jobs:
           bucket_location = ${DO_REGION}
           use_https = True
           EOF
+
+          curl -fsSL --retry 3 --retry-delay 2 \
+            "${public_base_url}/scripts/install_pir_updater/${GITHUB_REF_NAME}/install_pir_updater.sh" \
+            -o /tmp/install_pir_updater.sh
+          grep -Fq "TAG='${GITHUB_REF_NAME}'" /tmp/install_pir_updater.sh
+          s3cmd -c /tmp/do-spaces.s3cfg put -m text/plain --acl-public --force \
+            /tmp/install_pir_updater.sh "s3://${DO_BUCKET}/install_pir_updater.sh"
 
           scripts/publish-release-pointers.sh \
             "$GITHUB_REF_NAME" \

@@ -5,6 +5,10 @@
 # __PIR_CONFIG_URL__, __VOTING_CONFIG_URL__, and __PRECOMPUTED_BASE_URL__ are substituted at
 # publish time — do not edit the published script by hand.
 set -euo pipefail
+AUTO_UPDATE=false
+if [ "${1:-}" = "--auto-update" ]; then AUTO_UPDATE=true; shift; fi
+if [ "$#" -ne 0 ]; then echo "usage: start_pir.sh [--auto-update]" >&2; exit 1; fi
+
 
 readonly START_RELEASE_TAG='__RELEASE_TAG__'
 readonly START_GITHUB_REPO='__GITHUB_REPO__'
@@ -195,3 +199,16 @@ echo "  Ready check:     curl -fsS http://127.0.0.1:3000/ready"
 echo
 echo "Next step: point your validator at this PIR server."
 echo "Set SVOTE_PIR_URL to this host's public URL when starting svoted."
+
+if [ "$AUTO_UPDATE" = true ]; then
+  updater_install=$(mktemp)
+  curl -fsSL "${START_BINARY_BASE_URL%/binaries/vote-pir}/scripts/install_pir_updater/${START_RELEASE_TAG}/install_pir_updater.sh" -o "$updater_install"
+  # Wait for initial loading before enrollment validates the running snapshot.
+  deadline=$((SECONDS + 600))
+  until curl -fsS http://127.0.0.1:3000/ready >/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then rm -f "$updater_install"; echo "Server not ready for enrollment" >&2; exit 1; fi
+    sleep 2
+  done
+  bash "$updater_install"
+  rm -f "$updater_install"
+fi

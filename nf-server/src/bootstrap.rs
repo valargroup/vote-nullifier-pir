@@ -436,6 +436,14 @@ fn validate_pir_root(
 /// Download manifest + tier files for `height`, verify sha256s, and
 /// install them into `pir_data_dir`. Returns the total bytes fetched.
 async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
+    fetch_authenticated(cfg, height, None).await
+}
+
+async fn fetch_authenticated(
+    cfg: &Config,
+    height: u64,
+    manifest_sha256: Option<&str>,
+) -> Result<u64> {
     let client = reqwest::Client::builder()
         .timeout(cfg.http_timeout)
         .build()
@@ -447,16 +455,25 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
     );
     let manifest_url = format!("{snapshot_dir}/manifest.json");
 
-    let manifest: PublishedManifest = client
-        .get(&manifest_url)
-        .send()
-        .await
-        .with_context(|| format!("GET {manifest_url}"))?
-        .error_for_status()
-        .with_context(|| format!("GET {manifest_url} (non-2xx)"))?
-        .json()
-        .await
-        .with_context(|| format!("decode {manifest_url}"))?;
+    let response = client.get(&manifest_url).send().await?.error_for_status()?;
+    anyhow::ensure!(
+        response.content_length().unwrap_or(0) <= 1_048_576,
+        "manifest too large"
+    );
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        anyhow::ensure!(bytes.len() + chunk.len() <= 1_048_576, "manifest too large");
+        bytes.extend_from_slice(&chunk);
+    }
+    if let Some(expected) = manifest_sha256 {
+        anyhow::ensure!(
+            hex::encode(Sha256::digest(&bytes)) == expected,
+            "snapshot manifest hash mismatch"
+        );
+    }
+    let manifest: PublishedManifest =
+        serde_json::from_slice(&bytes).context("decode snapshot manifest")?;
 
     if manifest.schema_version != 2 {
         bail!(
@@ -506,6 +523,7 @@ async fn fetch_and_install(cfg: &Config, height: u64) -> Result<u64> {
     validate_pir_root(&staging.join("pir_root.json"), cfg.zcash_network, height)?;
 
     install_from_staging(&staging, &cfg.pir_data_dir)?;
+    std::fs::File::open(&cfg.pir_data_dir)?.sync_all()?;
 
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         warn!(error = %e, dir = %staging.display(), "failed to clean staging dir");
@@ -549,6 +567,11 @@ async fn download_and_verify(
         .await
         .with_context(|| format!("read body chunk from {url}"))?
     {
+        if (chunk.len() as u64) > expected_size.saturating_sub(written) {
+            drop(file);
+            let _ = std::fs::remove_file(dest);
+            bail!("snapshot response exceeds authenticated size");
+        }
         hasher.update(&chunk);
         file.write_all(&chunk)
             .await
@@ -558,6 +581,7 @@ async fn download_and_verify(
     file.flush()
         .await
         .with_context(|| format!("flush {}", dest.display()))?;
+    file.sync_all().await.context("sync snapshot file")?;
     drop(file);
 
     if written != expected_size {
@@ -681,6 +705,37 @@ mod tests {
             serde_json::to_string(&m).unwrap(),
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_stream_before_writing_past_manifest_size() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            // No content length: enforce the authenticated limit while streaming.
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\noversized")
+                .unwrap();
+        });
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tier.bin");
+        let result = download_and_verify(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/tier"),
+            &path,
+            &"0".repeat(64),
+            2,
+        )
+        .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds authenticated size"));
+        assert!(!path.exists());
+        server.join().unwrap();
     }
 
     #[test]
@@ -981,4 +1036,41 @@ mod tests {
         }
         assert!(m.files.contains_key("nullifiers.bin"));
     }
+}
+
+/// Staging always authenticates the manifest and never falls back to local files.
+#[derive(clap::Args)]
+pub struct StageArgs {
+    #[arg(long)]
+    zcash_network: pir_types::ZcashNetwork,
+    #[arg(long)]
+    height: u64,
+    #[arg(long)]
+    pir_data_dir: PathBuf,
+    #[arg(long)]
+    precomputed_base_url: String,
+    #[arg(long)]
+    manifest_sha256: String,
+    #[arg(long, default_value_t = 1800)]
+    timeout_secs: u64,
+}
+/// Download an authenticated snapshot into an empty directory without serving it.
+pub async fn stage(args: StageArgs) -> Result<()> {
+    validate_force_snapshot_height(args.height, args.zcash_network)?;
+    anyhow::ensure!(
+        !args.pir_data_dir.exists() || std::fs::read_dir(&args.pir_data_dir)?.next().is_none(),
+        "staging directory must be empty"
+    );
+    std::fs::create_dir_all(&args.pir_data_dir)?;
+    let cfg = Config {
+        zcash_network: args.zcash_network,
+        pir_config_url: Some(String::new()),
+        voting_config_url: String::new(),
+        precomputed_base_url: args.precomputed_base_url.trim_end_matches('/').into(),
+        force_snapshot_height: Some(args.height),
+        pir_data_dir: args.pir_data_dir,
+        http_timeout: Duration::from_secs(args.timeout_secs),
+    };
+    fetch_authenticated(&cfg, args.height, Some(&args.manifest_sha256)).await?;
+    Ok(())
 }

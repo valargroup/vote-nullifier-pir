@@ -387,7 +387,8 @@ pub async fn handle_metrics() -> impl axum::response::IntoResponse {
             format!("metrics encode failed: {e}"),
         );
     }
-    let body = String::from_utf8(buf).unwrap_or_else(|_| "<invalid utf-8>".to_string());
+    let mut body = String::from_utf8(buf).unwrap_or_else(|_| "<invalid utf-8>".to_string());
+    body.push_str(&crate::update_status::metrics().await);
     (
         axum::http::StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, content_type)],
