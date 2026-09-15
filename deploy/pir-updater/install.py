@@ -10,7 +10,7 @@ import time
 import subprocess
 from urllib.parse import urlparse
 from pir_updater import (ROOT, SERVICE, LOCK, BINARY, DROPIN, Reconciler, atomic, save,
-                         run, switch, sync_directory, read, digest, restore_dropin)
+                         run, switch, sync_directory, read, digest, restore_dropin, legacy_dropin)
 
 
 def defaults(path):
@@ -38,11 +38,14 @@ def recover_enrollment():
         atomic(BINARY, Path(tx['binary_backup']).read_bytes(), 0o755)
         if 'previous_unit' in tx:
             atomic(SERVICE, base64.b64decode(tx['previous_unit']))
-        restore_dropin(tx.get('previous_dropin'))
+        target = tx.get('previous_target')
+        if target and 'legacy_binary_sha256' in target:
+            atomic(DROPIN, legacy_dropin(Path(tx['binary_backup']), target['data_dir']))
+        else:
+            restore_dropin(tx.get('previous_dropin'))
         run('systemctl', 'daemon-reload')
         run('systemctl', 'reset-failed', 'nullifier-query-server.service', check=False)
         run('systemctl', 'start', 'nullifier-query-server.service')
-        target = tx.get('previous_target')
         if target:
             recovery = Reconciler()
             recovery.settings = {'timeout_secs': tx.get('timeout_secs', 600)}
@@ -106,8 +109,6 @@ def install(timeout):
     if b'ExecStart=/opt/nf-ingest/nf-server serve --port 3000\n' not in SERVICE.read_bytes():
         raise RuntimeError('unsupported custom ExecStart; restore the release unit before enrollment')
     dropins = run('systemctl', 'show', '--property=DropInPaths', '--value', 'nullifier-query-server.service').strip()
-    if dropins:
-        raise RuntimeError('custom systemd overrides require manual migration before enrollment')
     # The installer provides a checksum-verified, separately pinned verifier.
     info = json.loads(run(ROOT / 'verifier', 'build-info', '--json'))
     if info.get('pir_update_protocol') != 1:
@@ -126,6 +127,12 @@ def install(timeout):
     running_hash = digest(Path(f'/proc/{pid}/exe'))
     if installed_hash != running_hash:
         raise RuntimeError('running and installed server executable differ; reconcile before enrollment')
+    recovery_dropin = legacy_dropin(BINARY, data)
+    # A failed enrollment leaves this exact local-only override for safe reboots.
+    # Permit retrying it, but never absorb unrelated operator overrides.
+    if dropins and not (dropins.split() == [os.fsencode(DROPIN)] and
+                        DROPIN.read_bytes() == recovery_dropin):
+        raise RuntimeError('custom systemd overrides require manual migration before enrollment')
     previous_target = {'legacy_binary_sha256': installed_hash,
                        'running_exe_sha256': running_hash,
                        'root_sha256': digest(data / 'pir_root.json'),
@@ -183,6 +190,10 @@ WantedBy=timers.target
     # Recovery is scheduled before the first serving-path mutation. The shared
     # lock keeps it from racing this installer; after a crash it restores legacy.
     run('systemctl', 'enable', '--now', 'pir-updater.timer')
+    # Make reboot safe before replacing the executable: the old unit may start
+    # before timer recovery, and must not discover a different snapshot then.
+    atomic(DROPIN, recovery_dropin)
+    run('systemctl', 'daemon-reload')
     tx['activation_started'] = True
     save(ROOT / 'enrollment.json', tx)
     link = BINARY.with_suffix('.managed')

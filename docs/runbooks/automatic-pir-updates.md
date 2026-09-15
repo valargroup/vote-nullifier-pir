@@ -84,8 +84,17 @@ overrides that need an operator migration.
 If enrollment is interrupted before activation, the original service remains
 unchanged. Once activation begins, the installed timer also handles recovery
 after a crash or reboot. Recovery restores the original executable, unit, and
-data path; a legacy server is checked using its executable hash and `/ready`
-without requiring `/metadata`. Rerun the installer to retry a restored migration.
+data path, with a systemd override that disables remote snapshot discovery.
+The override is installed before activation and retained after recovery so a
+reboot cannot replace the rollback snapshot or require a working config endpoint.
+Enrollment checks the legacy server's `serve --help` for `--pir-data-dir` and
+`--voting-config-url`; `--pir-config-url` is disabled only when supported.
+A legacy server is checked using its executable hash and `/ready`, without
+requiring `/metadata`. Rerun the installer to retry a restored migration;
+it accepts its own exact recovery override. To return to manual snapshot
+discovery instead, review and remove
+`/etc/systemd/system/nullifier-query-server.service.d/90-pir-updater.conf`
+and run `systemctl daemon-reload` before restarting the service.
 
 A repeated invocation of this installer on an enrolled host immediately
 reconciles the signed target and enables polling after success. It reuses the
@@ -138,8 +147,13 @@ sudo python3 /opt/pir-updater/pir_updater.py uninstall
 Uninstall leaves the current process and retained snapshot running. It preserves
 an explicit data-path systemd override and retained files so a subsequent
 restart stays on that snapshot. Review/migrate that override before re-enrolling.
-The manual updater refuses enrolled hosts; use coordinator updates or uninstall
-first. Disabling the timer alone does not opt out of this protection.
+The manual updater, `start_pir.sh` reruns, GitHub deploy action, and restart
+workflow refuse enrolled hosts, including interrupted enrollment. Use coordinator
+updates or uninstall first. Disabling the timer alone does not opt out of this
+protection. These entrypoints hold `/run/lock/pir-update.lock` across the ownership
+check and serving-path changes. GitHub deployment uploads to a run-specific
+temporary directory, then checks ownership again under the lock before installing;
+it keeps the lock through readiness and forced-snapshot cleanup.
 
 ## Signed format and trust boundaries
 
@@ -185,5 +199,8 @@ The systemd test runs in a disposable privileged Docker container with a native
 executable HTTP fixture, exercising legacy bootstrap, installed/running identity
 mismatch, rejection before activation, failed activation rollback without
 metadata, interrupted enrollment recovery, and installer reruns without touching
-live infrastructure. Unit tests cover signature-before-execution, file mismatches,
+live infrastructure. Legacy recovery is tested with changed and unavailable remote
+configuration and with a binary lacking `--pir-config-url`. Manual-entrypoint tests
+exercise enrollment rejection, lock contention, and enrollment between deployment
+preflight and installation. Unit tests cover signature-before-execution, file mismatches,
 backoff, interrupted transactions, fallback downloads, and target changes.

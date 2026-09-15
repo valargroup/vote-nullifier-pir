@@ -108,7 +108,7 @@ fi
 command -v flock >/dev/null || { echo "flock is required" >&2; exit 1; }
 exec 9>/run/lock/pir-update.lock
 flock -n 9 || { echo "Another PIR update is running" >&2; exit 1; }
-if [ -f /opt/pir-updater/settings.json ]; then
+if [ -f /opt/pir-updater/settings.json ] || [ -f /opt/pir-updater/enrollment.json ]; then
   echo "Host is enrolled in signed updates; use the coordinator dashboard or uninstall the updater first." >&2
   exit 1
 fi

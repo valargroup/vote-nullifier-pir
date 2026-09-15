@@ -9,6 +9,22 @@ import pir_updater as u
 
 
 class UpdateTests(unittest.TestCase):
+    def test_legacy_recovery_disables_supported_discovery_options(self):
+        for modern in (False, True):
+            help_text = b'--pir-data-dir --voting-config-url'
+            if modern: help_text += b' --pir-config-url'
+            with patch.object(u, 'run', return_value=help_text):
+                override = u.legacy_dropin(Path('/legacy'), '/data/a b%$c')
+            self.assertIn(b'--voting-config-url=', override)
+            self.assertEqual(b'--pir-config-url=' in override, modern)
+            self.assertIn(b'--pir-data-dir "/data/a b%%$$c"', override)
+
+    def test_legacy_recovery_rejects_missing_discovery_control(self):
+        for help_text in (b'', b'--pir-data-dir', b'--voting-config-url'):
+            with patch.object(u, 'run', return_value=help_text):
+                with self.assertRaisesRegex(RuntimeError, 'cannot disable'):
+                    u.legacy_dropin(Path('/legacy'), '/data')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
