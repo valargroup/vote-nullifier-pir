@@ -21,6 +21,7 @@ LOCK = Path('/run/lock/pir-update.lock')
 NAME = 'nullifier-query-server.service'
 DROPIN = SERVICE.parent / 'nullifier-query-server.service.d/90-pir-updater.conf'
 BINARY = Path('/opt/nf-ingest/nf-server')
+USER_AGENT = 'pir-updater/1'
 
 
 def sync_directory(path):
@@ -77,7 +78,7 @@ def run(*args, timeout=120, check=True):
 def fetch(url, limit=65536):
     if not url.startswith('https://'):
         raise ValueError('HTTPS required')
-    with urllib.request.urlopen(url, timeout=30) as response:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': USER_AGENT}), timeout=30) as response:
         if not response.url.startswith('https://'):
             raise ValueError('HTTPS required after redirect')
         data = response.read(limit + 1)
@@ -103,7 +104,7 @@ def download(urls, path, expected, max_bytes=1024 * 1024 * 1024):
         try:
             if not url.startswith('https://'):
                 raise ValueError('HTTPS required')
-            with urllib.request.urlopen(url, timeout=1800) as response, path.open('wb') as out:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': USER_AGENT}), timeout=1800) as response, path.open('wb') as out:
                 if not response.url.startswith('https://'):
                     raise ValueError('HTTPS required after redirect')
                 total = 0
