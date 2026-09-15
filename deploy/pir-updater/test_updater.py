@@ -22,6 +22,24 @@ class UpdateTests(unittest.TestCase):
         u.switch(initial)
         self.r = u.Reconciler()
 
+    def test_public_requests_identify_the_updater(self):
+        # The config gateway rejects Python's default UA with HTTP 403/1010.
+        for operation in ('metadata', 'artifact'):
+            with self.subTest(operation=operation):
+                response = Mock()
+                response.url = 'https://example.com/content'
+                response.read.side_effect = [b'good', b'']
+                response.__enter__ = Mock(return_value=response)
+                response.__exit__ = Mock(return_value=False)
+                with patch.object(u.urllib.request, 'urlopen', return_value=response) as open_url:
+                    if operation == 'metadata':
+                        self.assertEqual(u.fetch(response.url), b'good')
+                    else:
+                        u.download([response.url], self.root / 'artifact', u.hashlib.sha256(b'good').hexdigest())
+                    request = open_url.call_args.args[0]
+                    self.assertEqual(request.full_url, response.url)
+                    self.assertEqual(request.get_header('User-agent'), 'pir-updater/1')
+
     def test_invalid_signature_never_reaches_stage_or_activation(self):
         with patch.object(u, 'fetch', return_value=b'{}'), patch.object(u, 'run', side_effect=RuntimeError('bad signature')), patch.object(self.r, 'stage') as stage, patch.object(self.r, 'activate') as activate:
             with self.assertRaises(RuntimeError): self.r.once()
