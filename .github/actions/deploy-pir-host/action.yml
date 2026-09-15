@@ -1,0 +1,267 @@
+name: Deploy PIR host
+description: Install an nf-server release and verify one PIR fleet host
+
+inputs:
+  host:
+    description: SSH host
+    required: true
+  host_role:
+    description: Fleet role used in logs
+    required: true
+  deploy_user:
+    description: SSH user
+    required: true
+  ssh_key:
+    description: SSH private key
+    required: true
+  release_tag:
+    description: Published vote-nullifier-pir release tag
+    required: true
+  target_environment:
+    description: staging or production
+    required: true
+  forced_height:
+    description: Optional published snapshot height
+    required: false
+    default: ""
+  sentry_dsn:
+    description: Sentry DSN
+    required: false
+    default: ""
+  precomputed_base_url:
+    description: Snapshot artifact base URL
+    required: false
+    default: ""
+  pir_config_url:
+    description: PIR configuration URL
+    required: false
+    default: ""
+  voting_config_url:
+    description: Static voting configuration URL
+    required: false
+    default: ""
+  lwd_urls:
+    description: Comma-separated lightwalletd endpoints
+    required: true
+  pir_apm_slack_webhook_url:
+    description: PIR APM Slack webhook
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Stage deploy artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+        cp docs/nullifier-query-server.service .
+        cp deploy/systemd/pir-apm.service .
+        cp deploy/caddy/Caddyfile pir-apm.Caddyfile
+        rm -rf nf-server/
+        rm -f nf-server-linux-amd64 pir-apm-linux-amd64 SHA256SUMS
+        curl -fL --retry 5 -o nf-server-linux-amd64 \
+          "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/nf-server-linux-amd64"
+        curl -fL --retry 5 -o pir-apm-linux-amd64 \
+          "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/pir-apm-linux-amd64"
+        curl -fL --retry 5 -o SHA256SUMS \
+          "https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag }}/SHA256SUMS"
+        grep ' nf-server-linux-amd64$' SHA256SUMS | sha256sum --check -
+        grep ' pir-apm-linux-amd64$' SHA256SUMS | sha256sum --check -
+        mv nf-server-linux-amd64 nf-server
+        mv pir-apm-linux-amd64 pir-apm
+        chmod +x nf-server pir-apm
+
+    - name: Copy deploy artifacts
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.deploy_user }}
+        key: ${{ inputs.ssh_key }}
+        source: nf-server,nullifier-query-server.service,pir-apm,pir-apm.service,pir-apm.Caddyfile
+        target: /opt/nf-ingest
+
+    - name: Install and restart
+      uses: appleboy/ssh-action@v1.0.3
+      env:
+        SENTRY_DSN: ${{ inputs.sentry_dsn }}
+        SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
+        SENTRY_RELEASE: ${{ inputs.release_tag }}
+        FORCED_HEIGHT: ${{ inputs.forced_height }}
+        PRECOMPUTED_BASE_URL: ${{ inputs.precomputed_base_url }}
+        TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+        PIR_CONFIG_URL: ${{ inputs.pir_config_url }}
+        VOTING_CONFIG_URL: ${{ inputs.voting_config_url }}
+        SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
+        LWD_URLS: ${{ inputs.lwd_urls }}
+        PIR_APM_SLACK_WEBHOOK_URL: ${{ inputs.pir_apm_slack_webhook_url }}
+        HOST_ROLE: ${{ inputs.host_role }}
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.deploy_user }}
+        key: ${{ inputs.ssh_key }}
+        envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,HOST_ROLE
+        script: |
+          set -eu
+          DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
+          if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
+             ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])'; then
+            echo "FAIL: staged nf-server does not support Ironwood dataset version 2."
+            exit 1
+          fi
+
+          DROPIN_DIR=/etc/systemd/system/nullifier-query-server.service.d
+          DROPIN_FILE="$DROPIN_DIR/force-snapshot.conf"
+          DEFAULTS_FILE=/etc/default/nf-server
+
+          tmp=$(mktemp)
+          {
+            echo "SENTRY_DSN=$SENTRY_DSN"
+            echo "SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT"
+            echo "SENTRY_RELEASE=$SENTRY_RELEASE"
+          } > "$tmp"
+          sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
+          rm -f "$tmp"
+
+          sudo chmod +x /opt/nf-ingest/nf-server /opt/nf-ingest/pir-apm
+          sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
+          sudo cp /opt/nf-ingest/pir-apm.service /etc/systemd/system/pir-apm.service
+
+          if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ]; then
+            echo "PIR APM Slack webhook is required." >&2
+            exit 1
+          fi
+          case "$TARGET_ENVIRONMENT" in
+            production) PIR_ENV=prod ;;
+            staging) PIR_ENV=stage ;;
+            *)
+              echo "Unsupported target_environment: $TARGET_ENVIRONMENT" >&2
+              exit 1
+              ;;
+          esac
+
+          PIR_DATA_DIR="/opt/nf-ingest/pir-data/$SVOTE_ZCASH_NETWORK"
+          PIR_CONFIG_URL="${PIR_CONFIG_URL:-https://voting.valargroup.dev/${PIR_ENV}/pir.json}"
+          VOTING_CONFIG_URL="${VOTING_CONFIG_URL:-https://voting.valargroup.dev/${PIR_ENV}/static-voting-config.json}"
+          PRECOMPUTED_BASE_URL="${PRECOMPUTED_BASE_URL:-https://shielded-vote.nyc3.digitaloceanspaces.com}"
+
+          echo "==> Writing PIR defaults ($PIR_ENV)"
+          tmp=$(mktemp)
+          if sudo test -f "$DEFAULTS_FILE"; then
+            sudo awk '!/^(SVOTE_ZCASH_NETWORK|SVOTE_PIR_DATA_DIR|SVOTE_PIR_CONFIG_URL|SVOTE_PIR_VOTING_CONFIG_URL|SVOTE_PIR_PRECOMPUTED_BASE_URL|LWD_URLS)=/' "$DEFAULTS_FILE" > "$tmp"
+          fi
+          {
+            echo "SVOTE_ZCASH_NETWORK=$SVOTE_ZCASH_NETWORK"
+            echo "LWD_URLS=$LWD_URLS"
+            echo "SVOTE_PIR_DATA_DIR=$PIR_DATA_DIR"
+            echo "SVOTE_PIR_CONFIG_URL=$PIR_CONFIG_URL"
+            echo "SVOTE_PIR_VOTING_CONFIG_URL=$VOTING_CONFIG_URL"
+            echo "SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL"
+          } >> "$tmp"
+          sudo install -m 0644 -o root -g root "$tmp" "$DEFAULTS_FILE"
+          rm -f "$tmp"
+          sudo install -d -m 0755 "$PIR_DATA_DIR"
+
+          tmp=$(mktemp)
+          {
+            echo "PIR_APM_SCRAPE_URL=http://127.0.0.1:3000"
+            echo "PIR_APM_LISTEN=127.0.0.1:3002"
+            echo "PIR_APM_ENVIRONMENT=$TARGET_ENVIRONMENT"
+            echo "PIR_APM_HOSTNAME=$(hostname -f)"
+            echo "PIR_APM_DATA_DIR=$PIR_DATA_DIR"
+            echo "PIR_APM_DASHBOARD=1"
+            echo "PIR_APM_SLACK_WEBHOOK_URL=$PIR_APM_SLACK_WEBHOOK_URL"
+          } > "$tmp"
+          sudo install -m 0600 -o root -g root "$tmp" /etc/default/pir-apm
+          rm -f "$tmp"
+
+          if sudo grep -q '^PIR_APM_BASIC_AUTH_HASH=' /etc/default/caddy-env 2>/dev/null; then
+            tmp=$(mktemp)
+            sudo awk '!/^PIR_APM_BASIC_AUTH_HASH=/' /etc/default/caddy-env > "$tmp"
+            sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
+            rm -f "$tmp"
+          fi
+          sudo install -m 0644 -o root -g root /opt/nf-ingest/pir-apm.Caddyfile /etc/caddy/Caddyfile
+          sudo systemd-run --pipe --wait --collect \
+            --property=EnvironmentFile=/etc/default/caddy-env \
+            caddy validate --config /etc/caddy/Caddyfile
+
+          if [ -n "$FORCED_HEIGHT" ]; then
+            echo "==> Forcing snapshot bootstrap height $FORCED_HEIGHT from $PRECOMPUTED_BASE_URL"
+            sudo install -d -m 0755 "$DROPIN_DIR"
+            tmp=$(mktemp)
+            cat > "$tmp" <<EOF
+          [Service]
+          Environment=SVOTE_PIR_FORCE_SNAPSHOT_HEIGHT=$FORCED_HEIGHT
+          Environment=SVOTE_PIR_PRECOMPUTED_BASE_URL=$PRECOMPUTED_BASE_URL
+          EOF
+            sudo install -m 0644 -o root -g root "$tmp" "$DROPIN_FILE"
+            rm -f "$tmp"
+          elif sudo test -f "$DROPIN_FILE"; then
+            echo "==> Removing stale forced snapshot drop-in"
+            sudo rm -f "$DROPIN_FILE"
+          fi
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable nullifier-query-server pir-apm
+          sudo systemctl restart nullifier-query-server
+          sudo systemctl restart pir-apm
+          sudo systemctl reload caddy
+          echo "Deployed $SENTRY_RELEASE to $HOST_ROLE"
+
+    - name: Readiness check
+      uses: appleboy/ssh-action@v1.0.3
+      env:
+        FORCED_HEIGHT: ${{ inputs.forced_height }}
+        SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
+        HOST_ROLE: ${{ inputs.host_role }}
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.deploy_user }}
+        key: ${{ inputs.ssh_key }}
+        envs: FORCED_HEIGHT,SVOTE_ZCASH_NETWORK,HOST_ROLE
+        command_timeout: 11m
+        script: |
+          set -eu
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:3000/ready > /dev/null; then
+              echo "Readiness check passed on $HOST_ROLE (attempt $i)"
+              break
+            fi
+            echo "Waiting for readiness... attempt $i/120"
+            sleep 5
+          done
+          if ! curl -sf http://localhost:3000/ready > /dev/null; then
+            echo "Readiness check FAILED on $HOST_ROLE after 10m"
+            sudo systemctl status nullifier-query-server --no-pager -l 2>/dev/null || true
+            sudo journalctl -u nullifier-query-server --no-pager -n 50 2>/dev/null || true
+            exit 1
+          fi
+
+          curl -sf http://127.0.0.1:3002/healthz > /dev/null
+          sudo systemctl is-active --quiet pir-apm
+          ROOT=$(curl -sf --max-time 4 http://localhost:3000/root)
+          if ! printf '%s\n' "$ROOT" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
+             ! printf '%s\n' "$ROOT" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])' || \
+             ! printf '%s\n' "$ROOT" | grep -Eq "\"zcash_network\"[[:space:]]*:[[:space:]]*\"$SVOTE_ZCASH_NETWORK\""; then
+            echo "FAIL: $HOST_ROLE is not serving $SVOTE_ZCASH_NETWORK Ironwood dataset version 2."
+            exit 1
+          fi
+
+          if [ -n "$FORCED_HEIGHT" ]; then
+            METRICS=$(curl -sf --max-time 4 http://localhost:3000/metrics)
+            metric_value() {
+              printf '%s\n' "$METRICS" | awk -v name="$1" '$1==name {print int($2); found=1; exit} END {if (!found) exit 1}'
+            }
+            if ! SERVED=$(metric_value nf_snapshot_served_height); then
+              echo "FAIL: nf_snapshot_served_height metric is missing."
+              exit 1
+            fi
+            echo "==> Snapshot height: served=$SERVED forced=$FORCED_HEIGHT"
+            if [ "$SERVED" -ne "$FORCED_HEIGHT" ]; then
+              echo "FAIL: served ($SERVED) != forced height ($FORCED_HEIGHT)."
+              exit 1
+            fi
+            echo "OK: $HOST_ROLE is serving forced snapshot height $SERVED"
+            sudo rm -f /etc/systemd/system/nullifier-query-server.service.d/force-snapshot.conf
+            sudo systemctl daemon-reload
+          fi
