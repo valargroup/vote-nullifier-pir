@@ -169,6 +169,7 @@ pub async fn run(args: Args) -> Result<()> {
         .route("/snapshot/status", get(rebuild::get_snapshot_status))
         .route("/metrics", get(metrics::handle_metrics))
         .route("/health", get(handlers::get_health))
+        .route("/metadata", get(handlers::get_metadata))
         .route("/ready", get(handlers::get_ready))
         .layer(DefaultBodyLimit::max(MAX_QUERY_BODY_BYTES))
         .layer(axum::middleware::from_fn(metrics::track_pir_request))

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Trusted initial enrollment. This script and its distribution are the trust bootstrap.
+set -euo pipefail
+TAG='__RELEASE_TAG__'
+BASE='__BINARY_BASE_URL__'
+REPO='__GITHUB_REPO__'
+[[ "$(uname -s)" == Linux && "${EUID}" == 0 ]] || { echo 'Linux root installation required' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'Install python3 before enrollment' >&2; exit 1; }
+command -v flock >/dev/null || { echo 'Install util-linux before enrollment' >&2; exit 1; }
+exec 9>/run/lock/pir-update.lock
+flock -n 9 || { echo 'Another PIR operation is running' >&2; exit 1; }
+if [[ -f /opt/pir-updater/settings.json && ! -f /opt/pir-updater/enrollment.json ]]; then
+  echo 'Already enrolled. Use systemctl enable --now pir-updater.timer to re-enable.'
+  exit 0
+fi
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+curl -fsSL "$BASE/SHA256SUMS-$TAG" -o "$work/SHA256SUMS" || curl -fsSL "https://github.com/$REPO/releases/download/$TAG/SHA256SUMS" -o "$work/SHA256SUMS"
+curl -fsSL "$BASE/pir-updater-$TAG.tar.gz" -o "$work/pir-updater.tar.gz" || curl -fsSL "https://github.com/$REPO/releases/download/$TAG/pir-updater.tar.gz" -o "$work/pir-updater.tar.gz"
+(cd "$work"; awk '$2 == "pir-updater.tar.gz" {print}' SHA256SUMS > package.sha256; test -s package.sha256; sha256sum -c package.sha256)
+mkdir -p /opt/pir-updater
+# Explicit filenames prevent archive paths from controlling installation destinations.
+for file in pir_updater.py install.py; do
+  tar -xOzf "$work/pir-updater.tar.gz" "$file" > "$work/$file"
+  install -m 0755 "$work/$file" "/opt/pir-updater/$file.new"
+  mv -f "/opt/pir-updater/$file.new" "/opt/pir-updater/$file"
+done
+python3 /opt/pir-updater/install.py --lock-fd 9 "$@"

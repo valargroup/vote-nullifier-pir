@@ -194,3 +194,17 @@ pub(crate) async fn get_ready(State(state): State<Arc<AppState>>) -> impl IntoRe
             .into_response(),
     }
 }
+
+/// Running executable identity and loaded snapshot, including during initialization.
+pub(crate) async fn get_metadata(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let phase = state.phase.read().await;
+    let serving = state.serving.read().await;
+    let mut info = crate::build_info::info();
+    info["zcash_network"] = serde_json::json!(state.zcash_network);
+    info["phase"] = serde_json::json!(&*phase);
+    info["snapshot_height"] = serde_json::json!(serving.as_ref().and_then(|s| s.metadata.height));
+    drop(serving);
+    drop(phase);
+    info["updater"] = crate::update_status::read().await;
+    axum::Json(info)
+}

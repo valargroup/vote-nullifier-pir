@@ -13,6 +13,7 @@ extern crate upstream_chain as zakura_chain;
 
 #[cfg(feature = "serve")]
 mod bootstrap;
+mod build_info;
 mod cmd_doctor;
 #[cfg(feature = "serve")]
 mod cmd_serve;
@@ -22,11 +23,14 @@ mod cmd_verify_root;
 mod metrics;
 #[cfg(feature = "serve")]
 mod pir_config;
+mod pir_update;
 mod raw_block_rpc;
 mod root_verifier;
 #[cfg(feature = "serve")]
 mod serve;
 mod sync_pipeline;
+#[cfg(feature = "serve")]
+mod update_status;
 mod voting_config;
 
 #[cfg(feature = "serve")]
@@ -51,6 +55,16 @@ struct Cli {
 enum Command {
     /// Check host resources vs runbook recommendations (advisory warnings only)
     Doctor(cmd_doctor::Args),
+    /// Print embedded release identity.
+    BuildInfo {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify coordinator authorization using compiled trust keys.
+    VerifyPirUpdate(pir_update::Args),
+    /// Stage an authenticated snapshot without starting a server.
+    #[cfg(feature = "serve")]
+    SnapshotStage(bootstrap::StageArgs),
     /// Print the supported nullifier dataset identity as JSON
     DatasetInfo,
     /// Ingest nullifiers, build tree checkpoint, export PIR tiers (resumable)
@@ -107,6 +121,13 @@ fn main() -> anyhow::Result<()> {
         .build()?
         .block_on(async {
             match cli.command {
+                Command::BuildInfo { .. } => {
+                    println!("{}", build_info::info());
+                    Ok(())
+                }
+                Command::VerifyPirUpdate(args) => pir_update::run(args),
+                #[cfg(feature = "serve")]
+                Command::SnapshotStage(args) => bootstrap::stage(args).await,
                 Command::Doctor(args) => Ok(cmd_doctor::run(args)?),
                 Command::DatasetInfo => {
                     println!(
