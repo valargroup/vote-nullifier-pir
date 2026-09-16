@@ -127,10 +127,43 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):self.r.stage('bad',{'config':{'binary_tag':'v2','snapshot_height':3484450},'payload':{'snapshot_manifest_sha256':'0'*64}})
             run.assert_not_called()
 
-    def _sidecar_paths(self):
+    def _sidecar_paths(self, manage=True):
         for name, value in [('APM_SERVICE', self.root / 'apm-unit'),
                             ('APM_BINARY', self.root / 'apm-binary')]:
             p = patch.object(u, name, value); p.start(); self.addCleanup(p.stop)
+        self.r.settings['manage_sidecar'] = manage
+
+    def test_an_integrator_host_is_never_given_a_sidecar(self):
+        # The signed config is environment-global. A host that did not opt in
+        # must not receive pir-apm even when the payload authorises one.
+        self._sidecar_paths(manage=False)
+        self.assertFalse(self.r.manages_sidecar())
+        path = self.root / 'generations' / 'initial'
+        (path / 'pir-apm').write_bytes(b'new apm')
+        (path / 'apm-service').write_bytes(b'new apm unit')
+        with patch.object(u, 'run') as run:
+            self.r.reconcile_sidecar(path)
+            run.assert_not_called()
+        self.assertFalse(u.APM_BINARY.exists())
+        self.assertFalse(u.APM_SERVICE.exists())
+
+    def test_an_integrator_host_never_stages_a_sidecar(self):
+        self.r.settings['manage_sidecar'] = False
+        payload = {'snapshot_manifest_sha256': '0' * 64, 'linux_amd64_sha256': '1' * 64,
+                   'linux_arm64_sha256': '1' * 64, 'service_sha256': '2' * 64,
+                   'apm_linux_amd64_sha256': '3' * 64, 'apm_linux_arm64_sha256': '3' * 64,
+                   'apm_service_sha256': '4' * 64}
+        with patch.object(u, 'download') as download:
+            with self.assertRaises(Exception):
+                self.r.stage('integrator', {'schema_version': 2,
+                                            'config': {'binary_tag': 'v2', 'snapshot_height': 3484450},
+                                            'payload': payload})
+        for call in download.call_args_list:
+            self.assertNotIn('pir-apm', str(call))
+
+    def test_settings_without_the_flag_do_not_manage_a_sidecar(self):
+        self.assertNotIn('manage_sidecar', self.r.settings)
+        self.assertFalse(self.r.manages_sidecar())
 
     def test_a_generation_without_a_sidecar_leaves_the_installed_one_alone(self):
         self._sidecar_paths()

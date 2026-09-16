@@ -184,8 +184,28 @@ observes traffic rather than serving it, and a stale or stopped sidecar is
 caught downstream because `pir-apm` reports a missing Tier1 processing
 histogram instead of failing open.
 
-This is deliberately inert today. The v1 signing message covers exactly five
-hashes, so sidecar digests presented under it would be unsigned and
+**The sidecar is opt-in per host and off by default.** `pir.json` is global to
+an environment, so acting on its sidecar hashes unconditionally would push
+`pir-apm` onto every enrolled host, including integrators who do not run it.
+Two independent conditions must both hold: the signature decides *what* may be
+installed, and the host-local `manage_sidecar` setting decides *whether* to
+install at all. An integrator enrolls exactly as before, gets signed
+`nf-server` updates, and is never given a sidecar binary or unit — no
+configuration, no opt-out step, and nothing to disable.
+
+Valargroup fleet hosts opt in at enrollment:
+
+```bash
+install_pir_updater.sh --manage-sidecar
+```
+
+which records `"manage_sidecar": true` in `/opt/pir-updater/settings.json`.
+Hosts without it keep today's behaviour permanently. To stop updater management
+later, set the flag to `false` in `settings.json`; the installed sidecar is left
+untouched where it is.
+
+This is also deliberately inert today. The v1 signing message covers exactly
+five hashes, so sidecar digests presented under it would be unsigned and
 attacker-controlled. The updater therefore ignores them unless the verifier
 reports `schema_version >= 2`. Activating this requires, in order:
 

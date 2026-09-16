@@ -280,14 +280,19 @@ class Reconciler:
             raise RuntimeError('candidate build identity or updater protocol mismatch')
         download([f'{base}/nullifier-query-server-{tag}.service', f'{github}/nullifier-query-server.service'],
                  path / 'service', p['service_sha256'], 65536)
-        # The monitoring sidecar is optional so existing attestations keep
-        # verifying. The v1 signing message covers exactly five hashes, so
-        # sidecar digests carried by a v1 payload would be unsigned and
-        # attacker-controlled. Honour them only once the verifier reports a
-        # schema that includes them in the signed message; until then this is
-        # inert and the sidecar is left to its existing install path.
+        # The monitoring sidecar is opt-in per host. The signed config is global
+        # to an environment, so honouring its sidecar hashes unconditionally
+        # would push pir-apm onto every enrolled host, including third-party
+        # integrators who do not run it. The signature still decides *what* may
+        # be installed; this host-local setting decides *whether* to install at
+        # all, and defaults to off.
+        #
+        # The v1 signing message covers exactly five hashes, so sidecar digests
+        # carried by a v1 payload would be unsigned and attacker-controlled.
+        # Honour them only once the verifier reports a schema that includes
+        # them in the signed message.
         apm_sha256 = apm_service_sha256 = None
-        if verified.get('schema_version', 1) >= 2:
+        if self.manages_sidecar() and verified.get('schema_version', 1) >= 2:
             apm_sha256 = p.get(f'apm_linux_{arch}_sha256')
             apm_service_sha256 = p.get('apm_service_sha256')
         if apm_sha256 and apm_service_sha256:
@@ -336,6 +341,16 @@ class Reconciler:
             if old not in (previous, path):
                 shutil.rmtree(old)
 
+    def manages_sidecar(self):
+        """Whether this host opted into updater-managed pir-apm.
+
+        Off unless the operator set it at enrollment. pir-apm is fleet
+        monitoring, not part of serving PIR queries, so an integrator running
+        their own host gets signed nf-server updates without it and is never
+        given a sidecar binary or unit they did not ask for.
+        """
+        return bool(self.settings.get('manage_sidecar'))
+
     def reconcile_sidecar(self, path):
         """Move the monitoring sidecar onto the activated generation.
 
@@ -346,6 +361,8 @@ class Reconciler:
         stale or stopped still surfaces downstream, because pir-apm reports a
         missing Tier1 processing histogram instead of failing open.
         """
+        if not self.manages_sidecar():
+            return
         staged, staged_unit = path / 'pir-apm', path / 'apm-service'
         if not (staged.exists() and staged_unit.exists()):
             return
