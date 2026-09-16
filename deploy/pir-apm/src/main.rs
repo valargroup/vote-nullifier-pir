@@ -94,6 +94,11 @@ async fn scrape_loop(
         .context("building HTTP client")?;
     let mut rolling = RollingMetrics::default();
     let mut alerts = AlertEngine::default();
+    // The sidecar and the server are installed by separate mechanisms, so their
+    // versions can drift. Record the served release so an operator can spot a
+    // mismatch without inferring it from alert wording. The public dashboard
+    // deliberately does not carry this.
+    let mut server_release_tag: Option<String> = None;
     let mut interval = tokio::time::interval(config.interval);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -114,7 +119,19 @@ async fn scrape_loop(
 
         match metrics_result {
             Ok(response) => match metrics::parse_prometheus(&response.body, now) {
-                Ok(snapshot) => rolling.push(snapshot),
+                Ok(snapshot) => {
+                    if snapshot.server_release_tag != server_release_tag {
+                        match &snapshot.server_release_tag {
+                            Some(tag) => eprintln!("scraped nf-server release {tag}"),
+                            None => eprintln!(
+                                "scraped nf-server reports no release tag; \
+                                 it predates nf_build_info"
+                            ),
+                        }
+                        server_release_tag.clone_from(&snapshot.server_release_tag);
+                    }
+                    rolling.push(snapshot)
+                }
                 Err(error) => scrape_error = Some(format!("metrics parse failed: {error}")),
             },
             Err(error) => scrape_error = Some(error),

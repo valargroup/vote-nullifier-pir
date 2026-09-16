@@ -108,6 +108,26 @@ impl AlertEngine {
                 ),
                 _ => unreachable!(),
             };
+            if endpoint == "tier1_query" {
+                // The paging metric is the processing histogram. If the server
+                // serves Tier1 traffic without exporting it, the latency check
+                // above can never fire and would otherwise fail open silently.
+                conditions.insert(
+                    "tier1_query_processing_metric_missing".to_string(),
+                    (
+                        window.observed.samples >= thresholds::LATENCY_MIN_REQUESTS
+                            && window.processing.samples == 0.0,
+                        format!(
+                            "{:.0} requests served, no processing samples",
+                            window.observed.samples
+                        ),
+                        format!(
+                            "processing samples == 0 over 5m, min {:.0} requests",
+                            thresholds::LATENCY_MIN_REQUESTS
+                        ),
+                    ),
+                );
+            }
             let latency = window.alert_latency(endpoint);
             conditions.insert(
                 latency_check,
@@ -408,6 +428,83 @@ mod tests {
                 requests: 100.0,
                 observed: LatencyWindow {
                     samples: 100.0,
+                    p99: Some(10.0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let mut engine = AlertEngine::default();
+        let fired: Vec<String> = engine
+            .evaluate(AlertInput {
+                now,
+                scrape_ok: true,
+                ready_ok: true,
+                endpoints: &endpoints,
+                host: &host,
+            })
+            .into_iter()
+            .map(|transition| match transition {
+                AlertTransition::Fired(alert) => alert.check,
+                AlertTransition::Recovered(alert) => alert.check,
+            })
+            .collect();
+
+        // Upload-inclusive latency must never page, but the absent processing
+        // histogram is itself reportable rather than silent.
+        assert!(!fired
+            .iter()
+            .any(|check| check == "tier1_query_high_latency"));
+        assert_eq!(fired, vec!["tier1_query_processing_metric_missing"]);
+    }
+
+    #[test]
+    fn a_server_exporting_processing_latency_does_not_report_a_missing_metric() {
+        let now = Instant::now();
+        let host = healthy_host();
+        let mut endpoints = BTreeMap::new();
+        endpoints.insert(
+            "tier1_query".into(),
+            EndpointWindow {
+                requests: 100.0,
+                observed: LatencyWindow {
+                    samples: 100.0,
+                    p99: Some(10.0),
+                    ..Default::default()
+                },
+                processing: LatencyWindow {
+                    samples: 100.0,
+                    p99: Some(0.3),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let mut engine = AlertEngine::default();
+        assert!(engine
+            .evaluate(AlertInput {
+                now,
+                scrape_ok: true,
+                ready_ok: true,
+                endpoints: &endpoints,
+                host: &host,
+            })
+            .is_empty());
+    }
+
+    #[test]
+    fn low_traffic_without_processing_samples_stays_quiet() {
+        let now = Instant::now();
+        let host = healthy_host();
+        let mut endpoints = BTreeMap::new();
+        endpoints.insert(
+            "tier1_query".into(),
+            EndpointWindow {
+                requests: 5.0,
+                observed: LatencyWindow {
+                    samples: 5.0,
                     p99: Some(10.0),
                     ..Default::default()
                 },
