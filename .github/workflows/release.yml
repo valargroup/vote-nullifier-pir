@@ -4,6 +4,8 @@
 #   nf-server-linux-amd64, nf-server-linux-arm64,
 #   nf-server-darwin-amd64, nf-server-darwin-arm64,
 #   nullifier-query-server.service, SHA256SUMS
+#   pir-apm-linux-amd64, pir-apm-linux-arm64, pir-apm.service,
+#   pir-apm-updater.tar.gz (sidecar updater, installed on fleet hosts only)
 # DO Spaces: tag-scoped start/update scripts and SHA256SUMS-<tag>.
 # Stable tags also update the latest and snapshot-height installer aliases.
 #   (same contents as GitHub Releases SHA256SUMS)
@@ -133,8 +135,16 @@ jobs:
           path: target/release/nf-server
 
   build-pir-apm:
-    name: Build pir-apm (linux-amd64)
-    runs-on: ubuntu-latest
+    name: Build pir-apm (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-amd64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -149,7 +159,7 @@ jobs:
             deploy/pir-apm/target
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-pir-apm-${{ hashFiles('deploy/pir-apm/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.platform }}-pir-apm-${{ hashFiles('deploy/pir-apm/Cargo.lock') }}
 
       - name: Build release binary
         env:
@@ -160,7 +170,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pir-apm-linux-amd64
+          name: pir-apm-${{ matrix.platform }}
           path: deploy/pir-apm/target/release/pir-apm
 
   release:
@@ -176,11 +186,10 @@ jobs:
         with:
           pattern: nf-server-*
 
-      - name: Download pir-apm artifact
+      - name: Download pir-apm artifacts
         uses: actions/download-artifact@v4
         with:
-          name: pir-apm-linux-amd64
-          path: pir-apm-artifact
+          pattern: pir-apm-linux-*
 
       - name: Prepare release assets
         run: |
@@ -192,9 +201,18 @@ jobs:
           done
           cp docs/nullifier-query-server.service .
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - -C deploy/pir-updater pir_updater.py install.py | gzip -n > pir-updater.tar.gz
-          mv pir-apm-artifact/pir-apm pir-apm-linux-amd64
-          chmod +x pir-apm-linux-amd64
+          for PLATFORM in linux-amd64 linux-arm64; do
+            mv "pir-apm-${PLATFORM}/pir-apm" "pir-apm-${PLATFORM}.tmp"
+            rm -rf "pir-apm-${PLATFORM}"
+            mv "pir-apm-${PLATFORM}.tmp" "pir-apm-${PLATFORM}"
+            chmod +x "pir-apm-${PLATFORM}"
+          done
           cp deploy/systemd/pir-apm.service .
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - \
+            deploy/pir-apm-updater/pir_apm_updater.py \
+            deploy/systemd/pir-apm-updater.service \
+            deploy/systemd/pir-apm-updater.timer \
+            scripts/install_pir_apm_updater.sh | gzip -n > pir-apm-updater.tar.gz
           sed \
             -e "s|__RELEASE_TAG__|${GITHUB_REF_NAME}|g" \
             -e "s|__GITHUB_REPO__|${GITHUB_REPOSITORY}|g" \
@@ -212,7 +230,9 @@ jobs:
             nf-server-darwin-arm64 \
             nullifier-query-server.service \
             pir-apm-linux-amd64 \
+            pir-apm-linux-arm64 \
             pir-apm.service \
+            pir-apm-updater.tar.gz \
             pir-updater.tar.gz \
             install_pir_updater.sh \
             > SHA256SUMS
@@ -230,7 +250,9 @@ jobs:
             nf-server-darwin-arm64
             nullifier-query-server.service
             pir-apm-linux-amd64
+            pir-apm-linux-arm64
             pir-apm.service
+            pir-apm-updater.tar.gz
             pir-updater.tar.gz
             install_pir_updater.sh
             SHA256SUMS
@@ -271,11 +293,10 @@ jobs:
         with:
           pattern: nf-server-*
 
-      - name: Download pir-apm artifact
+      - name: Download pir-apm artifacts
         uses: actions/download-artifact@v4
         with:
-          name: pir-apm-linux-amd64
-          path: pir-apm-artifact
+          pattern: pir-apm-linux-*
 
       - name: Prepare binaries and SHA256SUMS for Spaces
         run: |
@@ -288,9 +309,18 @@ jobs:
           done
           cp docs/nullifier-query-server.service .
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - -C deploy/pir-updater pir_updater.py install.py | gzip -n > pir-updater.tar.gz
-          mv pir-apm-artifact/pir-apm pir-apm-linux-amd64
-          chmod +x pir-apm-linux-amd64
+          for PLATFORM in linux-amd64 linux-arm64; do
+            mv "pir-apm-${PLATFORM}/pir-apm" "pir-apm-${PLATFORM}.tmp"
+            rm -rf "pir-apm-${PLATFORM}"
+            mv "pir-apm-${PLATFORM}.tmp" "pir-apm-${PLATFORM}"
+            chmod +x "pir-apm-${PLATFORM}"
+          done
           cp deploy/systemd/pir-apm.service .
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -cf - \
+            deploy/pir-apm-updater/pir_apm_updater.py \
+            deploy/systemd/pir-apm-updater.service \
+            deploy/systemd/pir-apm-updater.timer \
+            scripts/install_pir_apm_updater.sh | gzip -n > pir-apm-updater.tar.gz
           sha256sum \
             nf-server-linux-amd64 \
             nf-server-linux-arm64 \
@@ -298,7 +328,9 @@ jobs:
             nf-server-darwin-arm64 \
             nullifier-query-server.service \
             pir-apm-linux-amd64 \
+            pir-apm-linux-arm64 \
             pir-apm.service \
+            pir-apm-updater.tar.gz \
             pir-updater.tar.gz \
             > SHA256SUMS
 
@@ -364,8 +396,17 @@ jobs:
                 "s3://${DO_BUCKET}/binaries/vote-pir/nf-server-${VERSION}-${PLATFORM}" --acl-public --force
             fi
           done
-          s3cmd -c /tmp/do-spaces.s3cfg put pir-apm-linux-amd64 \
-            "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}-linux-amd64" --acl-public --force
+          for PLATFORM in linux-amd64 linux-arm64; do
+            BINARY="pir-apm-${PLATFORM}"
+            if [ -f "$BINARY" ]; then
+              s3cmd -c /tmp/do-spaces.s3cfg put "$BINARY" \
+                "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}-${PLATFORM}" --acl-public --force
+            fi
+          done
+          s3cmd -c /tmp/do-spaces.s3cfg put pir-apm.service \
+            "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}.service" --acl-public --force
+          s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force pir-apm-updater.tar.gz \
+            "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-updater-${VERSION}.tar.gz"
           s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force pir-updater.tar.gz \
             "s3://${DO_BUCKET}/binaries/vote-pir/pir-updater-${VERSION}.tar.gz"
           s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force nullifier-query-server.service \

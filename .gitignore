@@ -11,3 +11,5 @@ pir-data/
 rust-toolchain.toml
 .vscode/
 .claude/
+__pycache__/
+*.pyc

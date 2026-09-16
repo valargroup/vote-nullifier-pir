@@ -66,13 +66,28 @@ opt out of: a host without the service is simply unmanaged.
 
 ## Install
 
+Each release publishes `pir-apm-updater.tar.gz`, which unpacks to the repository
+layout the installer expects. On a fleet host:
+
 ```bash
+TAG=v0.12.0
+cd "$(mktemp -d)"
+curl -fL --retry 5 -O "https://github.com/valargroup/vote-nullifier-pir/releases/download/$TAG/pir-apm-updater.tar.gz"
+curl -fL --retry 5 -O "https://github.com/valargroup/vote-nullifier-pir/releases/download/$TAG/SHA256SUMS"
+grep ' pir-apm-updater.tar.gz$' SHA256SUMS | sha256sum --check -
+tar -xzf pir-apm-updater.tar.gz
 sudo scripts/install_pir_apm_updater.sh \
   --config-url https://voting.valargroup.dev/stage/pir.json
 ```
 
 Use the `prod` URL on production hosts. The installer writes the unit and timer,
-enables the timer, and reconciles once immediately.
+enables the timer, and reconciles once immediately, so a misconfiguration
+surfaces during install rather than silently on the next tick.
+
+From a repository checkout, run `scripts/install_pir_apm_updater.sh` directly.
+
+This service does not update its own code, so changes to `pir_apm_updater.py`
+require repeating this install on each host.
 
 ## Operation
 
