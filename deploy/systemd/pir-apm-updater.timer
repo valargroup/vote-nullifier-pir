@@ -1,0 +1,14 @@
+[Unit]
+Description=Poll pir.json for the PIR APM sidecar target
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Hosts poll independently, so spread ticks rather than having the fleet
+# fetch pir.json and GitHub in lockstep.
+RandomizedDelaySec=60
+Persistent=true
+Unit=pir-apm-updater.service
+
+[Install]
+WantedBy=timers.target

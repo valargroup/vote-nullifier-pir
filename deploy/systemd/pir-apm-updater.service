@@ -1,0 +1,14 @@
+[Unit]
+Description=PIR APM sidecar updater
+Documentation=https://github.com/valargroup/vote-nullifier-pir
+# Deliberately unordered against nullifier-query-server: the sidecar is
+# monitoring, and updating it must never gate or disturb query serving.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/pir-apm-updater/pir_apm_updater.py --once
+# A failed poll is retried on the next timer tick rather than escalating.
+SuccessExitStatus=0
+TimeoutStartSec=20min
