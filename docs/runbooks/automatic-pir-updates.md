@@ -168,6 +168,11 @@ The payload has exactly five lowercase SHA-256 strings, in this signing order:
    the snapshot file contents and sizes.
 5. `service_sha256`: `nullifier-query-server.service`.
 
+The monitoring sidecar is outside this trust boundary. `pir-apm` is not on the
+serving path, is not signed by the coordinator, and is updated by a separate
+service that shares no state or lock with this one. See
+`docs/runbooks/pir-apm-updates.md`.
+
 The Ed25519 message is UTF-8 `valargroup/pir-update/v1\n`, then `prod\n` or
 `stage\n` from the installed config scope, then each of those five lowercase
 hex strings followed by `\n`. These are actual LF bytes, not backslash-n text.
