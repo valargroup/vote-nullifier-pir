@@ -1,3 +1,12 @@
+# Unreleased
+
+- Keep legacy PIR rollback on its original local snapshot, including after a
+  reboot or loss of the configuration endpoint. A recovery override remains until
+  enrollment is retried or an operator restores manual discovery.
+- Prevent manual installation, GitHub deployment, and restart workflows from
+  changing hosts enrolled in signed updates; serialize manual operations with
+  enrollment and automatic updates.
+
 # v0.12.0-rc.2
 
 - Align with `voting-circuits` `0.12.0-rc.2` by upgrading

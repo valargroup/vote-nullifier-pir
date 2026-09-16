@@ -20,6 +20,7 @@ fcntl.flock(lock, fcntl.LOCK_EX)
 data = Path('/opt/nf-ingest/pir-data/main')
 data.mkdir(parents=True)
 u.save(data/'pir_root.json', {'height':3484440, 'zcash_network':'main'})
+original_root = (data/'pir_root.json').read_bytes()
 # Use a real native executable so /proc identity checks are exercised. Python
 # interprets /serve, while each executable's folder supplies the fixture target.
 u.atomic(Path('/serve'), Path('/opt/pir-updater/tests/fake_server.py').read_bytes())
@@ -57,7 +58,9 @@ def legacy_restored():
     assert not u.BINARY.is_symlink()
     assert u.BINARY.read_bytes() == original
     assert u.SERVICE.read_bytes() == unit
-    assert not u.DROPIN.exists()
+    if u.DROPIN.exists():
+        assert u.DROPIN.read_bytes() == u.legacy_dropin(u.BINARY, data)
+    assert (data/'pir_root.json').read_bytes() == original_root
     assert not (u.ROOT/'settings.json').exists()
     assert not (u.ROOT/'enrollment.json').exists()
     urllib.request.urlopen('http://127.0.0.1:3000/ready').close()
@@ -68,6 +71,18 @@ def attempt():
         install.recover_enrollment();raise
 
 with patch.object(u.Reconciler,'target',target), patch.object(u.Reconciler,'stage',stage):
+    # Only the exact updater-owned recovery override is eligible for a retry.
+    for override in (u.DROPIN, u.DROPIN.parent/'10-custom.conf'):
+        u.atomic(override, b'[Service]\nEnvironment=CUSTOM_OVERRIDE=1\n')
+        u.run('systemctl','daemon-reload')
+        with patch.object(u.Reconciler,'target') as proposal:
+            try:install.install(3)
+            except RuntimeError as e:assert 'custom systemd overrides' in str(e)
+            else:raise AssertionError('custom override accepted')
+            proposal.assert_not_called()
+        override.unlink()
+        u.run('systemctl','daemon-reload')
+
     # A file replaced while the old executable is running cannot be a rollback baseline.
     u.atomic(u.BINARY, original + b'changed on disk', 0o755)
     with patch.object(u.Reconciler,'target') as proposal:
@@ -108,10 +123,45 @@ with patch.object(u.Reconciler,'target',target), patch.object(u.Reconciler,'stag
     # Candidate cannot become ready; restore a legacy server without metadata.
     def failed_stage(self,*args):
         path=stage(self,*args);(path/'fail').touch();return path
+    for remote in ({'height':3484450, 'zcash_network':'main'}, None):
+        u.save(Path('/remote-snapshot.json'), remote)
+        with patch.object(u.Reconciler,'stage',failed_stage):
+            try:attempt()
+            except RuntimeError:pass
+            else:raise AssertionError('activation failure expected')
+        legacy_restored()
+        assert u.DROPIN.exists()
+        # The recovery pin must survive later service restarts too.
+        u.run('systemctl','restart',u.NAME)
+        recovery=u.Reconciler();recovery.settings={'timeout_secs':3}
+        recovery.wait(u.read(u.ROOT/'generations/initial/target.json'))
+        legacy_restored()
+
+    # An older binary without --pir-config-url must receive only supported flags.
+    Path('/legacy-without-pir-config').touch()
+    u.atomic(u.DROPIN, u.legacy_dropin(u.BINARY, data))
     with patch.object(u.Reconciler,'stage',failed_stage):
         try:attempt()
         except RuntimeError:pass
         else:raise AssertionError('activation failure expected')
+    legacy_restored()
+    assert b'--pir-config-url=' not in u.DROPIN.read_bytes()
+
+    # Power loss before executable replacement: on reboot the old unit may
+    # start before timer recovery. It must already have the local snapshot pin.
+    replace = os.replace
+    def interrupted_replace(source, destination):
+        if Path(source) == u.BINARY.with_suffix('.managed'):
+            raise KeyboardInterrupt('power loss before executable replacement')
+        return replace(source, destination)
+    with patch.object(os, 'replace', interrupted_replace):
+        try:install.install(3)
+        except KeyboardInterrupt:pass
+        else:raise AssertionError('interruption expected')
+    u.run('systemctl','restart',u.NAME)
+    recovery=u.Reconciler();recovery.settings={'timeout_secs':3}
+    recovery.wait(u.read(u.ROOT/'generations/initial/target.json'))
+    install.recover_enrollment()
     legacy_restored()
 
     # Crash after candidate switch bypasses normal exception recovery. Exercise

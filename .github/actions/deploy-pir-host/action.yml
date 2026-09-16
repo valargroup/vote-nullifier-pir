@@ -71,6 +71,23 @@ runs:
         mv pir-apm-linux-amd64 pir-apm
         chmod +x nf-server pir-apm
 
+    - name: Check host ownership before upload
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.deploy_user }}
+        key: ${{ inputs.ssh_key }}
+        script: |
+          sudo bash -seu <<'PIR_PREFLIGHT'
+          # Serialize the ownership check with enrollment and every serving-path mutation.
+          exec 9>/run/lock/pir-update.lock
+          flock -n 9 || { echo 'Another PIR operation is running' >&2; exit 1; }
+          if [ -f /opt/pir-updater/settings.json ] || [ -f /opt/pir-updater/enrollment.json ]; then
+            echo 'Host is enrolled in signed updates; use the coordinator dashboard or uninstall the updater first.' >&2
+            exit 1
+          fi
+          PIR_PREFLIGHT
+
     - name: Copy deploy artifacts
       uses: appleboy/scp-action@v0.1.7
       with:
@@ -78,7 +95,7 @@ runs:
         username: ${{ inputs.deploy_user }}
         key: ${{ inputs.ssh_key }}
         source: nf-server,nullifier-query-server.service,pir-apm,pir-apm.service,pir-apm.Caddyfile
-        target: /opt/nf-ingest
+        target: /tmp/pir-deploy-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.host_role }}
 
     - name: Install and restart
       uses: appleboy/ssh-action@v1.0.3
@@ -100,9 +117,19 @@ runs:
         username: ${{ inputs.deploy_user }}
         key: ${{ inputs.ssh_key }}
         envs: SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,HOST_ROLE
+        command_timeout: 15m
         script: |
-          set -eu
-          DATASET_INFO=$(sudo /opt/nf-ingest/nf-server dataset-info)
+          sudo --preserve-env=SENTRY_DSN,SENTRY_ENVIRONMENT,SENTRY_RELEASE,FORCED_HEIGHT,PRECOMPUTED_BASE_URL,TARGET_ENVIRONMENT,PIR_CONFIG_URL,VOTING_CONFIG_URL,SVOTE_ZCASH_NETWORK,LWD_URLS,PIR_APM_SLACK_WEBHOOK_URL,HOST_ROLE bash -seu <<'PIR_DEPLOY'
+          # Serialize the ownership check with enrollment and every serving-path mutation.
+          exec 9>/run/lock/pir-update.lock
+          flock -n 9 || { echo 'Another PIR operation is running' >&2; exit 1; }
+          if [ -f /opt/pir-updater/settings.json ] || [ -f /opt/pir-updater/enrollment.json ]; then
+            echo 'Host is enrolled in signed updates; use the coordinator dashboard or uninstall the updater first.' >&2
+            exit 1
+          fi
+          staging='/tmp/pir-deploy-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.host_role }}'
+          trap 'rm -rf "$staging"' EXIT
+          DATASET_INFO=$("$staging/nf-server" dataset-info)
           if ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"nullifier_pool"[[:space:]]*:[[:space:]]*"ironwood"' || \
              ! printf '%s\n' "$DATASET_INFO" | grep -Eq '"dataset_version"[[:space:]]*:[[:space:]]*2[[:space:]]*([,}])'; then
             echo "FAIL: staged nf-server does not support Ironwood dataset version 2."
@@ -122,9 +149,12 @@ runs:
           sudo install -m 0600 -o root -g root "$tmp" /opt/nf-ingest/.env
           rm -f "$tmp"
 
-          sudo chmod +x /opt/nf-ingest/nf-server /opt/nf-ingest/pir-apm
-          sudo cp /opt/nf-ingest/nullifier-query-server.service /etc/systemd/system/nullifier-query-server.service
-          sudo cp /opt/nf-ingest/pir-apm.service /etc/systemd/system/pir-apm.service
+          for binary in nf-server pir-apm; do
+            install -m 0755 "$staging/$binary" "/opt/nf-ingest/$binary.deploy-new"
+            mv -f "/opt/nf-ingest/$binary.deploy-new" "/opt/nf-ingest/$binary"
+          done
+          sudo cp "$staging/nullifier-query-server.service" /etc/systemd/system/nullifier-query-server.service
+          sudo cp "$staging/pir-apm.service" /etc/systemd/system/pir-apm.service
 
           if [ -z "$PIR_APM_SLACK_WEBHOOK_URL" ]; then
             echo "PIR APM Slack webhook is required." >&2
@@ -180,7 +210,7 @@ runs:
             sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
             rm -f "$tmp"
           fi
-          sudo install -m 0644 -o root -g root /opt/nf-ingest/pir-apm.Caddyfile /etc/caddy/Caddyfile
+          sudo install -m 0644 -o root -g root "$staging/pir-apm.Caddyfile" /etc/caddy/Caddyfile
           sudo systemd-run --pipe --wait --collect \
             --property=EnvironmentFile=/etc/default/caddy-env \
             caddy validate --config /etc/caddy/Caddyfile
@@ -208,20 +238,6 @@ runs:
           sudo systemctl reload caddy
           echo "Deployed $SENTRY_RELEASE to $HOST_ROLE"
 
-    - name: Readiness check
-      uses: appleboy/ssh-action@v1.0.3
-      env:
-        FORCED_HEIGHT: ${{ inputs.forced_height }}
-        SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
-        HOST_ROLE: ${{ inputs.host_role }}
-      with:
-        host: ${{ inputs.host }}
-        username: ${{ inputs.deploy_user }}
-        key: ${{ inputs.ssh_key }}
-        envs: FORCED_HEIGHT,SVOTE_ZCASH_NETWORK,HOST_ROLE
-        command_timeout: 11m
-        script: |
-          set -eu
           for i in $(seq 1 120); do
             if curl -sf http://localhost:3000/ready > /dev/null; then
               echo "Readiness check passed on $HOST_ROLE (attempt $i)"
@@ -265,3 +281,4 @@ runs:
             sudo rm -f /etc/systemd/system/nullifier-query-server.service.d/force-snapshot.conf
             sudo systemctl daemon-reload
           fi
+          PIR_DEPLOY

@@ -140,6 +140,19 @@ def managed_dropin():
             f'--pir-data-dir {ROOT}/current/data --pir-config-url= --voting-config-url=\n').encode()
 
 
+def legacy_dropin(binary, data):
+    """Pin legacy recovery to local data using only flags its executable supports."""
+    help_text = run(binary, 'serve', '--help').decode()
+    if not all(flag in help_text for flag in ('--pir-data-dir', '--voting-config-url')):
+        raise RuntimeError('legacy server cannot disable snapshot discovery safely')
+    # Quote one systemd argument, including its specifier/environment expansion.
+    data_arg = json.dumps(str(data), ensure_ascii=False).replace('%', '%%').replace('$', '$$')
+    flags = ' --pir-config-url=' if '--pir-config-url' in help_text else ''
+    return ('# PIR updater legacy recovery: keep remote snapshot discovery disabled.\n'
+            '[Service]\nExecStart=\nExecStart=/opt/nf-ingest/nf-server serve --port 3000 '
+            f'--pir-data-dir {data_arg} --voting-config-url={flags}\n').encode()
+
+
 def restore_dropin(encoded):
     if encoded is not None:
         atomic(DROPIN, base64.b64decode(encoded))
@@ -211,7 +224,10 @@ class Reconciler:
         run('systemctl', 'stop', NAME)
         switch(tx['previous'])
         atomic(SERVICE, base64.b64decode(tx['previous_unit']))
-        if 'previous_dropin' in tx:
+        if 'legacy_binary_sha256' in tx['previous_target']:
+            atomic(DROPIN, legacy_dropin(Path(tx['previous']) / 'nf-server',
+                                        tx['previous_target']['data_dir']))
+        elif 'previous_dropin' in tx:
             restore_dropin(tx['previous_dropin'])
         run('systemctl', 'daemon-reload')
         run('systemctl', 'reset-failed', NAME, check=False)
