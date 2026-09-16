@@ -1,5 +1,20 @@
-# Unreleased
+# v0.12.0
 
+- Use `voting-crypto-deps` `0.2.3` and the Zakura `1.2.0` cryptography
+  libraries, as introduced in `v0.12.0-rc.2`.
+- Add `nf-server verify-root` for independent Ironwood root verification from
+  raw blocks.
+- Add optional automatic binary and snapshot updates authorized by valargroup
+  coordinator signatures, with separate staging and production key pins.
+  Verify artifact hashes before activation, check readiness, and roll back
+  failed updates.
+- Add a one-command updater installer that enrolls existing Linux installations
+  and applies the signed target, preserving service configuration and recovering
+  interrupted enrollment. Identify updater HTTP requests to the configuration
+  gateway.
+- Expose the running release tag, build identity, and updater state through
+  server metadata and metrics.
+- Fix deployments to beta PIR hosts.
 - Keep legacy PIR rollback on its original local snapshot, including after a
   reboot or loss of the configuration endpoint. A recovery override remains until
   enrollment is retried or an operator restores manual discovery.
