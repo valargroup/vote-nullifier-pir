@@ -21,6 +21,7 @@ LOCK = Path('/run/lock/pir-update.lock')
 NAME = 'nullifier-query-server.service'
 DROPIN = SERVICE.parent / 'nullifier-query-server.service.d/90-pir-updater.conf'
 BINARY = Path('/opt/nf-ingest/nf-server')
+ENV = Path('/opt/nf-ingest/.env')
 USER_AGENT = 'pir-updater/1'
 
 
@@ -135,6 +136,22 @@ def switch(path):
         os.close(fd)
 
 
+def set_release(tag):
+    """Point SENTRY_RELEASE at `tag`, leaving every other setting alone.
+
+    The fleet deploy used to own this file and can no longer run on an enrolled
+    host, so without this the reported release stays frozen at whatever the last
+    deploy wrote while the server moves on. Absent file means Sentry is not
+    configured here, and nothing is created.
+    """
+    if not ENV.exists():
+        return
+    lines = [line for line in ENV.read_text().splitlines()
+             if not line.startswith('SENTRY_RELEASE=')]
+    lines.append(f'SENTRY_RELEASE={tag}')
+    atomic(ENV, ('\n'.join(lines) + '\n').encode(), 0o600)
+
+
 def managed_dropin():
     return ('[Service]\nExecStart=\nExecStart=/opt/nf-ingest/nf-server serve --port 3000 '
             f'--pir-data-dir {ROOT}/current/data --pir-config-url= --voting-config-url=\n').encode()
@@ -229,6 +246,8 @@ class Reconciler:
                                         tx['previous_target']['data_dir']))
         elif 'previous_dropin' in tx:
             restore_dropin(tx['previous_dropin'])
+        if tx.get('previous_env') is not None:
+            atomic(ENV, base64.b64decode(tx['previous_env']), 0o600)
         run('systemctl', 'daemon-reload')
         run('systemctl', 'reset-failed', NAME, check=False)
         run('systemctl', 'start', NAME)
@@ -291,7 +310,8 @@ class Reconciler:
         tx = {'previous': str(previous), 'target': str(path),
               'previous_unit': base64.b64encode(SERVICE.read_bytes()).decode(),
               'previous_target': read(previous / 'target.json'),
-              'previous_dropin': base64.b64encode(DROPIN.read_bytes()).decode() if DROPIN.exists() else None}
+              'previous_dropin': base64.b64encode(DROPIN.read_bytes()).decode() if DROPIN.exists() else None,
+              'previous_env': base64.b64encode(ENV.read_bytes()).decode() if ENV.exists() else None}
         save(ROOT / 'transaction.json', tx)
         self.report(phase='activating', converged=False)
         try:
@@ -299,6 +319,7 @@ class Reconciler:
             switch(path)
             atomic(SERVICE, (path / 'service').read_bytes())
             atomic(DROPIN, managed_dropin())
+            set_release(read(path / 'target.json')['binary_tag'])
             run('systemctl', 'daemon-reload')
             run('systemctl', 'reset-failed', NAME, check=False)
             run('systemctl', 'start', NAME)

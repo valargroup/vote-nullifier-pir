@@ -9,7 +9,9 @@ WorkingDirectory=/opt/nf-ingest
 # Two env files by design: cloud-init owns /etc/default/nf-server (the
 # SVOTE_ZCASH_NETWORK, SVOTE_PIR_DATA_DIR, and bootstrap URL pins),
 # while the deploy workflow owns /opt/nf-ingest/.env (SENTRY_DSN,
-# SENTRY_ENVIRONMENT, and SENTRY_RELEASE). The
+# SENTRY_ENVIRONMENT, and SENTRY_RELEASE). On an enrolled host the deploy
+# workflow cannot run, so the updater keeps SENTRY_RELEASE in step with the
+# activated tag and leaves the other settings untouched. The
 # leading `-` lets systemd load the unit before provisioning. The
 # server still requires SVOTE_ZCASH_NETWORK from /etc/default/nf-server.
 EnvironmentFile=-/etc/default/nf-server
