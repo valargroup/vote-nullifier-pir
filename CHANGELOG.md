@@ -1,3 +1,20 @@
+# v0.12.1
+
+- Update the `pir-apm` monitoring sidecar automatically from its own service,
+  following the same release tag as the served binary so the two cannot drift
+  apart. The sidecar is not covered by coordinator signatures, because it never
+  answers a PIR query; its artifacts are verified against the release
+  `SHA256SUMS`. The service is installed only on Valargroup fleet hosts, so
+  other operators are unaffected and receive no sidecar.
+- Report a Tier1 latency check that cannot evaluate, instead of leaving it
+  silently unable to fire when the server exports no processing histogram.
+  Record the scraped server's release tag so a sidecar running against a
+  different server version is visible directly.
+- Publish `pir-apm` for linux-arm64, and publish the sidecar updater as a
+  release artifact so a host can be provisioned from a release.
+- Keep `SENTRY_RELEASE` in step with the activated tag on hosts enrolled in
+  signed updates, where the deployment workflow can no longer maintain it.
+
 # v0.12.0
 
 - Use `voting-crypto-deps` `0.2.3` and the Zakura `1.2.0` cryptography
