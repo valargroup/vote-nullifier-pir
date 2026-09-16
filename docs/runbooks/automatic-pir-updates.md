@@ -168,58 +168,6 @@ The payload has exactly five lowercase SHA-256 strings, in this signing order:
    the snapshot file contents and sizes.
 5. `service_sha256`: `nullifier-query-server.service`.
 
-### Monitoring sidecar (not yet active)
-
-`pir-apm` is installed by `deploy.yml`, while `nf-server` is installed by this
-updater. The two therefore drift: the server advances with each signed update
-and the sidecar freezes at whatever the last fleet deploy left. A stale sidecar
-keeps paging on its old metric definitions, which is how upload-inclusive Tier1
-latency kept alerting after the server-side split landed.
-
-The updater can close this. `stage()` will fetch `pir-apm-<tag>-linux-<arch>`
-and `pir-apm-<tag>.service` into the generation, and `reconcile_sidecar()` will
-move the installed sidecar onto it after the serving path converges. A sidecar
-fault never rolls the server back and never fails the update: the sidecar
-observes traffic rather than serving it, and a stale or stopped sidecar is
-caught downstream because `pir-apm` reports a missing Tier1 processing
-histogram instead of failing open.
-
-**The sidecar is opt-in per host and off by default.** `pir.json` is global to
-an environment, so acting on its sidecar hashes unconditionally would push
-`pir-apm` onto every enrolled host, including integrators who do not run it.
-Two independent conditions must both hold: the signature decides *what* may be
-installed, and the host-local `manage_sidecar` setting decides *whether* to
-install at all. An integrator enrolls exactly as before, gets signed
-`nf-server` updates, and is never given a sidecar binary or unit — no
-configuration, no opt-out step, and nothing to disable.
-
-Valargroup fleet hosts opt in at enrollment:
-
-```bash
-install_pir_updater.sh --manage-sidecar
-```
-
-which records `"manage_sidecar": true` in `/opt/pir-updater/settings.json`.
-Hosts without it keep today's behaviour permanently. To stop updater management
-later, set the flag to `false` in `settings.json`; the installed sidecar is left
-untouched where it is.
-
-This is also deliberately inert today. The v1 signing message covers exactly
-five hashes, so sidecar digests presented under it would be unsigned and
-attacker-controlled. The updater therefore ignores them unless the verifier
-reports `schema_version >= 2`. Activating this requires, in order:
-
-1. Extend `verify-pir-update` to a schema 2 signing message that appends
-   `apm_linux_amd64_sha256`, `apm_linux_arm64_sha256`, and `apm_service_sha256`,
-   and to report `schema_version` in its verified output. Update the shared
-   `testdata/pir-update-vector.json` alongside the Go and TypeScript verifiers.
-2. Teach the coordinator dashboard (vote-sdk) to compute and sign those hashes,
-   and the attestation schema in token-holder-voting-config to carry them.
-3. Publish an arm64 `pir-apm` build. The release currently publishes amd64 only,
-   so arm64 hosts must not be given signed sidecar hashes until it exists.
-
-Until step 1 lands, hosts behave exactly as they do today.
-
 The Ed25519 message is UTF-8 `valargroup/pir-update/v1\n`, then `prod\n` or
 `stage\n` from the installed config scope, then each of those five lowercase
 hex strings followed by `\n`. These are actual LF bytes, not backslash-n text.

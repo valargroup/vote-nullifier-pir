@@ -366,8 +366,6 @@ jobs:
           done
           s3cmd -c /tmp/do-spaces.s3cfg put pir-apm-linux-amd64 \
             "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}-linux-amd64" --acl-public --force
-          s3cmd -c /tmp/do-spaces.s3cfg put pir-apm.service \
-            "s3://${DO_BUCKET}/binaries/vote-pir/pir-apm-${VERSION}.service" --acl-public --force
           s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force pir-updater.tar.gz \
             "s3://${DO_BUCKET}/binaries/vote-pir/pir-updater-${VERSION}.tar.gz"
           s3cmd -c /tmp/do-spaces.s3cfg put --acl-public --force nullifier-query-server.service \

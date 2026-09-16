@@ -70,7 +70,7 @@ def recover_enrollment():
     print('Original PIR service preserved or restored; rerun the installer to retry.')
 
 
-def install(timeout, manage_sidecar=False):
+def install(timeout):
     if os.geteuid() or os.uname().sysname != 'Linux':
         raise RuntimeError('Linux root installation required')
     sync_directory(ROOT.parent)
@@ -152,10 +152,7 @@ def install(timeout, manage_sidecar=False):
     save(ROOT / 'enrollment.json', tx)
     save(settings, {'scope':scope, 'network':network, 'config_url':url,
         'snapshot_base':env.get('SVOTE_PIR_PRECOMPUTED_BASE_URL', 'https://shielded-vote.nyc3.digitaloceanspaces.com').rstrip('/'),
-        'binary_base':'https://shielded-vote.nyc3.digitaloceanspaces.com/binaries/vote-pir', 'timeout_secs':timeout,
-        # Valargroup fleet hosts opt in; integrator hosts leave this off and
-        # never receive a pir-apm binary or unit.
-        'manage_sidecar': manage_sidecar})
+        'binary_base':'https://shielded-vote.nyc3.digitaloceanspaces.com/binaries/vote-pir', 'timeout_secs':timeout})
     updater = Reconciler()
     if not updater.matches(previous_target):
         raise RuntimeError('existing PIR service is not ready')
@@ -217,9 +214,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--timeout-secs', type=int, default=600)
     parser.add_argument('--lock-fd', type=int)
-    # Valargroup fleet hosts only. Integrators omit this and the updater never
-    # installs, starts, or replaces a pir-apm sidecar on their host.
-    parser.add_argument('--manage-sidecar', action='store_true')
     args = parser.parse_args()
     if args.timeout_secs <= 0:
         parser.error('timeout must be positive')
@@ -228,7 +222,7 @@ if __name__ == '__main__':
     with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            install(args.timeout_secs, args.manage_sidecar)
+            install(args.timeout_secs)
         except Exception:
             recover_enrollment()
             raise
