@@ -21,6 +21,9 @@ LOCK = Path('/run/lock/pir-update.lock')
 NAME = 'nullifier-query-server.service'
 DROPIN = SERVICE.parent / 'nullifier-query-server.service.d/90-pir-updater.conf'
 BINARY = Path('/opt/nf-ingest/nf-server')
+APM_SERVICE = Path('/etc/systemd/system/pir-apm.service')
+APM_NAME = 'pir-apm.service'
+APM_BINARY = Path('/opt/nf-ingest/pir-apm')
 USER_AGENT = 'pir-updater/1'
 
 
@@ -277,6 +280,24 @@ class Reconciler:
             raise RuntimeError('candidate build identity or updater protocol mismatch')
         download([f'{base}/nullifier-query-server-{tag}.service', f'{github}/nullifier-query-server.service'],
                  path / 'service', p['service_sha256'], 65536)
+        # The monitoring sidecar is optional so existing attestations keep
+        # verifying. The v1 signing message covers exactly five hashes, so
+        # sidecar digests carried by a v1 payload would be unsigned and
+        # attacker-controlled. Honour them only once the verifier reports a
+        # schema that includes them in the signed message; until then this is
+        # inert and the sidecar is left to its existing install path.
+        apm_sha256 = apm_service_sha256 = None
+        if verified.get('schema_version', 1) >= 2:
+            apm_sha256 = p.get(f'apm_linux_{arch}_sha256')
+            apm_service_sha256 = p.get('apm_service_sha256')
+        if apm_sha256 and apm_service_sha256:
+            download([f'{base}/pir-apm-{tag}-linux-{arch}', f'{github}/pir-apm-linux-{arch}'],
+                     path / 'pir-apm', apm_sha256, 134217728)
+            os.chmod(path / 'pir-apm', 0o755)
+            with (path / 'pir-apm').open('rb') as binary:
+                os.fsync(binary.fileno())
+            download([f'{base}/pir-apm-{tag}.service', f'{github}/pir-apm.service'],
+                     path / 'apm-service', apm_service_sha256, 65536)
         run(path / 'nf-server', 'snapshot-stage', '--zcash-network', self.settings['network'],
             '--height', cfg['snapshot_height'], '--pir-data-dir', path / 'data',
             '--precomputed-base-url', self.settings['snapshot_base'],
@@ -309,10 +330,43 @@ class Reconciler:
         save(ROOT / 'previous.json', str(previous))
         (ROOT / 'transaction.json').unlink()
         sync_directory(ROOT)
+        self.reconcile_sidecar(path)
         # Only clean after readiness has committed a successful generation.
         for old in (ROOT / 'generations').iterdir():
             if old not in (previous, path):
                 shutil.rmtree(old)
+
+    def reconcile_sidecar(self, path):
+        """Move the monitoring sidecar onto the activated generation.
+
+        Runs only after the serving path has converged, and never rolls the
+        server back: the sidecar observes traffic but does not serve it, so a
+        sidecar fault must not cost query availability. A failure here restores
+        the previous sidecar and is reported rather than raised. A sidecar left
+        stale or stopped still surfaces downstream, because pir-apm reports a
+        missing Tier1 processing histogram instead of failing open.
+        """
+        staged, staged_unit = path / 'pir-apm', path / 'apm-service'
+        if not (staged.exists() and staged_unit.exists()):
+            return
+        previous_binary = APM_BINARY.read_bytes() if APM_BINARY.exists() else None
+        previous_unit = APM_SERVICE.read_bytes() if APM_SERVICE.exists() else None
+        try:
+            run('systemctl', 'stop', APM_NAME, check=False)
+            atomic(APM_BINARY, staged.read_bytes(), 0o755)
+            atomic(APM_SERVICE, staged_unit.read_bytes())
+            run('systemctl', 'daemon-reload')
+            run('systemctl', 'reset-failed', APM_NAME, check=False)
+            run('systemctl', 'start', APM_NAME)
+            self.report(apm_error=None)
+        except Exception as error:
+            if previous_binary is not None:
+                atomic(APM_BINARY, previous_binary, 0o755)
+            if previous_unit is not None:
+                atomic(APM_SERVICE, previous_unit)
+            run('systemctl', 'daemon-reload', check=False)
+            run('systemctl', 'start', APM_NAME, check=False)
+            self.report(apm_error=str(error))
 
     def once(self, force_retry=False):
         if (ROOT / 'enrollment.json').exists():

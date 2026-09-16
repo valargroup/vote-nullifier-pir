@@ -127,6 +127,66 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):self.r.stage('bad',{'config':{'binary_tag':'v2','snapshot_height':3484450},'payload':{'snapshot_manifest_sha256':'0'*64}})
             run.assert_not_called()
 
+    def _sidecar_paths(self):
+        for name, value in [('APM_SERVICE', self.root / 'apm-unit'),
+                            ('APM_BINARY', self.root / 'apm-binary')]:
+            p = patch.object(u, name, value); p.start(); self.addCleanup(p.stop)
+
+    def test_a_generation_without_a_sidecar_leaves_the_installed_one_alone(self):
+        self._sidecar_paths()
+        u.APM_BINARY.write_bytes(b'installed apm')
+        path = self.root / 'generations' / 'initial'
+        with patch.object(u, 'run') as run:
+            self.r.reconcile_sidecar(path)
+            run.assert_not_called()
+        self.assertEqual(u.APM_BINARY.read_bytes(), b'installed apm')
+
+    def test_a_staged_sidecar_replaces_the_installed_one(self):
+        self._sidecar_paths()
+        u.APM_BINARY.write_bytes(b'old apm')
+        u.APM_SERVICE.write_bytes(b'old apm unit')
+        path = self.root / 'generations' / 'initial'
+        (path / 'pir-apm').write_bytes(b'new apm')
+        (path / 'apm-service').write_bytes(b'new apm unit')
+        with patch.object(u, 'run'):
+            self.r.reconcile_sidecar(path)
+        self.assertEqual(u.APM_BINARY.read_bytes(), b'new apm')
+        self.assertEqual(u.APM_SERVICE.read_bytes(), b'new apm unit')
+        self.assertIsNone(self.r.status['apm_error'])
+
+    def test_a_sidecar_that_fails_to_start_is_restored_without_failing_the_update(self):
+        self._sidecar_paths()
+        u.APM_BINARY.write_bytes(b'old apm')
+        u.APM_SERVICE.write_bytes(b'old apm unit')
+        path = self.root / 'generations' / 'initial'
+        (path / 'pir-apm').write_bytes(b'new apm')
+        (path / 'apm-service').write_bytes(b'new apm unit')
+
+        def fail_on_start(*args, **kwargs):
+            if args[:2] == ('systemctl', 'start') and kwargs.get('check', True):
+                raise RuntimeError('sidecar failed to start')
+
+        with patch.object(u, 'run', side_effect=fail_on_start):
+            # The serving path is already converged, so this must not raise.
+            self.r.reconcile_sidecar(path)
+        self.assertEqual(u.APM_BINARY.read_bytes(), b'old apm')
+        self.assertEqual(u.APM_SERVICE.read_bytes(), b'old apm unit')
+        self.assertIn('sidecar failed to start', self.r.status['apm_error'])
+
+    def test_a_v1_payload_never_stages_a_sidecar(self):
+        # The v1 signing message covers five hashes. Sidecar digests presented
+        # under it are unsigned, so they must never reach download().
+        payload = {'snapshot_manifest_sha256': '0' * 64, 'linux_amd64_sha256': '1' * 64,
+                   'linux_arm64_sha256': '1' * 64, 'service_sha256': '2' * 64,
+                   'apm_linux_amd64_sha256': '3' * 64, 'apm_linux_arm64_sha256': '3' * 64,
+                   'apm_service_sha256': '4' * 64}
+        with patch.object(u, 'download') as download:
+            with self.assertRaises(Exception):
+                self.r.stage('unsigned', {'config': {'binary_tag': 'v2', 'snapshot_height': 3484450},
+                                          'payload': payload})
+        for call in download.call_args_list:
+            self.assertNotIn('pir-apm', str(call))
+
     def test_incomplete_enrollment_prevents_updates(self):
         u.save(self.root/'enrollment.json',{})
         with patch.object(self.r,'target') as target:

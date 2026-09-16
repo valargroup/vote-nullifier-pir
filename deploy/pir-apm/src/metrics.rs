@@ -30,6 +30,9 @@ pub struct MetricsSnapshot {
     pub snapshot_gauges: BTreeMap<String, f64>,
     pub resident_memory_bytes: Option<f64>,
     pub process_start_time_seconds: Option<f64>,
+    /// Release tag reported by the scraped server's `nf_build_info`, when it
+    /// publishes one. Used to surface APM-versus-server version skew.
+    pub server_release_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -297,6 +300,7 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
     let mut snapshot_gauges = BTreeMap::new();
     let mut resident_memory_bytes = None;
     let mut process_start_time_seconds = None;
+    let mut server_release_tag = None;
 
     for (line_number, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -358,6 +362,9 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
                     values.processing_in_flight = sample.value
                 })
             }
+            "nf_build_info" => {
+                server_release_tag = sample.labels.get("release_tag").cloned();
+            }
             "process_resident_memory_bytes" => resident_memory_bytes = Some(sample.value),
             "process_start_time_seconds" => process_start_time_seconds = Some(sample.value),
             name if name.starts_with("nf_snapshot_") => {
@@ -382,6 +389,7 @@ pub fn parse_prometheus(text: &str, at: Instant) -> Result<MetricsSnapshot, Stri
         snapshot_gauges,
         resident_memory_bytes,
         process_start_time_seconds,
+        server_release_tag,
     })
 }
 
@@ -550,6 +558,7 @@ nf_http_request_processing_duration_seconds_bucket{endpoint="tier1_query",le="+I
 nf_http_request_processing_duration_seconds_sum{endpoint="tier1_query"} 2
 nf_http_request_processing_duration_seconds_count{endpoint="tier1_query"} 10
 nf_http_processing_in_flight{endpoint="tier1_query"} 2
+nf_build_info{release_tag="v0.12.0",commit_sha="abc123"} 1
 nf_snapshot_served_height 123
 nf_snapshot_expected_height 124
 process_resident_memory_bytes 1048576
@@ -570,6 +579,17 @@ process_start_time_seconds 1787880000
         assert_eq!(parsed.snapshot_gauges["nf_snapshot_served_height"], 123.0);
         assert_eq!(parsed.resident_memory_bytes, Some(1_048_576.0));
         assert_eq!(parsed.process_start_time_seconds, Some(1_787_880_000.0));
+        assert_eq!(parsed.server_release_tag.as_deref(), Some("v0.12.0"));
+    }
+
+    #[test]
+    fn a_server_without_build_info_reports_no_release_tag() {
+        let parsed = parse_prometheus(
+            r#"nf_http_requests_total{endpoint="tier0",method="GET",status="200"} 1"#,
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(parsed.server_release_tag, None);
     }
 
     #[test]
@@ -626,6 +646,7 @@ process_start_time_seconds 1787880000
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
                 process_start_time_seconds: None,
+                server_release_tag: None,
             });
         }
 
@@ -696,6 +717,7 @@ process_start_time_seconds 1787880000
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
                 process_start_time_seconds: None,
+                server_release_tag: None,
             });
         }
 
@@ -741,6 +763,7 @@ process_start_time_seconds 1787880000
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
                 process_start_time_seconds: Some(100.0 + index as f64),
+                server_release_tag: None,
             });
         }
 
@@ -789,6 +812,7 @@ nf_http_request_duration_seconds_count{endpoint="tier1_query"} 20
                 snapshot_gauges: BTreeMap::new(),
                 resident_memory_bytes: None,
                 process_start_time_seconds: None,
+                server_release_tag: None,
             });
         }
         assert_eq!(rolling.len(), 21);
