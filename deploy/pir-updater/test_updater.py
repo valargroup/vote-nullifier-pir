@@ -127,6 +127,38 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):self.r.stage('bad',{'config':{'binary_tag':'v2','snapshot_height':3484450},'payload':{'snapshot_manifest_sha256':'0'*64}})
             run.assert_not_called()
 
+    def test_activation_reports_the_release_it_installed(self):
+        p = patch.object(u, 'ENV', self.root / 'env'); p.start(); self.addCleanup(p.stop)
+        u.ENV.write_bytes(b'SENTRY_DSN=https://key@example.com/1\n'
+                          b'SENTRY_ENVIRONMENT=production\n'
+                          b'SENTRY_RELEASE=v0.0.45\n')
+        path = self.candidate()
+        with patch.object(u, 'run'), patch.object(self.r, 'wait'):
+            self.r.activate(path)
+        env = u.ENV.read_text()
+        self.assertIn('SENTRY_RELEASE=v2', env)
+        self.assertNotIn('v0.0.45', env)
+        # Every other setting survives, including the secret this never learns.
+        self.assertIn('SENTRY_DSN=https://key@example.com/1', env)
+        self.assertIn('SENTRY_ENVIRONMENT=production', env)
+        self.assertEqual(u.ENV.stat().st_mode & 0o777, 0o600)
+
+    def test_a_rolled_back_activation_restores_the_previous_release(self):
+        p = patch.object(u, 'ENV', self.root / 'env'); p.start(); self.addCleanup(p.stop)
+        u.ENV.write_bytes(b'SENTRY_DSN=https://key@example.com/1\nSENTRY_RELEASE=v1\n')
+        path = self.candidate()
+        with patch.object(u, 'run'), patch.object(self.r, 'wait',
+                                                  side_effect=[RuntimeError('failed candidate'), None]):
+            with self.assertRaises(RuntimeError):
+                self.r.activate(path)
+        self.assertIn('SENTRY_RELEASE=v1', u.ENV.read_text())
+        self.assertNotIn('v2', u.ENV.read_text())
+
+    def test_a_host_without_sentry_configured_gains_no_env_file(self):
+        p = patch.object(u, 'ENV', self.root / 'env'); p.start(); self.addCleanup(p.stop)
+        u.set_release('v2')
+        self.assertFalse(u.ENV.exists())
+
     def test_incomplete_enrollment_prevents_updates(self):
         u.save(self.root/'enrollment.json',{})
         with patch.object(self.r,'target') as target:
