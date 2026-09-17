@@ -15,6 +15,23 @@ not instructions.
 
 ## Tools
 
+Share the [guide on main](https://github.com/valargroup/vote-nullifier-pir/blob/main/docs/verify-round-imt-ai.md)
+so instruction updates do not require a new dashboard release. At the start of
+each verification, resolve `main` to one full commit and use that revision for
+the entire run:
+
+```sh
+git clone --branch main https://github.com/valargroup/vote-nullifier-pir.git
+cd vote-nullifier-pir
+GUIDE_COMMIT=$(git rev-parse HEAD)
+git checkout --detach "$GUIDE_COMMIT"
+```
+
+Read this guide again from that checkout before continuing. If the user supplies
+a guide URL pinned to a commit instead, check out that exact commit. Record the
+resolved revision in the result. Do not refresh to a newer revision during the
+run.
+
 Use Python 3.9 or newer and `scripts/verify-round-imt.sh` from the **same commit
 as this guide**. It calls `svoted query vote verify-round` for the canonical
 round-ID check and, by default, `nf-server sync` for the normal PIR rebuild.
@@ -31,7 +48,7 @@ Do not replace a running service's binary. Check:
 ```
 
 For `nf-server`, an existing v0.12.1 binary is compatible. To build it locally,
-check out this repository at the full commit in this guide's URL and run:
+use the checkout resolved above and run:
 
 ```sh
 cargo +1.91.0 build --locked -p nf-server
@@ -50,13 +67,27 @@ Identify these from the user's available context:
 - The expected voting chain ID and a voting node the user trusts. Use its
   **CometBFT RPC**, not the dashboard or Cosmos REST endpoint.
 - The Zcash network, `main` or `test`.
-- A trusted lightwalletd URL for that network, normally the source used for PIR
-  sync in the selected environment.
+- A trusted lightwalletd URL for that network.
 - An explicit round ID, or latest selection when none is supplied.
 
-Ask only for missing inputs. Do not request a raw-block RPC or independently
-supplied snapshot hash for the normal PIR rebuild. Do not infer the network
-from a round title. URLs must not contain credentials, queries, or fragments.
+Use user-supplied endpoints for the selected environment first. Fill each
+missing endpoint from the matching row below without asking for confirmation:
+
+| Environment | Voting chain ID | Zcash network | CometBFT RPC | Lightwalletd |
+| --- | --- | --- | --- | --- |
+| Stage | `svote-1` | `test` | `https://stage.vote-rpc-primary.valargroup.org` | `https://testnet.zec.rocks:443` |
+| Mainnet | `zvote-1` | `main` | `https://prod.vote-rpc-primary.valargroup.org` | `https://zec.rocks:443` |
+
+These are public verification defaults. They do not identify the lightwalletd
+used by every PIR operator. Report the selected endpoints and that the run
+trusts their data. An endpoint supplied for another environment is not an
+override for this run.
+
+Ask only when a required input remains missing, the chain and network are
+unclear or inconsistent, or no default matches the selected environment. Do not
+request a raw-block RPC or independently supplied snapshot hash for the normal
+PIR rebuild. Do not infer the network from a round title. URLs must not contain
+credentials, queries, or fragments.
 
 This reproduces PIR's answer using trusted lightwalletd data and the same tree
 implementation. It does not authenticate raw blocks or independently validate
