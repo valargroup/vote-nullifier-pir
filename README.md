@@ -68,6 +68,12 @@ nf-server sync (nullifiers → nullifiers.tree → tier files) ──> serve ─
 blocks anchored to a caller-authenticated snapshot block hash. It is available in
 every build and is separate from the pipeline above: verification adds no calls,
 fields, or payload to standard lightwalletd sync and writes no sync artifacts.
+
+For an on-chain voting round, use [the round verification script and AI
+guide](docs/verify-round-imt-ai.md). It selects the latest registered round or an
+explicit ID, checks the round identity, and runs the rebuild. No report upload is
+needed.
+
 See [root verification](docs/verify-root.md) for the trust contract, CLI examples,
 failure behavior, and recorded mainnet validation.
 

@@ -1,3 +1,9 @@
+# Unreleased
+
+- Add a read-only script and AI guide for verifying the latest registered or
+  selected voting round, including unapproved rounds. Combine the canonical
+  round-ID check with an independent IMT rebuild and print the comparison.
+
 # v0.12.1
 
 - Update the `pir-apm` monitoring sidecar automatically from its own service,
