@@ -71,8 +71,11 @@ fields, or payload to standard lightwalletd sync and writes no sync artifacts.
 
 For an on-chain voting round, use [the round verification script and AI
 guide](docs/verify-round-imt-ai.md). It selects the latest registered round or an
-explicit ID, checks the round identity, and runs the rebuild. No report upload is
-needed.
+explicit ID, checks the round identity, and repeats the normal PIR sync and tree
+construction in a fresh directory. It requires the exact snapshot height and
+compares the resulting circuit root with the on-chain root. Supply a trusted
+`--lwd-url`; no report upload is needed. Use `--mode raw-blocks` for the optional
+authenticated raw-block rebuild.
 
 See [root verification](docs/verify-root.md) for the trust contract, CLI examples,
 failure behavior, and recorded mainnet validation.

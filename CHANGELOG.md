@@ -2,7 +2,10 @@
 
 - Add a read-only script and AI guide for verifying the latest registered or
   selected voting round, including unapproved rounds. Combine the canonical
-  round-ID check with an independent IMT rebuild and print the comparison.
+  round-ID check with a fresh rebuild using PIR's normal lightwalletd sync and
+  tree construction, require the exact snapshot height, and print the root
+  comparison. Authenticated raw-block verification remains available with
+  `--mode raw-blocks`; existing raw-block script invocations must add that flag.
 
 # v0.12.1
 
