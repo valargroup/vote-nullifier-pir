@@ -1,6 +1,9 @@
 import contextlib
 import copy
 import io
+import json
+from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -12,7 +15,7 @@ class VerifyRoundIMTTests(unittest.TestCase):
         self.args = verifier.parser().parse_args([
             "--vote-node", "http://localhost:26657", "--vote-chain-id", "vote-test",
             "--zcash-network", "main", "--trusted-block-hash", "22" * 32,
-            "--block-rpc-url", "http://localhost:8232",
+            "--block-rpc-url", "http://localhost:8232", "--mode", "raw-blocks",
         ])
         self.round = dict(chain_id="vote-test", round_id="11" * 32, computed_round_id="11" * 32,
                           round_id_matches=True, created_at_height=123, snapshot_height=3428150,
@@ -118,6 +121,104 @@ class VerifyRoundIMTTests(unittest.TestCase):
         self.args.trusted_block_hash = self.args.block_rpc_url = None
         self.assertEqual(self.verify()["outcome"], "inspection")
         self.assertEqual(len(self.commands), 1)
+
+    def use_pir_sync(self):
+        self.args = verifier.parser().parse_args([
+            "--vote-node", "http://localhost:26657", "--vote-chain-id", "vote-test",
+            "--zcash-network", "main", "--lwd-url", "https://lwd.example:443",
+        ])
+        self.metadata = dict(zcash_network="main", nullifier_pool="ironwood", dataset_version=2,
+                             height=3428150, circuit_root="33" * 32, pir_root="88" * 32)
+
+    def sync(self, command, **kwargs):
+        self.commands.append(command)
+        self.assertEqual(command[1], "sync")
+        self.assertEqual(command[command.index("--max-height") + 1], "3428150")
+        self.assertEqual(command[command.index("--voting-config-url") + 1], "")
+        self.assertEqual(command[command.index("--lwd-url") + 1], self.args.lwd_url)
+        self.assertEqual(kwargs["env"]["LWD_URLS"], self.args.lwd_url)
+        self.assertNotIn("SVOTE_PIR_SYNC_RESET", kwargs["env"])
+        self.sync_dir = Path(command[command.index("--pir-data-dir") + 1])
+        self.assertEqual(list(self.sync_dir.iterdir()), [])
+        self.assertEqual(command[command.index("--output-dir") + 1], str(self.sync_dir))
+        (self.sync_dir / "pir_root.json").write_text(json.dumps(self.metadata))
+        return subprocess.CompletedProcess(command, 0)
+
+    def test_default_rebuild_uses_fresh_pir_sync_and_explicit_source(self):
+        self.use_pir_sync()
+        with patch.dict(verifier.os.environ, {"LWD_URLS": "https://wrong.example", "SVOTE_PIR_SYNC_RESET": "1"}), \
+             patch.object(verifier.subprocess, "run", side_effect=self.sync):
+            result = self.verify()
+        self.assertEqual(result["outcome"], "verified")
+        self.assertEqual(result["method"], "pir-sync")
+        self.assertTrue(result["rebuild"]["matches"])
+        self.assertNotIn("verified_blocks", result["rebuild"])
+        self.assertFalse(self.sync_dir.exists())
+        self.assertFalse(any("verify-root" in c for c in self.commands))
+        self.assertEqual(len([c for c in self.commands if "verify-round" in c]), 3)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            verifier.print_result(result)
+        self.assertIn("Root comparison: MATCH", output.getvalue())
+        self.assertIn("Does not authenticate raw blocks", output.getvalue())
+
+    def test_pir_sync_wrong_height_network_or_dataset_cannot_pass(self):
+        for key, value in (("height", 3428140), ("height", 3428160), ("zcash_network", "test"),
+                           ("nullifier_pool", "orchard"), ("dataset_version", 1), ("circuit_root", "bad")):
+            with self.subTest(key=key, value=value):
+                self.use_pir_sync()
+                self.metadata[key] = value
+                with patch.object(verifier.subprocess, "run", side_effect=self.sync), \
+                     self.assertRaises(verifier.VerificationError):
+                    self.verify()
+                self.assertFalse(self.sync_dir.exists())
+
+    def test_pir_sync_root_mismatch_prints_both_roots(self):
+        self.use_pir_sync()
+        self.metadata["circuit_root"] = "66" * 32
+        with patch.object(verifier.subprocess, "run", side_effect=self.sync):
+            result = self.verify()
+        self.assertEqual(result["outcome"], "mismatch")
+        self.assertEqual(result["round"]["nullifier_imt_root"], "33" * 32)
+        self.assertEqual(result["rebuild"]["computed_circuit_root"], "66" * 32)
+
+    def test_pir_sync_failed_process_cannot_pass_even_with_matching_metadata(self):
+        self.use_pir_sync()
+        def failed(command, **kwargs):
+            self.sync(command, **kwargs)
+            return subprocess.CompletedProcess(command, 1)
+        with patch.object(verifier.subprocess, "run", side_effect=failed), \
+             self.assertRaisesRegex(verifier.VerificationError, "did not complete"):
+            self.verify()
+        self.assertFalse(self.sync_dir.exists())
+
+    def test_pir_sync_missing_metadata_cannot_pass(self):
+        self.use_pir_sync()
+        with patch.object(verifier.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
+             self.assertRaisesRegex(verifier.VerificationError, "root metadata"):
+            self.verify()
+
+    def test_pir_sync_needs_explicit_source_and_rejects_raw_options(self):
+        self.use_pir_sync()
+        self.args.lwd_url = None
+        with self.assertRaisesRegex(verifier.VerificationError, "explicit --lwd-url"):
+            self.verify()
+        self.args.trusted_block_hash = "22" * 32
+        with self.assertRaisesRegex(verifier.VerificationError, "--mode raw-blocks"):
+            self.verify()
+
+    def test_pir_sync_changed_round_does_not_pass(self):
+        self.use_pir_sync()
+        queries = 0
+        def changed(command, progress=False):
+            nonlocal queries
+            code, result = self.invoke(command, progress)
+            if "verify-round" in command:
+                queries += 1
+                if queries == 2:
+                    result["snapshot_blockhash"] = "77" * 32
+            return code, result
+        with patch.object(verifier.subprocess, "run", side_effect=self.sync):
+            self.assertEqual(self.verify(changed)["outcome"], "incomplete")
 
 
 if __name__ == "__main__":
