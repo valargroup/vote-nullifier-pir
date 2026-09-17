@@ -1,0 +1,27 @@
+name: Round verification script
+on:
+  pull_request:
+    paths:
+      - 'scripts/verify-round-imt.sh'
+      - 'scripts/verify_round_imt.py'
+      - 'scripts/test_verify_round_imt.py'
+      - '.github/workflows/verify-round-script.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/verify-round-imt.sh'
+      - 'scripts/verify_round_imt.py'
+      - 'scripts/test_verify_round_imt.py'
+      - '.github/workflows/verify-round-script.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: bash -n scripts/verify-round-imt.sh
+      - run: python3 -m unittest discover -s scripts -p 'test_verify_round_imt.py' -v
