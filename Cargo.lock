@@ -3003,6 +3003,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-probe-query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "pir-client",
+ "pir-export",
+ "pir-types",
+ "rand 0.8.5",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "voting-crypto-deps",
+]
+
+[[package]]
 name = "pir-server"
 version = "0.1.0"
 dependencies = [
@@ -3556,6 +3572,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "h2 0.4.13",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
