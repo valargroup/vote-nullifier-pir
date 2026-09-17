@@ -63,7 +63,8 @@ jobs:
         run: |
           cargo test --lib -p imt-tree
           cargo test --lib -p nf-ingest
-          cargo test -p pir-types -p pir-export -p pir-client
+          cargo test -p pir-types -p pir-export -p pir-client -p pir-probe-query
+          python3 -m unittest discover -s deploy/pir-probe -p test_probe.py
           # nf-server is a binary crate; run its unit tests + the
           # bootstrap_e2e integration suite under the `serve` feature
           # (the only build configuration in which the bootstrap and
@@ -97,7 +98,7 @@ jobs:
       - name: Test upstream backend
         run: |
           cargo test --workspace --all-targets --no-default-features \
-            --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream \
+            --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream,pir-probe-query/upstream \
             --locked
 
       - name: Check backend contracts
@@ -109,7 +110,7 @@ jobs:
           fi
 
           if cargo tree --workspace --no-default-features \
-            --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream \
+            --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream,pir-probe-query/upstream \
             --locked \
             | grep -Eq 'zakura-(pasta-curves|halo2-gadgets|halo2-poseidon|halo2-proofs|orchard|sinsemilla)'; then
             echo "Zakura crypto crates entered the upstream graph"

@@ -1,0 +1,25 @@
+[package]
+name = "pir-probe-query"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+
+[features]
+default = ["zakura"]
+zakura = ["voting-crypto-deps/vct", "pir-client/zakura", "pir-types/zakura", "pir-export/zakura"]
+upstream = ["voting-crypto-deps/lrz-vct", "pir-client/upstream", "pir-types/upstream", "pir-export/upstream"]
+
+[dependencies]
+pir-client = { path = "../../pir/client", default-features = false }
+pir-types = { path = "../../pir/types", default-features = false }
+voting-crypto-deps = { workspace = true }
+anyhow = "1"
+hex = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+
+[dev-dependencies]
+pir-export = { path = "../../pir/export", default-features = false }

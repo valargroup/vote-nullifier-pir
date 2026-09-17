@@ -9,6 +9,7 @@ members = [
     "pir/test",
     "pir/types",
     "nf-ingest",
+    "deploy/pir-probe",
 ]
 
 [workspace.package]

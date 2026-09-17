@@ -1,0 +1,30 @@
+[Unit]
+Description=External PIR readiness, APM freshness and verified-query monitor
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pir-probe
+Group=pir-probe
+EnvironmentFile=/etc/default/pir-probe
+ExecStart=/opt/pir-probe/current/pir-probe run
+Restart=always
+RestartSec=10
+StateDirectory=pir-probe
+MemoryMax=1G
+CPUQuota=50%
+TasksMax=32
+TimeoutStopSec=40
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+{
+  "config_url": "https://voting.valargroup.dev/prod/dynamic-voting-config.json",
+  "availability_seconds": 60,
+  "query_seconds": 300,
+  "query_timeout_seconds": 30,
+  "targets": [
+    {"name":"primary","url":"https://pir-primary.valargroup.org","apm":true},
+    {"name":"backup","url":"https://pir-backup.valargroup.org","apm":true},
+    {"name":"primary-beta","url":"https://pir-primary-beta.valargroup.org","apm":true},
+    {"name":"backup-beta","url":"https://pir-backup-beta.valargroup.org","apm":true},
+    {"name":"lb-primary","url":"https://lb-pir-primary.valargroup.org"},
+    {"name":"lb-backup","url":"https://lb-pir-backup.valargroup.org"}
+  ]
+}

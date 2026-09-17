@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""External PIR monitor. Only synthetic inputs are used; query children are killable."""
+
+import argparse
+import base64
+import concurrent.futures
+import datetime
+import fcntl
+import html.parser
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+VERSION = "0.1.0"
+DEFAULT_CONFIG = "/etc/pir-probe/config.json"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+HTTP = urllib.request.build_opener(NoRedirect())
+
+
+def emit(event, **fields):
+    print(json.dumps({"time": time.time(), "event": event, **fields}), flush=True)
+
+
+def _http_request(url, timeout=5, body=None, cap=1024 * 1024):
+    headers = {
+        "User-Agent": "valargroup-pir-probe/" + VERSION,
+        "Cache-Control": "no-cache",
+    }
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers)
+    with HTTP.open(req, timeout=timeout) as r:
+        data = r.read(cap + 1)
+        if len(data) > cap:
+            raise ValueError("response_too_large")
+        return r.status, data
+
+
+def http(url, timeout=5, body=None, cap=1024 * 1024):
+    # A socket timeout alone does not stop a server trickling headers/body forever.
+    # Keep URLs and webhook payloads off argv and kill the entire request at its deadline.
+    payload = {
+        "url": url,
+        "timeout": timeout,
+        "body": None if body is None else base64.b64encode(body).decode(),
+        "cap": cap,
+    }
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "_http"],
+        input=json.dumps(payload),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=timeout,
+    )
+    response = json.loads(result.stdout)
+    if "http_error" in response:
+        raise urllib.error.HTTPError(
+            "endpoint", response["http_error"], "HTTP failure", {}, None
+        )
+    if "error" in response:
+        raise RuntimeError("HTTP request failed")
+    return response["status"], base64.b64decode(response["body"])
+
+
+def http_worker():
+    try:
+        request = json.load(sys.stdin)
+        if request["body"] is not None:
+            request["body"] = base64.b64decode(request["body"])
+        status, body = _http_request(**request)
+        print(json.dumps({"status": status, "body": base64.b64encode(body).decode()}))
+    except urllib.error.HTTPError as e:
+        print(json.dumps({"http_error": e.code}))
+    except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+        print(json.dumps({"error": "request_failed"}))
+
+
+def heartbeat(url, failure=False):
+    if not url:
+        return False
+    try:
+        status, _ = http(
+            url.rstrip("/") + ("/fail" if failure else ""), timeout=5, body=b""
+        )
+        return 200 <= status < 300
+    except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+        return False
+
+
+class UpdatedParser(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.depth = 0
+        self.text = []
+        self.matches = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "div" and "updated" in dict(attrs).get("class", "").split():
+            self.depth = 1
+            self.matches += 1
+        elif self.depth and tag == "div":
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if tag == "div" and self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.depth:
+            self.text.append(data)
+
+
+def apm_result(body, now):
+    parser = UpdatedParser()
+    parser.feed(body.decode("utf-8"))
+    text = "".join(parser.text)
+    if parser.matches != 1 or "·" not in text:
+        return {"ok": False, "error": "apm_format_changed"}
+    try:
+        stamp = datetime.datetime.fromisoformat(
+            text.rsplit("·", 1)[1].strip().replace("Z", "+00:00")
+        )
+        if stamp.tzinfo is None:
+            raise ValueError("missing timezone")
+        age = now - stamp.timestamp()
+        return {
+            "ok": -30 <= age <= 90,
+            "error": None if -30 <= age <= 90 else "apm_scrape_stale",
+            "age_seconds": round(age, 1),
+        }
+    except ValueError:
+        return {"ok": False, "error": "apm_format_changed"}
+
+
+def availability(target):
+    results = {}
+    try:
+        status, body = http(target["url"] + "/ready")
+        good = status == 200 and json.loads(body).get("status") == "ok"
+        results["ready"] = {"ok": good, "error": None if good else "unhealthy_ready"}
+    except urllib.error.HTTPError as e:
+        results["ready"] = {"ok": False, "error": "http_" + str(e.code)}
+    except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+        results["ready"] = {"ok": False, "error": "ready_transport_or_json"}
+    if target.get("apm"):
+        try:
+            _, body = http(target["url"] + "/apm/")
+            results["apm"] = apm_result(body, time.time())
+        except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+            results["apm"] = {"ok": False, "error": "apm_unreachable"}
+    return results
+
+
+def query_once(binary, url, layout, timeout=30):
+    started = time.monotonic()
+    try:
+        p = subprocess.run(
+            [binary, url, json.dumps(layout)],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=timeout,
+        )
+        # Only the worker's structured final line is consumed. Library diagnostics are discarded.
+        result = json.loads(p.stdout.strip().splitlines()[-1])
+        if not isinstance(result, dict) or not isinstance(result.get("ok"), bool):
+            raise TypeError("invalid worker result")
+        if p.returncode != 0 and result["ok"]:
+            raise ValueError("inconsistent worker result")
+        result["duration_ms"] = round((time.monotonic() - started) * 1000)
+        return result
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "query_timeout", "duration_ms": timeout * 1000}
+    except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+        return {"ok": False, "error": "query_worker_failed"}
+
+
+def validate_layout(binary, layout):
+    result = subprocess.run(
+        [binary, "--validate-layout", json.dumps(layout)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode != 0 or not json.loads(result.stdout).get("ok"):
+        raise ValueError("invalid_config_layout")
+
+
+def atomic_json(path, value):
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        os.chmod(tmp, 0o600)
+        json.dump(value, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+class State:
+    def __init__(self, path, notify=True):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.RLock()
+        self.notify = notify
+        self.data = {
+            "version": 1,
+            "checks": {},
+            "pending": [],
+            "cycles": {},
+            "delivery": {},
+        }
+        if self.path.exists():
+            self.data = json.loads(self.path.read_text())
+            if self.data.get("version") != 1:
+                raise ValueError("unsupported state version")
+
+    def save(self):
+        atomic_json(self.path, self.data)
+
+    def queue(self, key, kind, check, now):
+        if not self.notify:
+            return
+        # Keep at most one reminder per incident pending; never drop transitions.
+        if kind == "REMINDER" and any(
+            p["key"] == key and p["kind"] == kind for p in self.data["pending"]
+        ):
+            return
+        self.data["pending"].append(
+            {
+                "id": str(time.time_ns()),
+                "key": key,
+                "kind": kind,
+                "created": now,
+                "next": now,
+                "attempts": 0,
+                "text": f"PIR PROBE {kind}\nEnvironment: production\nTarget/check: {key}\nObserved: {check['result'].get('error') or 'healthy'}\nConsecutive failures: {check['failures']}\nUTC: {datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat()}",
+            }
+        )
+
+    def result(self, key, result, now=None, immediate=False):
+        now = time.time() if now is None else now
+        with self.lock:
+            c = self.data["checks"].setdefault(
+                key, {"failures": 0, "successes": 0, "active": False, "last_notice": 0}
+            )
+            c.update(result=result, checked_at=now)
+            if result["ok"]:
+                c["failures"] = 0
+                c["successes"] += 1
+                if c["active"] and c["successes"] >= 2:
+                    c["active"] = False
+                    self.queue(key, "RECOVERY", c, now)
+            else:
+                c["successes"] = 0
+                c["failures"] += 1
+                if not c["active"] and (immediate or c["failures"] >= 2):
+                    c["active"] = True
+                    c["last_notice"] = now
+                    self.queue(key, "ALERT", c, now)
+                elif c["active"] and now - c["last_notice"] >= 1800:
+                    c["last_notice"] = now
+                    self.queue(key, "REMINDER", c, now)
+            self.save()
+        emit("check", check=key, **result)
+
+    def cycle(self, name):
+        with self.lock:
+            self.data["cycles"][name] = time.time()
+            self.save()
+
+
+def validate_config(c):
+    if not c.get("targets"):
+        raise ValueError("targets required")
+    names = set()
+    for t in c["targets"]:
+        u = urllib.parse.urlsplit(t["url"])
+        if (
+            u.scheme != "https"
+            or u.username
+            or u.password
+            or u.query
+            or u.fragment
+            or u.path not in ("", "/")
+        ):
+            raise ValueError("targets must be credential-free HTTPS origins")
+        if not t["name"] or t["name"] in names:
+            raise ValueError("duplicate/empty target name")
+        names.add(t["name"])
+        t["url"] = t["url"].rstrip("/")
+    for k, default in [
+        ("availability_seconds", 60),
+        ("query_seconds", 300),
+        ("query_timeout_seconds", 30),
+    ]:
+        c.setdefault(k, default)
+        if c[k] <= 0:
+            raise ValueError("interval must be positive")
+    return c
+
+
+def load_layout(config_url):
+    u = urllib.parse.urlsplit(config_url)
+    if u.scheme != "https" or u.username or u.password:
+        raise ValueError("HTTPS config required")
+    _, body = http(config_url)
+    layout = json.loads(body)["pir_layout"]
+    if (
+        not isinstance(layout, dict)
+        or {"pir_depth", "tier0_layers", "tier1_layers", "poly_len"} - layout.keys()
+    ):
+        raise ValueError("layout missing")
+    return layout
+
+
+class Monitor:
+    def __init__(self, config, state, binary, stop):
+        self.c = config
+        self.s = state
+        self.binary = binary
+        self.stop = stop
+        self.hb = {
+            k: os.environ.get("PIR_PROBE_HC_" + k.upper(), "")
+            for k in ["availability", "query", "delivery"]
+        }
+        self.webhook = os.environ.get("PIR_PROBE_SLACK_WEBHOOK_URL", "")
+        if state.notify and not self.webhook:
+            raise ValueError("Slack webhook required unless --no-notify")
+
+    def availability_cycle(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            for t, results in zip(
+                self.c["targets"], pool.map(availability, self.c["targets"])
+            ):
+                for kind, result in results.items():
+                    self.s.result(t["name"] + "/" + kind, result)
+        self.s.cycle("availability")
+        if self.hb["availability"] and not heartbeat(self.hb["availability"]):
+            emit("heartbeat_delivery_failed", loop="availability")
+
+    def query_cycle(self):
+        try:
+            layout = load_layout(self.c["config_url"])
+            validate_layout(self.binary, layout)
+        except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+            self.s.result(
+                "monitor/config",
+                {"ok": False, "error": "configuration_unavailable"},
+                immediate=True,
+            )
+            # No scheduled query outcomes exist: deliberately do not acknowledge the query heartbeat.
+            return
+        self.s.result("monitor/config", {"ok": True})
+        for t in self.c["targets"]:
+            if self.stop.is_set():
+                return
+            result = query_once(
+                self.binary, t["url"], layout, self.c["query_timeout_seconds"]
+            )
+            self.s.result(
+                t["name"] + "/query",
+                result,
+                immediate=result.get("error")
+                in ["invalid_proof", "inconsistent_response"],
+            )
+        self.s.cycle("query")
+        if self.hb["query"] and not heartbeat(self.hb["query"]):
+            emit("heartbeat_delivery_failed", loop="query")
+
+    def notify_once(self):
+        now = time.time()
+        with self.s.lock:
+            # Preserve failure/recovery order, including while a failed delivery is backing off.
+            item = dict(self.s.data["pending"][0]) if self.s.data["pending"] else None
+        if item is None or item["next"] > now:
+            return
+        ok = False
+        try:
+            status, body = http(
+                self.webhook,
+                timeout=10,
+                body=json.dumps({"text": item["text"]}).encode(),
+            )
+            ok = status == 200 and body.strip() == b"ok"
+        except Exception:  # noqa: BLE001 -- notification failure is persisted and logged below
+            ok = False
+        with self.s.lock:
+            pending = self.s.data["pending"]
+            if ok:
+                pending[:] = [p for p in pending if p["id"] != item["id"]]
+                self.s.data["delivery"]["last_success"] = now
+            else:
+                for p in pending:
+                    if p["id"] == item["id"]:
+                        p["attempts"] += 1
+                        p["next"] = now + min(300, 5 * 2 ** min(p["attempts"] - 1, 6))
+                self.s.data["delivery"]["last_failure"] = now
+            self.s.save()
+        emit("notification", kind=item["kind"], check=item["key"], accepted=ok)
+
+    def notifications(self):
+        last_hb = 0
+        while not self.stop.is_set():
+            self.notify_once()
+            now = time.time()
+            if now - last_hb >= 60:
+                with self.s.lock:
+                    bad = bool(
+                        self.s.data["pending"]
+                        and now - self.s.data["pending"][0]["created"] >= 120
+                    )
+                if self.hb["delivery"] and not heartbeat(self.hb["delivery"], bad):
+                    emit("heartbeat_delivery_failed", loop="delivery")
+                last_hb = now
+            self.stop.wait(1)
+
+    def loop(self, name, period, fn):
+        while not self.stop.is_set():
+            start = time.monotonic()
+            try:
+                fn()
+            except Exception:
+                emit("loop_failed", loop=name)
+                # A crashed loop must terminate the service; systemd restarts it and heartbeats expire.
+                self.stop.set()
+                raise
+            self.stop.wait(max(1, period - (time.monotonic() - start)))
+
+    def run(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            tasks = [
+                pool.submit(
+                    self.loop,
+                    "availability",
+                    self.c["availability_seconds"],
+                    self.availability_cycle,
+                ),
+                pool.submit(
+                    self.loop, "query", self.c["query_seconds"], self.query_cycle
+                ),
+            ]
+            if self.s.notify:
+                tasks.append(pool.submit(self.notifications))
+            while not self.stop.wait(0.5):
+                for t in tasks:
+                    if t.done():
+                        self.stop.set()
+                        t.result()
+                        raise RuntimeError("monitor worker stopped")
+            for t in tasks:
+                t.result()
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("mode", choices=["run", "query-once"])
+    p.add_argument("--config", default=DEFAULT_CONFIG)
+    p.add_argument("--state-dir", default="/var/lib/pir-probe")
+    p.add_argument(
+        "--binary", default=str(Path(__file__).resolve().with_name("pir-probe-query"))
+    )
+    p.add_argument("--no-notify", action="store_true")
+    p.add_argument("--url")
+    args = p.parse_args()
+    c = validate_config(json.loads(Path(args.config).read_text()))
+    if args.mode == "query-once":
+        r = query_once(
+            args.binary,
+            args.url or c["targets"][0]["url"],
+            load_layout(c["config_url"]),
+            c["query_timeout_seconds"],
+        )
+        print(json.dumps(r))
+        return 0 if r["ok"] else 1
+    state_dir = Path(args.state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        state = State(state_dir / "status.json", not args.no_notify)
+        stop = threading.Event()
+        for sig in [signal.SIGTERM, signal.SIGINT]:
+            signal.signal(sig, lambda *_: stop.set())
+        monitor = Monitor(c, state, args.binary, stop)
+        emit(
+            "started",
+            version=VERSION,
+            targets=len(c["targets"]),
+            notifications=state.notify,
+            heartbeats={k: bool(v) for k, v in monitor.hb.items()},
+        )
+        monitor.run()
+    return 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["_http"]:
+        http_worker()
+        raise SystemExit(0)
+    try:
+        raise SystemExit(main())
+    except Exception as e:  # noqa: BLE001 -- report only the error type
+        emit("fatal", error=type(e).__name__)
+        raise SystemExit(1)
