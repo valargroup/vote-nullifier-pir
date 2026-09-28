@@ -2107,7 +2107,7 @@ dependencies = [
 
 [[package]]
 name = "imt-tree"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "criterion",
@@ -2494,6 +2494,7 @@ dependencies = [
  "voting-crypto-deps",
  "zakura-chain 5.0.0",
  "zakura-chain 6.1.0",
+ "zakura-halo2-proofs 2.0.0",
 ]
 
 [[package]]
@@ -2966,7 +2967,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pir-client"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "futures",
@@ -3072,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "pir-types"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "imt-tree",
@@ -5047,14 +5048,14 @@ dependencies = [
 
 [[package]]
 name = "voting-crypto-deps"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7093c43ce71cde30f4d9c1154fa6f0b69c6866a4efb9cb582055a81dcf438a6e"
+checksum = "912ae5f4b86e2dd37a6b0fef77b1557af71dcf87221b20bff5c02326c0f81903"
 dependencies = [
  "halo2_gadgets",
  "pasta_curves",
- "zakura-halo2-gadgets",
- "zakura-pasta-curves",
+ "zakura-halo2-gadgets 2.0.0",
+ "zakura-pasta-curves 2.0.0",
 ]
 
 [[package]]
@@ -5704,14 +5705,14 @@ dependencies = [
  "tracing",
  "uint 0.10.1",
  "x25519-dalek",
- "zakura-halo2-proofs",
+ "zakura-halo2-proofs 1.2.0",
  "zakura-jubjub",
  "zakura-orchard",
  "zakura-primitives",
  "zakura-reddsa",
  "zakura-redjubjub",
  "zakura-sapling-crypto",
- "zakura-sinsemilla",
+ "zakura-sinsemilla 1.2.0",
  "zcash_address",
  "zcash_history",
  "zcash_note_encryption",
@@ -5730,10 +5731,26 @@ dependencies = [
  "ff 0.14.0",
  "group 0.14.0",
  "subtle",
- "zakura-halo2-poseidon",
- "zakura-halo2-proofs",
- "zakura-pasta-curves",
- "zakura-sinsemilla",
+ "zakura-halo2-poseidon 1.2.0",
+ "zakura-halo2-proofs 1.2.0",
+ "zakura-pasta-curves 1.2.0",
+ "zakura-sinsemilla 1.2.0",
+]
+
+[[package]]
+name = "zakura-halo2-gadgets"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f945c1d7b248ae2e1e325c7967bf6763064cd989c4bcfd576b1929f9cbab636"
+dependencies = [
+ "arrayvec",
+ "ff 0.14.0",
+ "group 0.14.0",
+ "subtle",
+ "zakura-halo2-poseidon 2.0.0",
+ "zakura-halo2-proofs 2.0.0",
+ "zakura-pasta-curves 2.0.0",
+ "zakura-sinsemilla 2.0.0",
 ]
 
 [[package]]
@@ -5751,7 +5768,19 @@ dependencies = [
  "bitvec",
  "ff 0.14.0",
  "group 0.14.0",
- "zakura-pasta-curves",
+ "zakura-pasta-curves 1.2.0",
+]
+
+[[package]]
+name = "zakura-halo2-poseidon"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f512f1970a7f69ad3e3390bd2a46bf53c471b96afcc2954fd6b889e738116926"
+dependencies = [
+ "bitvec",
+ "ff 0.14.0",
+ "group 0.14.0",
+ "zakura-pasta-curves 2.0.0",
 ]
 
 [[package]]
@@ -5768,7 +5797,23 @@ dependencies = [
  "rand_core 0.10.1",
  "tracing",
  "zakura-halo2-legacy-pdqsort",
- "zakura-pasta-curves",
+ "zakura-pasta-curves 1.2.0",
+]
+
+[[package]]
+name = "zakura-halo2-proofs"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f66962d186c44189b1141645ca031ead78144f306b1f682481426afd6744113"
+dependencies = [
+ "blake2b_simd",
+ "ff 0.14.0",
+ "group 0.14.0",
+ "maybe-rayon",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
+ "tracing",
+ "zakura-pasta-curves 2.0.0",
 ]
 
 [[package]]
@@ -5811,12 +5856,12 @@ dependencies = [
  "serde",
  "subtle",
  "tracing",
- "zakura-halo2-gadgets",
- "zakura-halo2-poseidon",
- "zakura-halo2-proofs",
- "zakura-pasta-curves",
+ "zakura-halo2-gadgets 1.2.0",
+ "zakura-halo2-poseidon 1.2.0",
+ "zakura-halo2-proofs 1.2.0",
+ "zakura-pasta-curves 1.2.0",
  "zakura-reddsa",
- "zakura-sinsemilla",
+ "zakura-sinsemilla 1.2.0",
  "zcash_note_encryption",
  "zcash_spec",
  "zip32",
@@ -5836,6 +5881,23 @@ name = "zakura-pasta-curves"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33817e907eaf89e5871ab0cdfc1054907ec0b3a86759c7a9d41875690f6fd9f4"
+dependencies = [
+ "blake2b_simd",
+ "cc",
+ "ff 0.14.0",
+ "group 0.14.0",
+ "maybe-rayon",
+ "once_cell",
+ "rand 0.10.2",
+ "static_assertions",
+ "subtle",
+]
+
+[[package]]
+name = "zakura-pasta-curves"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32245cb7516361b02b4188b5536d5a998b6be454cf229a2531fb36820a2c4995"
 dependencies = [
  "blake2b_simd",
  "cc",
@@ -5893,7 +5955,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "zakura-jubjub",
- "zakura-pasta-curves",
+ "zakura-pasta-curves 1.2.0",
  "zeroize",
 ]
 
@@ -5953,7 +6015,19 @@ dependencies = [
  "group 0.14.0",
  "once_cell",
  "subtle",
- "zakura-pasta-curves",
+ "zakura-pasta-curves 1.2.0",
+]
+
+[[package]]
+name = "zakura-sinsemilla"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a67c1cae8ddd8a938da0b14b63dd9fc69b1a8f31ad76d6876813992f02829248"
+dependencies = [
+ "group 0.14.0",
+ "once_cell",
+ "subtle",
+ "zakura-pasta-curves 2.0.0",
 ]
 
 [[package]]
