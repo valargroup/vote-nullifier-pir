@@ -1,5 +1,10 @@
-# Unreleased
+# v0.12.2
 
+- Align with `voting-circuits` `0.12.2` by upgrading
+  `voting-crypto-deps` to `0.2.4` and the Zakura cryptography libraries to
+  `2.0.0`.
+- Add external PIR query probes with persistent Slack alerting for production
+  endpoint health.
 - Add a read-only script and AI guide for verifying the latest registered or
   selected voting round, including unapproved rounds. Combine the canonical
   round-ID check with a fresh rebuild using PIR's normal lightwalletd sync and
@@ -8,6 +13,11 @@
   and resolves its `main` link to one commit for each run. Authenticated
   raw-block verification remains available with `--mode raw-blocks`; existing
   raw-block script invocations must add that flag.
+
+# imt-tree 0.5.4, pir-types 0.6.4, and pir-client 0.7.4
+
+- Publish the Zakura `2.0.0` cryptography backend through
+  `voting-crypto-deps` `0.2.4`.
 
 # v0.12.1
 
