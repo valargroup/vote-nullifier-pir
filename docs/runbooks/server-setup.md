@@ -516,7 +516,7 @@ Everything under `SVOTE_PIR_DATA_DIR` belongs to exactly one Zcash network. Flee
 |------|----------------|---------|
 | `nullifiers.bin` | Stage 1 — sync | Append-only raw 32-byte Ironwood nullifiers streamed from lightwalletd. The underlying data; everything else is derived. |
 | `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 2`. |
-| `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`; half-written batches are discarded on startup. |
+| `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`, including the authenticated compact-block hash at that height; half-written batches are discarded on startup. |
 | `nullifiers.index` | Stage 1 — sync | Per-batch height index; lets `sync` and `POST /snapshot/prepare` export a snapshot at a past height. Auto-rebuilt if missing. |
 | `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-19 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
 | `tier0.bin`, `tier1.bin` | Stage 3 — sync **or** serve bootstrap | The public index and 48 MiB PIR database. Identical to `<precomputed-base>/snapshots/<network>/<height>/tier*.bin`. |
@@ -524,6 +524,11 @@ Everything under `SVOTE_PIR_DATA_DIR` belongs to exactly one Zcash network. Flee
 | `tier1.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Auto-invalidated by the Tier 1 content hash; safe to delete (next boot recomputes). **Not** distributed via the CDN; each host writes its own. |
 
 When in doubt, reset only the selected network directory. For example, `rm -rf /opt/nf-ingest/pir-data/test/* && systemctl restart nullifier-query-server` re-bootstraps testnet from the CDN.
+
+The authenticated checkpoint format is 48 bytes. A synced host with the legacy
+16-byte format must run once with `SVOTE_PIR_SYNC_RESET=1`; ingestion refuses to
+append to a dataset that has no saved block-hash anchor. Serve-only bootstrapped
+snapshots remain readable.
 
 `nf-server doctor` reports cache presence and size per tier; use it for warm-start regression triage ("did the cache disappear?").
 
