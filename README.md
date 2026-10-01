@@ -133,12 +133,16 @@ All data is stored as flat binary files under one network-specific directory (ov
 
 - `nullifiers.bin` — Append-only raw 32-byte Ironwood nullifier blobs
 - `nullifiers.dataset.json` — Dataset identity (`zcash_network`, `nullifier_pool: "ironwood"`, `dataset_version: 2`)
-- `nullifiers.checkpoint` — 16-byte crash-recovery marker (height + byte offset, both LE u64)
+- `nullifiers.checkpoint` — 48-byte crash-recovery and chain-authentication marker
+  (height + byte offset as LE u64, followed by the 32-byte compact-block hash)
 - `nullifiers.index` — Height-to-offset index for subset loading
 - `nullifiers.tree` — Versioned PIR Merkle checkpoint (see `pir-export`)
 - `tier0.bin`, `tier1.bin`, `pir_root.json` — PIR tier payload and root metadata, including the dataset identity
 
 Unlabeled and Orchard artifacts are not reusable. Keep mainnet and testnet data in separate directories and rebuild each dataset with `SVOTE_PIR_SYNC_RESET=1`.
+The sync path also rejects legacy 16-byte checkpoints before appending new
+nullifiers; reset once so the rebuilt checkpoint can authenticate the LWD block
+hash chain across batches and restarts.
 
 ## PIR Write Ups
 
