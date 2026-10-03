@@ -17,7 +17,7 @@ rust-version = "1.91"
 
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.5.4", default-features = false }
-voting-crypto-deps = { version = "=0.2.4", default-features = false }
+voting-crypto-deps = { version = "0.2.4", default-features = false }
 
 [profile.release]
 lto = "fat"

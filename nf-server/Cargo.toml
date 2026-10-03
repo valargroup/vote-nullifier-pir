@@ -54,10 +54,10 @@ prometheus         = { version = "0.13", default-features = false, features = ["
 # Always needed
 # Select the protocol parser matching the tree's crypto backend. Both versions
 # support Ironwood; neither backend may pull the other's crypto dependency graph.
-zakura-chain = { version = "=6.1.0", default-features = false, optional = true }
+zakura-chain = { version = "6.1", default-features = false, optional = true }
 # Align multicore with zakura-chain's maybe-rayon/threads feature unification.
-zakura-halo2-proofs = { version = "=2.0.0", default-features = false, features = ["batch", "multicore"], optional = true }
-upstream-chain = { package = "zakura-chain", version = "=5.0.0", default-features = false, optional = true }
+zakura-halo2-proofs = { version = "2.0", default-features = false, features = ["batch", "multicore"], optional = true }
+upstream-chain = { package = "zakura-chain", version = "5.0", default-features = false, optional = true }
 pir-export        = { path = "../pir/export", default-features = false }
 pir-types         = { path = "../pir/types", default-features = false }
 nf-ingest = { path = "../nf-ingest", default-features = false }

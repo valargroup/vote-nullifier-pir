@@ -1,3 +1,7 @@
+# Unreleased
+
+- Require `voting-crypto-deps` `^0.2.4` instead of `=0.2.4`.
+
 # v0.12.2
 
 - Align with `voting-circuits` `0.12.2` by upgrading
