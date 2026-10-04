@@ -32,8 +32,18 @@ codegen-units = 1
 [patch.crates-io]
 imt-tree = { git = "https://github.com/zodl-inc/voting-circuits", rev = "1e33d48e436482e0f364ff0f9f886904f88fa515" }
 voting-crypto-deps = { git = "https://github.com/zodl-inc/voting-circuits", rev = "1e33d48e436482e0f364ff0f9f886904f88fa515" }
+zakura-address = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-bls12-381 = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
 zakura-halo2-gadgets = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
 zakura-halo2-poseidon = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
 zakura-halo2-proofs = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-jubjub = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-orchard = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
 zakura-pasta-curves = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-primitives = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-protocol = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-reddsa = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-redjubjub = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-sapling-crypto = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
 zakura-sinsemilla = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-transparent = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }

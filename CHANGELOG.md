@@ -8,6 +8,10 @@
 - `imt-tree` moved to the
   [voting-circuits](https://github.com/valargroup/voting-circuits) repository,
   next to `voting-crypto-deps`. Consumers use the published crate as before.
+- `nf-server verify-root` parses raw blocks with `zakura-primitives` `2.0`
+  under the default Zakura backend and with `zcash_primitives` `0.31.0-pre.0`
+  under `upstream`, instead of `zakura-chain`. It now also rejects a block whose
+  coinbase consensus branch does not match its height on the selected network.
 
 # v0.12.2
 

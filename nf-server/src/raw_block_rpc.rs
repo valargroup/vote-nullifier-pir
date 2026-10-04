@@ -6,9 +6,8 @@ use std::{path::Path, time::Duration};
 use anyhow::{bail, ensure, Context, Result};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
-use zakura_chain::block;
 
-use crate::root_verifier::MAX_BLOCK_BYTES;
+use crate::chain_backend::{BlockHash, MAX_BLOCK_BYTES};
 
 // A raw block is hex-encoded in a small JSON envelope. Bound the envelope too.
 const MAX_RESPONSE_BYTES: usize = MAX_BLOCK_BYTES * 2 + 65_536;
@@ -76,7 +75,7 @@ impl RawBlockRpc {
     /// Fetch a complete raw block by hash. Retries transient transport, 429, and
     /// 5xx failures at most three times; malformed/oversized data fails immediately.
     /// A returned block is untrusted until `root_verifier::verify_block` accepts it.
-    pub(crate) async fn fetch(&self, hash: block::Hash) -> Result<Vec<u8>> {
+    pub(crate) async fn fetch(&self, hash: BlockHash) -> Result<Vec<u8>> {
         for attempt in 0..ATTEMPTS {
             match self.fetch_once(hash).await {
                 Ok(raw) => return Ok(raw),
@@ -94,7 +93,7 @@ impl RawBlockRpc {
 
     /// Make one bounded request. Deliberately discard provider error text and
     /// reqwest error details, which could echo credentials or sensitive URLs.
-    async fn fetch_once(&self, hash: block::Hash) -> std::result::Result<Vec<u8>, FetchError> {
+    async fn fetch_once(&self, hash: BlockHash) -> std::result::Result<Vec<u8>, FetchError> {
         let mut request = self.client.post(self.url.clone()).json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "getblock", "params": [hash.to_string(), 0]
         }));

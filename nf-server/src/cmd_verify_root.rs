@@ -8,9 +8,8 @@ use clap::Args as ClapArgs;
 use hex::FromHex;
 use pir_types::ZcashNetwork;
 use voting_crypto_deps::pasta_curves::{group::ff::PrimeField, Fp};
-use zakura_chain::block;
 
-use crate::{raw_block_rpc::RawBlockRpc, root_verifier::verify_block};
+use crate::{chain_backend::BlockHash, raw_block_rpc::RawBlockRpc, root_verifier::verify_block};
 
 #[derive(ClapArgs)]
 pub(crate) struct Args {
@@ -45,7 +44,7 @@ pub(crate) struct Args {
 /// Reads an optional RPC cookie and uses network I/O and RAM, but writes no files.
 pub(crate) async fn run(args: Args) -> Result<()> {
     nf_ingest::config::validate_export_height(args.height, args.zcash_network)?;
-    let trusted_hash = block::Hash::from_hex(&args.trusted_block_hash)
+    let trusted_hash = BlockHash::from_hex(&args.trusted_block_hash)
         .context("trusted block hash must be 32 bytes of RPC display-order hex")?;
     let expected_root = parse_root(&args.expected_circuit_root)?;
     let rpc = RawBlockRpc::new(
@@ -63,7 +62,7 @@ pub(crate) async fn run(args: Args) -> Result<()> {
             .fetch(expected_hash)
             .await
             .with_context(|| format!("fetch block at height {height}"))?;
-        let verified = verify_block(&raw, expected_hash, height)?;
+        let verified = verify_block(&raw, args.zcash_network, expected_hash, height)?;
         expected_hash = verified.previous_hash;
         nullifiers.extend(verified.nullifiers);
         // This v1 keeps action occurrences in memory. Bound them to the current
