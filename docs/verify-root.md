@@ -41,11 +41,15 @@ comes from the independently authenticated snapshot height and the network's
 activation constant, not from provider-reported tip or stream completion.
 
 The commitment rules are specified in [ZIP 244](https://zips.z.cash/zip-0244) and
-the Ironwood extension in [ZIP 229](https://zips.z.cash/zip-0229). The implementation
-uses pinned `zakura-chain` parsing, hashing, and Merkle code: version `6.1.0`
-for the default Zakura backend and version `5.0.0` for the upstream backend.
-Both support Ironwood and are tested against the same mainnet fixtures. It does not
-define a new hash function or commitment format.
+the Ironwood extension in [ZIP 229](https://zips.z.cash/zip-0229). Blocks are
+parsed and hashed by the backend's `zcash_primitives` implementation:
+`zakura-primitives` `2.0` for the default Zakura backend and `zcash_primitives`
+`0.31.0-pre.0` for the upstream backend. Both expose the same API, so one decoder
+and one transaction Merkle-root implementation serve both, and both are tested
+against the same mainnet fixtures. Decoding uses the selected network's consensus
+parameters and also rejects a block whose coinbase does not encode a height, or
+whose coinbase consensus branch does not match that height. It does not define a
+new hash function or commitment format.
 
 This is **content verification relative to an authenticated history**, not full
 consensus validation. It does not discover the best chain, validate difficulty or
@@ -194,7 +198,7 @@ nonzero without a result document. An incorrect proposed root must return
 `matches: false`; transient failures must retry without shortening the history.
 
 ```bash
-cargo +1.91.0 test --locked -p nf-server -p nf-ingest -p pir-export -p imt-tree
+cargo +1.91.0 test --locked -p nf-server -p nf-ingest -p pir-export
 cargo +1.91.0 test --locked -p nf-server --no-default-features --features upstream
 cargo +1.91.0 clippy --locked -p nf-server --all-targets -- -D warnings
 cargo +1.91.0 fmt --all -- --check

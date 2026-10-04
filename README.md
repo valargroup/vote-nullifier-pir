@@ -8,12 +8,17 @@ Private Information Retrieval (PIR) system for Ironwood nullifier non-membership
 
 ## Architecture
 
-The system is organised as a Cargo workspace with eight crates split across three layers:
+The system is organised as a Cargo workspace with seven crates split across three layers.
+`imt-tree` lives in the [voting-circuits](https://github.com/valargroup/voting-circuits)
+repository, next to `voting-crypto-deps`, and is used as a published dependency:
 
 ```mermaid
 graph TD
-    subgraph foundation [Foundation]
+    subgraph external [voting-circuits repository]
         imtTree[imt-tree]
+    end
+
+    subgraph foundation [Foundation]
         pirTypes[pir/types]
     end
 
@@ -44,7 +49,7 @@ graph TD
 
 | Crate | Path | Description |
 |-------|------|-------------|
-| **imt-tree** | `imt-tree/` | Indexed Merkle Tree library. Poseidon hashing, punctured-range exclusion proofs (K=2), and tree-building primitives for circuit compatibility. |
+| **imt-tree** | [voting-circuits](https://github.com/valargroup/voting-circuits) `imt-tree/` | Indexed Merkle Tree library (external dependency). Poseidon hashing, punctured-range exclusion proofs (K=2), and tree-building primitives for circuit compatibility. |
 | **pir-types** | `pir/types/` | Lightweight shared types (`YpirScenario`, `RootInfo`, `HealthInfo`) serialised over HTTP between server and client. Also contains YPIR wire-format helpers. |
 | **pir-export** | `pir/export/` | Builds the depth-19 PIR tree from punctured-range leaves (K=2), persists `nullifiers.tree` checkpoints, and exports the plaintext `tier0.bin` plus PIR-backed `tier1.bin`. |
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
@@ -95,7 +100,7 @@ cargo build --release
 
 # Build the full workspace with the upstream backend
 cargo +1.91.0 build --workspace --release --no-default-features \
-  --features imt-tree/upstream,pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream
+  --features pir-types/upstream,pir-client/upstream,pir-export/upstream,pir-export/cli,pir-server/upstream,nf-ingest/upstream,nf-server/upstream,nf-server/serve,pir-test/upstream
 
 # Or use the Makefile for the standard pipeline:
 make build          # Build nf-server binary
@@ -104,7 +109,7 @@ SVOTE_ZCASH_NETWORK=test PIR_DATA_DIR=pir-data/test make serve
 nf-server dataset-info  # Print the supported pool and dataset version
 
 # Run tests
-make test           # Unit tests for imt-tree and nf-ingest
+make test           # Unit tests for nf-ingest
 cargo test -p pir-export  # PIR export round-trip tests
 ```
 

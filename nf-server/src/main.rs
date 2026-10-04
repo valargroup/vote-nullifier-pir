@@ -7,13 +7,10 @@
 //!   - `verify-root` — Rebuild an Ironwood root against a trusted snapshot block hash.
 //!   - `serve` — Start the PIR HTTP server (feature-gated behind `serve`).
 
-// Keep parser selection aligned with the workspace's mutually exclusive backends.
-#[cfg(feature = "upstream")]
-extern crate upstream_chain as zakura_chain;
-
 #[cfg(feature = "serve")]
 mod bootstrap;
 mod build_info;
+mod chain_backend;
 mod cmd_doctor;
 #[cfg(feature = "serve")]
 mod cmd_serve;
