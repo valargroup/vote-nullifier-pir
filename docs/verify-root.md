@@ -194,7 +194,7 @@ nonzero without a result document. An incorrect proposed root must return
 `matches: false`; transient failures must retry without shortening the history.
 
 ```bash
-cargo +1.91.0 test --locked -p nf-server -p nf-ingest -p pir-export -p imt-tree
+cargo +1.91.0 test --locked -p nf-server -p nf-ingest -p pir-export
 cargo +1.91.0 test --locked -p nf-server --no-default-features --features upstream
 cargo +1.91.0 clippy --locked -p nf-server --all-targets -- -D warnings
 cargo +1.91.0 fmt --all -- --check

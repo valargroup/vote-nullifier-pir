@@ -18,7 +18,6 @@
 # `make sync-invalidate` passes `--invalidate-after-blocks` (rebuild tree + tiers when new blocks were synced).
 
 ROOT        := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-IMT_DIR     := imt-tree
 SERVICE_DIR := nf-ingest
 NF_DIR      := nf-server
 # Workspace builds emit binaries under the repo-root `target/`, not `nf-server/target/`.
@@ -84,7 +83,6 @@ serve: ## Start PIR server (PIR_POLY_LEN=2048|4096)
 	cd $(NF_DIR) && cargo run --release --features serve -- serve --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT) --pir-poly-len $(PIR_POLY_LEN)
 
 test: ## Run unit tests for all subcrates
-	cd $(IMT_DIR) && cargo test --lib
 	cd $(SERVICE_DIR) && cargo test --lib
 
 status: ## Show nullifier sync progress (count + checkpoint + tree file)
@@ -119,7 +117,6 @@ status: ## Show nullifier sync progress (count + checkpoint + tree file)
 	fi
 
 clean: ## Remove built artifacts and data files
-	cd $(IMT_DIR) && cargo clean
 	cd $(SERVICE_DIR) && cargo clean
 	cd $(NF_DIR) && cargo clean
 	rm -f $(PIR_DATA_DIR)/nullifiers.bin $(PIR_DATA_DIR)/nullifiers.dataset.json $(PIR_DATA_DIR)/nullifiers.dataset.json.tmp \

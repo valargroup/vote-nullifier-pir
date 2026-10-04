@@ -1,6 +1,9 @@
 # Unreleased
 
 - Require `voting-crypto-deps` `^0.2.4` instead of `=0.2.4`.
+- `imt-tree` moved to the
+  [voting-circuits](https://github.com/valargroup/voting-circuits) repository,
+  next to `voting-crypto-deps`. Consumers use the published crate as before.
 
 # v0.12.2
 
