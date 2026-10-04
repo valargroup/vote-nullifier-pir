@@ -1,5 +1,9 @@
 # Unreleased
 
+- Move the `upstream` (LRZ) backend of `pir-types` and `pir-client` to the
+  `orchard` `0.16` generation of the librustzcash crates: `pasta_curves` `0.6`
+  and `halo2_gadgets` `0.6`. Under `upstream`, `Fp` values exchanged with these
+  crates are `pasta_curves` `0.6` types.
 - Require `voting-crypto-deps` `^0.2.4` instead of `=0.2.4`.
 - `imt-tree` moved to the
   [voting-circuits](https://github.com/valargroup/voting-circuits) repository,

@@ -8,6 +8,10 @@ rust-version.workspace = true
 default = ["zakura"]
 upstream = [
     "dep:upstream-chain",
+    # zakura-chain 5.0.0 enables maybe-rayon/threads via halo2_proofs 0.3.
+    # Keep the voting-crypto-deps halo2_proofs 0.4 line on multicore too, or the
+    # shared maybe-rayon crate compiles parallel iterators against serial APIs.
+    "dep:upstream-halo2-proofs",
     "voting-crypto-deps/lrz-vct",
     "pir-server?/upstream",
     "pir-export/upstream",
@@ -58,6 +62,8 @@ zakura-chain = { version = "6.1", default-features = false, optional = true }
 # Align multicore with zakura-chain's maybe-rayon/threads feature unification.
 zakura-halo2-proofs = { version = "2.0", default-features = false, features = ["batch", "multicore"], optional = true }
 upstream-chain = { package = "zakura-chain", version = "5.0", default-features = false, optional = true }
+# Align multicore with upstream-chain's maybe-rayon/threads feature unification.
+upstream-halo2-proofs = { package = "halo2_proofs", version = "0.4", default-features = false, features = ["batch", "multicore"], optional = true }
 pir-export        = { path = "../pir/export", default-features = false }
 pir-types         = { path = "../pir/types", default-features = false }
 nf-ingest = { path = "../nf-ingest", default-features = false }
