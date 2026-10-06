@@ -44,7 +44,7 @@ The commitment rules are specified in [ZIP 244](https://zips.z.cash/zip-0244) an
 the Ironwood extension in [ZIP 229](https://zips.z.cash/zip-0229). Blocks are
 parsed and hashed by the backend's `zcash_primitives` implementation:
 `zakura-primitives` `2.0` for the default Zakura backend and `zcash_primitives`
-`0.31.0-pre.0` for the upstream backend. Both expose the same API, so one decoder
+`0.31.0-pre.1` for the upstream backend. Both expose the same API, so one decoder
 and one transaction Merkle-root implementation serve both, and both are tested
 against the same mainnet fixtures. Decoding uses the selected network's consensus
 parameters and also rejects a block whose coinbase does not encode a height, or
