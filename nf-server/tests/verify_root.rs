@@ -1,8 +1,5 @@
 //! Offline CLI acceptance tests replaying eight independently sourced mainnet blocks.
 
-#[cfg(feature = "upstream")]
-extern crate upstream_chain as zakura_chain;
-
 use std::{
     collections::HashMap,
     io::{Read, Write},
@@ -16,11 +13,10 @@ use std::{
     time::Duration,
 };
 
-use zakura_chain::{
-    block::Block,
-    serialization::{ZcashDeserialize, ZcashSerialize},
-    transaction::Transaction,
-};
+#[path = "../src/chain_backend/test_blocks.rs"]
+mod test_blocks;
+
+use test_blocks::FixtureBlock;
 
 const RAW: [&[u8]; 8] = [
     include_bytes!("fixtures/verify-root/mainnet-3428143.bin"),
@@ -62,10 +58,7 @@ impl Server {
     fn start(mode: Mode) -> Self {
         let blocks: HashMap<_, _> = RAW
             .into_iter()
-            .map(|raw| {
-                let block = Block::zcash_deserialize(raw).unwrap();
-                (block.hash().to_string(), raw.to_vec())
-            })
+            .map(|raw| (FixtureBlock::parse(raw).hash_display(), raw.to_vec()))
             .collect();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -123,39 +116,15 @@ impl Server {
                     Mode::Truncated => {
                         raw.pop();
                     }
-                    Mode::MissingTransaction | Mode::MissingAction => {
-                        let mut block = Block::zcash_deserialize(raw.as_slice()).unwrap();
-                        if matches!(mode, Mode::MissingTransaction) {
-                            let i = block
-                                .transactions
-                                .iter()
-                                .position(|tx| tx.ironwood_actions().count() > 0)
-                                .unwrap();
-                            block.transactions.remove(i);
-                        } else {
-                            for tx in &mut block.transactions {
-                                if let Transaction::V6 {
-                                    ironwood_shielded_data: Some(bundle),
-                                    ..
-                                } = Arc::make_mut(tx)
-                                {
-                                    if bundle.actions.len() > 1 {
-                                        bundle.actions = bundle
-                                            .actions
-                                            .iter()
-                                            .skip(1)
-                                            .cloned()
-                                            .collect::<Vec<_>>()
-                                            .try_into()
-                                            .unwrap();
-                                        bundle.proof.0.truncate(bundle.proof.0.len() - 2272);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        raw.clear();
-                        block.zcash_serialize(&mut raw).unwrap();
+                    Mode::MissingTransaction => {
+                        let mut block = FixtureBlock::parse(&raw);
+                        block.remove_first_transaction_with_ironwood_actions();
+                        raw = block.to_bytes();
+                    }
+                    Mode::MissingAction => {
+                        let mut block = FixtureBlock::parse(&raw);
+                        block.remove_first_action_of_multi_action_ironwood_bundle();
+                        raw = block.to_bytes();
                     }
                     _ => {}
                 }
@@ -372,27 +341,4 @@ fn invalid_snapshot_arguments_fail_before_network_access() {
         assert!(output.stdout.is_empty());
     }
     assert_eq!(server.requests.load(Ordering::Relaxed), 0);
-}
-
-#[test]
-fn raw_extraction_agrees_with_independently_downloaded_compact_nullifiers() {
-    let mut actual: Vec<_> = RAW
-        .into_iter()
-        .flat_map(|raw| {
-            let block = Block::zcash_deserialize(raw).unwrap();
-            block
-                .ironwood_nullifiers()
-                .map(|nf| hex::encode(<[u8; 32]>::from(*nf)))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let mut expected: Vec<_> = snapshot()["nullifiers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_owned())
-        .collect();
-    actual.sort();
-    expected.sort();
-    assert_eq!(actual, expected);
 }

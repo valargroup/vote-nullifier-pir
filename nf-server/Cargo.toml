@@ -7,7 +7,8 @@ rust-version.workspace = true
 [features]
 default = ["zakura"]
 upstream = [
-    "dep:upstream-chain",
+    "dep:zcash_primitives",
+    "dep:zcash_protocol",
     "voting-crypto-deps/lrz-vct",
     "pir-server?/upstream",
     "pir-export/upstream",
@@ -16,11 +17,8 @@ upstream = [
     "imt-tree/upstream",
 ]
 zakura = [
-    "dep:zakura-chain",
-    # zakura-chain 6.1.0 enables maybe-rayon/threads via halo2-proofs 1.2.0.
-    # Keep the voting-crypto-deps 2.0.0 proofs line on multicore too, or the
-    # shared maybe-rayon crate compiles parallel iterators against serial APIs.
-    "dep:zakura-halo2-proofs",
+    "dep:zakura-primitives",
+    "dep:zakura-protocol",
     "voting-crypto-deps/vct",
     "pir-server?/zakura",
     "pir-export/zakura",
@@ -52,12 +50,14 @@ ed25519-dalek      = "2"
 prometheus         = { version = "0.13", default-features = false, features = ["process"], optional = true }
 
 # Always needed
-# Select the protocol parser matching the tree's crypto backend. Both versions
-# support Ironwood; neither backend may pull the other's crypto dependency graph.
-zakura-chain = { version = "=6.1.0", default-features = false, optional = true }
-# Align multicore with zakura-chain's maybe-rayon/threads feature unification.
-zakura-halo2-proofs = { version = "=2.0.0", default-features = false, features = ["batch", "multicore"], optional = true }
-upstream-chain = { package = "zakura-chain", version = "=5.0.0", default-features = false, optional = true }
+# Select the block parser matching the tree's crypto backend. Both crates expose the
+# same API as `zcash_primitives` / `zcash_protocol`; neither backend may pull the
+# other's crypto dependency graph.
+zakura-primitives = { version = "2.0", default-features = false, features = ["std"], optional = true }
+zakura-protocol = { version = "2.0", default-features = false, optional = true }
+# The librustzcash NU7 pre-release; the exact pin is intended until it is published.
+zcash_primitives = { version = "=0.31.0-pre.1", default-features = false, features = ["std"], optional = true }
+zcash_protocol = { version = "=0.11.0-pre.0", default-features = false, optional = true }
 pir-export        = { path = "../pir/export", default-features = false }
 pir-types         = { path = "../pir/types", default-features = false }
 nf-ingest = { path = "../nf-ingest", default-features = false }

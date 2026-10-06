@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "imt-tree",
     "nf-server",
     "pir/client",
     "pir/export",
@@ -16,9 +15,35 @@ members = [
 rust-version = "1.91"
 
 [workspace.dependencies]
-imt-tree = { path = "imt-tree", version = "0.5.4", default-features = false }
-voting-crypto-deps = { version = "=0.2.4", default-features = false }
+imt-tree = { version = "0.5.4", default-features = false }
+voting-crypto-deps = { version = "0.2.4", default-features = false }
 
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# The LRZ backend needs the unreleased voting-crypto-deps and imt-tree that move
+# to orchard 0.16 and the librustzcash NU7 pre-releases, and the Zakura backend
+# needs the Zakura 2.0 crates ported to the stable bip32 0.6 / secp256k1 0.33
+# stack. Both voting-crypto-deps and imt-tree live in the voting-circuits
+# repository; their entries name the same commit so the two crates stay in
+# step. Remove this section once the voting-crypto-deps, imt-tree, and
+# zakura-core/common (#538) releases are published.
+[patch.crates-io]
+imt-tree = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
+voting-crypto-deps = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
+zakura-address = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-bls12-381 = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-halo2-gadgets = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-halo2-poseidon = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-halo2-proofs = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-jubjub = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-orchard = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-pasta-curves = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-primitives = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-protocol = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-reddsa = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-redjubjub = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-sapling-crypto = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-sinsemilla = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }
+zakura-transparent = { git = "https://github.com/zodl-inc/zakura-common", rev = "c714f350a629d5419a1c341c192812ce58cb4013" }

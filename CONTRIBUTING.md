@@ -16,11 +16,13 @@ rustup toolchain install nightly   # only if building with avx512
 
 ## Workspace Structure
 
-The project is a Cargo workspace with eight crates across three layers:
+The project is a Cargo workspace with seven crates across three layers. The
+`imt-tree` crate they build on lives in the
+[voting-circuits](https://github.com/valargroup/voting-circuits) repository.
 
 | Layer | Crates |
 |-------|--------|
-| **Foundation** | `imt-tree`, `pir/types` |
+| **Foundation** | `pir/types` |
 | **Core** | `nf-ingest`, `pir/export`, `pir/server`, `pir/client` |
 | **Binaries** | `nf-server`, `pir/test` |
 
@@ -48,7 +50,7 @@ make build    # Build nf-server (release)
 ## Running Tests
 
 ```bash
-# Fast unit tests (imt-tree + nf-ingest)
+# Fast unit tests (nf-ingest)
 make test
 
 # PIR export round-trip tests (~2 min, exercises real crypto)

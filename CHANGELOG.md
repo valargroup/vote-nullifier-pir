@@ -1,3 +1,18 @@
+# Unreleased
+
+- Move the `upstream` (LRZ) backend of `pir-types` and `pir-client` to the
+  `orchard` `0.16` generation of the librustzcash crates: `pasta_curves` `0.6`
+  and `halo2_gadgets` `0.6`. Under `upstream`, `Fp` values exchanged with these
+  crates are `pasta_curves` `0.6` types.
+- Require `voting-crypto-deps` `^0.2.4` instead of `=0.2.4`.
+- `imt-tree` moved to the
+  [voting-circuits](https://github.com/valargroup/voting-circuits) repository,
+  next to `voting-crypto-deps`. Consumers use the published crate as before.
+- `nf-server verify-root` parses raw blocks with `zakura-primitives` `2.0`
+  under the default Zakura backend and with `zcash_primitives` `0.31.0-pre.1`
+  under `upstream`, instead of `zakura-chain`. It now also rejects a block whose
+  coinbase consensus branch does not match its height on the selected network.
+
 # v0.12.2
 
 - Align with `voting-circuits` `0.12.2` by upgrading
