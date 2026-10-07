@@ -1,3 +1,9 @@
+# Unreleased
+
+- Reject PIR queries with incorrect query or public parameter lengths with
+  HTTP 400 before computation, preventing request panics from malformed input.
+  Extra parameter data is now rejected instead of silently accepted.
+
 # v0.12.2
 
 - Align with `voting-circuits` `0.12.2` by upgrading

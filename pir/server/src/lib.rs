@@ -22,6 +22,7 @@ use ypir::serialize::{FilePtIter, OfflinePrecomputedValues};
 use ypir::server::YServer;
 
 pub mod precompute_cache;
+mod query;
 
 // Re-export shared types and constants so existing consumers can import from pir_server.
 pub use pir_types::{
@@ -224,60 +225,30 @@ impl<'a> TierServer<'a> {
     /// The query bytes must be in the length-prefixed format:
     /// `[8 bytes: packed_query_row byte length as LE u64][packed_query_row bytes][pub_params bytes]`
     ///
+    /// Both sections must have exactly the sizes required by this server's
+    /// YPIR parameters. Malformed lengths return an error before allocation
+    /// or computation, including truncated sections and trailing data.
+    ///
     /// Returns the serialized response as LE u64 bytes.
     pub fn answer_query(&self, query_bytes: &[u8]) -> Result<QueryAnswer> {
         let total_start = Instant::now();
 
-        // Validate length-prefixed format: [8: pqr_byte_len][pqr][pub_params]
         let validate_start = Instant::now();
-        anyhow::ensure!(
-            query_bytes.len() >= 8,
-            "query too short: {} bytes",
-            query_bytes.len()
-        );
-        let pqr_byte_len =
-            u64::from_le_bytes(query_bytes[..U64_BYTES].try_into().unwrap()) as usize;
-        let payload_len = query_bytes.len() - U64_BYTES;
-        anyhow::ensure!(
-            pqr_byte_len.is_multiple_of(U64_BYTES),
-            "pqr_byte_len {} not a multiple of 8",
-            pqr_byte_len
-        );
-        anyhow::ensure!(
-            pqr_byte_len <= payload_len,
-            "pqr_byte_len {} exceeds payload ({})",
-            pqr_byte_len,
-            payload_len
-        );
-        let remaining = payload_len - pqr_byte_len; // safe: checked above
-        anyhow::ensure!(pqr_byte_len > 0, "pqr section is empty");
-        anyhow::ensure!(remaining > 0, "pub_params section is empty");
-        anyhow::ensure!(
-            remaining.is_multiple_of(U64_BYTES),
-            "pub_params section {} bytes not a multiple of {}",
-            remaining,
-            U64_BYTES
-        );
+        let (pqr_bytes, pub_params_bytes) = query::parse_query(query_bytes, &self._params)?;
         let validate_ms = validate_start.elapsed().as_secs_f64() * 1000.0;
 
-        let pqr_u64_len = pqr_byte_len / U64_BYTES;
-        let pp_u64_len = remaining / U64_BYTES;
+        let pqr_u64_len = pqr_bytes.len() / U64_BYTES;
+        let pp_u64_len = pub_params_bytes.len() / U64_BYTES;
 
         // Copy into 64-byte aligned memory for AVX-512 operations.
         let decode_start = Instant::now();
         let mut pqr = Aligned64::new(pqr_u64_len);
-        for (i, chunk) in query_bytes[U64_BYTES..U64_BYTES + pqr_byte_len]
-            .chunks_exact(U64_BYTES)
-            .enumerate()
-        {
+        for (i, chunk) in pqr_bytes.chunks_exact(U64_BYTES).enumerate() {
             pqr.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
         }
 
         let mut pub_params = Aligned64::new(pp_u64_len);
-        for (i, chunk) in query_bytes[U64_BYTES + pqr_byte_len..]
-            .chunks_exact(U64_BYTES)
-            .enumerate()
-        {
+        for (i, chunk) in pub_params_bytes.chunks_exact(U64_BYTES).enumerate() {
             pub_params.as_mut_slice()[i] = u64::from_le_bytes(chunk.try_into().unwrap());
         }
         let decode_copy_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
