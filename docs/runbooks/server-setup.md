@@ -542,6 +542,14 @@ When in doubt, reset only the selected network directory. For example, `rm -rf /
 | `GET /metrics` | Ops | Prometheus exposition. |
 | `GET /tier1/row/:idx` | Debug only | Raw tier row, **not** privacy-preserving. Block at the proxy. |
 
+`POST /tier1/query` requires both wire sections to match the active YPIR
+parameters from `/params/tier1`. The packed query contains one `u64` per database
+row after padding to a power of two and at least `poly_len` rows. The public parameters contain
+`log2(poly_len) * t_exp_left * poly_len` packed `u64` values, where `t_exp_left`
+is 3 for degree 2048 and 4 for degree 4096. Invalid lengths, truncated sections,
+and trailing data return HTTP 400 before PIR computation. Valid client queries
+use the existing wire format without changes.
+
 ## Troubleshooting
 
 Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -fsS http://127.0.0.1:3000/health | jq .`. The JSON `status` field mirrors the internal lifecycle (`starting` / `ok` / `rebuilding` / `error`). For finer-grained `Starting { progress: ... }` payloads, inspect logs or `curl` `/ready` while it still returns 503.
