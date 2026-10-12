@@ -1,4 +1,4 @@
-# Unreleased
+# v0.12.3
 
 - Reject PIR queries with incorrect query or public parameter lengths with
   HTTP 400 before computation, preventing request panics from malformed input.
