@@ -1,3 +1,9 @@
+# Unreleased
+
+- Updated the default cryptography family to Zakura Common 3.0.0 and Rust 1.97.
+- Pinned the voting dependency selector and block decoder to compatible source
+  revisions while their coordinated updates await crate releases.
+
 # v0.12.3
 
 - Reject PIR queries with incorrect query or public parameter lengths with
