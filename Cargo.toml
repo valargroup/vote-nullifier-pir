@@ -17,7 +17,7 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 imt-tree = { path = "imt-tree", version = "0.5.4", default-features = false }
-voting-crypto-deps = { git = "https://github.com/valargroup/voting-circuits", rev = "fce06c37b3a537ef0ad77fdfb38ed2039dec4ee1", version = "=0.2.4", default-features = false }
+voting-crypto-deps = { git = "https://github.com/valargroup/voting-circuits", rev = "35f0cd33cf419a89effa3246862ec82da20e7ee2", version = "=0.2.4", default-features = false }
 
 [profile.release]
 lto = "fat"

@@ -9,6 +9,8 @@ default = ["zakura"]
 upstream = [
     "dep:upstream-chain",
     "voting-crypto-deps/lrz-vct",
+    "dep:upstream-primitives",
+    "dep:upstream-orchard",
     "pir-server?/upstream",
     "pir-export/upstream",
     "pir-types/upstream",
@@ -56,6 +58,8 @@ prometheus         = { version = "0.13", default-features = false, features = ["
 zakura-chain = { git = "https://github.com/zakura-core/zakura", rev = "22e05770f88ce82d3f0cd83e2e8379e808cd69e0", version = "=10.0.0-rc0", default-features = false, optional = true }
 # Align multicore with zakura-chain's maybe-rayon/threads feature unification.
 zakura-halo2-proofs = { version = "=3.0.0", default-features = false, features = ["batch", "multicore"], optional = true }
+upstream-primitives = { package = "zcash_primitives", version = "=0.31.0-pre.0", default-features = false, features = ["std"], optional = true }
+upstream-orchard = { package = "orchard", version = "0.16", default-features = false, features = ["std"], optional = true }
 upstream-chain = { package = "zebra-chain", version = "=14.0.0", default-features = false, optional = true }
 pir-export        = { path = "../pir/export", default-features = false }
 pir-types         = { path = "../pir/types", default-features = false }
@@ -72,6 +76,7 @@ serde_json        = "1"
 sysinfo = { version = "0.33", default-features = false, features = ["system", "disk"] }
 
 [dev-dependencies]
+nonempty = { version = "0.11", default-features = false }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 hex = "0.4"

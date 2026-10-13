@@ -66,16 +66,23 @@ pub(crate) fn verify_block(
 
     Ok(VerifiedBlock {
         previous_hash: block.header.previous_block_hash,
-        nullifiers: block.ironwood_nullifiers().map(|nf| (*nf).into()).collect(),
+        nullifiers: block
+            .ironwood_nullifiers()
+            .map(|nf| nf.to_owned().into())
+            .collect(),
     })
 }
+
+#[cfg(test)]
+#[path = "../tests/support/rewrite_ironwood.rs"]
+mod rewrite_ironwood;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hex::{FromHex, ToHex};
     use std::sync::Arc;
-    use zakura_chain::{serialization::ZcashSerialize, transaction::Transaction};
+    use zakura_chain::serialization::ZcashSerialize;
 
     const RAW: &[u8] = include_bytes!("../tests/fixtures/verify-root/mainnet-3428150.bin");
     const HEIGHT: u64 = 3_428_150;
@@ -160,17 +167,10 @@ mod tests {
     #[test]
     fn rejects_modified_nullifier_with_genuine_header() {
         let mut block = parsed();
-        for tx in &mut block.transactions {
-            if let Transaction::V6 {
-                ironwood_shielded_data: Some(bundle),
-                ..
-            } = Arc::make_mut(tx)
-            {
-                bundle.actions.iter_mut().next().unwrap().action.nullifier =
-                    [0; 32].try_into().unwrap();
-                break;
-            }
-        }
+        assert!(block
+            .transactions
+            .iter_mut()
+            .any(|tx| rewrite_ironwood::rewrite(tx, false)));
         let err = verify_block(&serialized(&block), hash(), HEIGHT).unwrap_err();
         assert!(err.to_string().contains("Merkle root mismatch"), "{err:#}");
     }
@@ -178,28 +178,10 @@ mod tests {
     #[test]
     fn rejects_omitted_action_even_with_well_formed_remaining_bundle() {
         let mut block = parsed();
-        for tx in &mut block.transactions {
-            if let Transaction::V6 {
-                ironwood_shielded_data: Some(bundle),
-                ..
-            } = Arc::make_mut(tx)
-            {
-                if bundle.actions.len() > 1 {
-                    bundle.actions = bundle
-                        .actions
-                        .iter()
-                        .skip(1)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .unwrap();
-                    // Keep the provider's forged body structurally parseable. Proof
-                    // validity is intentionally not the property under test here.
-                    bundle.proof.0.truncate(bundle.proof.0.len() - 2272);
-                    break;
-                }
-            }
-        }
+        assert!(block
+            .transactions
+            .iter_mut()
+            .any(|tx| rewrite_ironwood::rewrite(tx, true)));
         let err = verify_block(&serialized(&block), hash(), HEIGHT).unwrap_err();
         assert!(err.to_string().contains("Merkle root mismatch"), "{err:#}");
     }

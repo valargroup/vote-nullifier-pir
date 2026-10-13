@@ -2528,6 +2528,8 @@ dependencies = [
  "hex",
  "imt-tree",
  "nf-ingest",
+ "nonempty",
+ "orchard",
  "pir-export",
  "pir-server",
  "pir-types",
@@ -2547,6 +2549,7 @@ dependencies = [
  "voting-crypto-deps",
  "zakura-chain",
  "zakura-halo2-proofs",
+ "zcash_primitives",
  "zebra-chain",
 ]
 
@@ -5149,7 +5152,7 @@ dependencies = [
 [[package]]
 name = "voting-crypto-deps"
 version = "0.2.4"
-source = "git+https://github.com/valargroup/voting-circuits?rev=fce06c37b3a537ef0ad77fdfb38ed2039dec4ee1#fce06c37b3a537ef0ad77fdfb38ed2039dec4ee1"
+source = "git+https://github.com/valargroup/voting-circuits?rev=35f0cd33cf419a89effa3246862ec82da20e7ee2#35f0cd33cf419a89effa3246862ec82da20e7ee2"
 dependencies = [
  "halo2_gadgets",
  "pasta_curves",
