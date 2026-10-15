@@ -19,8 +19,10 @@ use std::{
 use zakura_chain::{
     block::Block,
     serialization::{ZcashDeserialize, ZcashSerialize},
-    transaction::Transaction,
 };
+
+#[path = "support/rewrite_ironwood.rs"]
+mod rewrite_ironwood;
 
 const RAW: [&[u8]; 8] = [
     include_bytes!("fixtures/verify-root/mainnet-3428143.bin"),
@@ -133,26 +135,10 @@ impl Server {
                                 .unwrap();
                             block.transactions.remove(i);
                         } else {
-                            for tx in &mut block.transactions {
-                                if let Transaction::V6 {
-                                    ironwood_shielded_data: Some(bundle),
-                                    ..
-                                } = Arc::make_mut(tx)
-                                {
-                                    if bundle.actions.len() > 1 {
-                                        bundle.actions = bundle
-                                            .actions
-                                            .iter()
-                                            .skip(1)
-                                            .cloned()
-                                            .collect::<Vec<_>>()
-                                            .try_into()
-                                            .unwrap();
-                                        bundle.proof.0.truncate(bundle.proof.0.len() - 2272);
-                                        break;
-                                    }
-                                }
-                            }
+                            assert!(block
+                                .transactions
+                                .iter_mut()
+                                .any(|tx| rewrite_ironwood::rewrite(tx, true)));
                         }
                         raw.clear();
                         block.zcash_serialize(&mut raw).unwrap();
@@ -382,7 +368,7 @@ fn raw_extraction_agrees_with_independently_downloaded_compact_nullifiers() {
             let block = Block::zcash_deserialize(raw).unwrap();
             block
                 .ironwood_nullifiers()
-                .map(|nf| hex::encode(<[u8; 32]>::from(*nf)))
+                .map(|nf| hex::encode(<[u8; 32]>::from(nf.to_owned())))
                 .collect::<Vec<_>>()
         })
         .collect();
