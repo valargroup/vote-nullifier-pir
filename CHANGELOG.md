@@ -1,8 +1,13 @@
 # Unreleased
 
+# v0.13.0
+
 - Updated the default cryptography family to Zakura Common 3.0.0 and Rust 1.97.
-- Pinned the voting dependency selector and block decoder to compatible source
-  revisions while their coordinated updates await crate releases.
+- Released `imt-tree 0.6.0`, `pir-types 0.7.0`, and `pir-client 0.8.0`
+  against the published `voting-crypto-deps 0.3.0`. Consumers must update their
+  cryptographic types to the Common v3 family.
+- The server block decoder remains pinned to the compatible Zakura source
+  revision pending its crate release; client crates use registry dependencies.
 
 # v0.12.3
 

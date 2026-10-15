@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "imt-tree"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3038,7 +3038,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pir-client"
-version = "0.7.4"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "pir-types"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "imt-tree",
@@ -5151,8 +5151,9 @@ dependencies = [
 
 [[package]]
 name = "voting-crypto-deps"
-version = "0.2.4"
-source = "git+https://github.com/valargroup/voting-circuits?rev=35f0cd33cf419a89effa3246862ec82da20e7ee2#35f0cd33cf419a89effa3246862ec82da20e7ee2"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0ac3dca50588107ea34acfd7bb0774f03fa5b9df36cd06f187555883b29452b"
 dependencies = [
  "halo2_gadgets",
  "pasta_curves",
