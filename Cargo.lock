@@ -5152,7 +5152,7 @@ dependencies = [
 [[package]]
 name = "voting-crypto-deps"
 version = "0.3.0"
-source = "git+https://github.com/valargroup/voting-circuits.git?rev=bca332964f4b4bf3c4e7f23704f3938888480ca0#bca332964f4b4bf3c4e7f23704f3938888480ca0"
+source = "git+https://github.com/valargroup/voting-circuits.git?rev=6ef6bfa41cd828333d5e89f05f0092cc782f1b3d#6ef6bfa41cd828333d5e89f05f0092cc782f1b3d"
 dependencies = [
  "halo2_gadgets",
  "pasta_curves",
@@ -5808,7 +5808,7 @@ dependencies = [
 [[package]]
 name = "zakura-halo2-gadgets"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 dependencies = [
  "arrayvec",
  "ff",
@@ -5840,7 +5840,7 @@ dependencies = [
 [[package]]
 name = "zakura-halo2-poseidon"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 dependencies = [
  "bitvec",
  "ff",
@@ -5868,7 +5868,7 @@ dependencies = [
 [[package]]
 name = "zakura-halo2-proofs"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 dependencies = [
  "blake2b_simd",
  "ff",
@@ -5982,7 +5982,7 @@ dependencies = [
 [[package]]
 name = "zakura-pasta-curves"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 dependencies = [
  "blake2b_simd",
  "cc",
@@ -6109,7 +6109,7 @@ dependencies = [
 [[package]]
 name = "zakura-sinsemilla"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 dependencies = [
  "group",
  "once_cell",
@@ -6475,99 +6475,99 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "zakura-address"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-bellman"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-bls12-381"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-equihash"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-halo2-legacy-pdqsort"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-jubjub"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-keys"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-note-encryption"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-orchard"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-orchard-legacy"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-pairing"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-primitives"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-proofs"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-protocol"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-reddsa"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-reddsa-frost"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-redjubjub"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-sapling-crypto"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-transparent"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
 
 [[patch.unused]]
 name = "zakura-zip321"
 version = "4.0.0-rc1"
-source = "git+https://github.com/zakura-core/common.git?rev=f3e81cb17f69cfaa7c835e38d035861c5d405c1f#f3e81cb17f69cfaa7c835e38d035861c5d405c1f"
+source = "git+https://github.com/zakura-core/common.git?rev=f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c#f0a08f864d4f88c8ef4a3c2fc6636e8d5ee4df8c"
