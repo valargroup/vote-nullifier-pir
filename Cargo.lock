@@ -4453,7 +4453,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -5077,7 +5077,8 @@ dependencies = [
 [[package]]
 name = "voting-crypto-deps"
 version = "0.4.0"
-source = "git+https://github.com/valargroup/voting-circuits?rev=107893858cf489e0ff5a3790434142710be915c3#107893858cf489e0ff5a3790434142710be915c3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e0f4e392a7c2f5ff79dbcfe4aca3eed58ffaf3cd7e84c700d1ac62d707f984"
 dependencies = [
  "halo2_gadgets",
  "pasta_curves",
