@@ -5,10 +5,10 @@
 - Updated the default cryptography family to Zakura Common 4.0.0 through
   `voting-crypto-deps 0.4.0` (`voting-circuits` `v0.14.0`). The upstream (LRZ)
   backend is unchanged. No wire, snapshot, or database format changes.
-- Released `imt-tree 0.7.0`, `pir-types 0.8.0`, and `pir-client 0.9.0`.
-  Default-backend public types now belong to Common 4 and cannot be mixed with
-  the Common 3 types from the previous releases; consumers must move to the
-  same Common family.
+- Prepared `imt-tree 0.7.0`, `pir-types 0.8.0`, and `pir-client 0.9.0` for
+  release; none of these versions is published yet. Default-backend public
+  types now belong to Common 4 and cannot be mixed with the Common 3 types from
+  the previous releases; consumers must move to the same Common family.
 - `voting-crypto-deps 0.4.0` must be published to crates.io first; the
   workspace then switches from the tagged source to the registry, followed by
   `imt-tree`, `pir-types`, and `pir-client` in that order.
