@@ -55,6 +55,7 @@ prometheus         = { version = "0.13", default-features = false, features = ["
 # Always needed
 # Select the protocol parser matching the tree's crypto backend. Both versions
 # support Ironwood; neither backend may pull the other's crypto dependency graph.
+# Head of zakura-core/zakura#1588 (Common 4.0.0, Mainnet NU7 at the ZIP 259 height).
 zakura-chain = { git = "https://github.com/zakura-core/zakura", rev = "5f44523d482787e298049d901272d1620e1ded85", version = "=10.0.0-rc1", default-features = false, optional = true }
 # Align multicore with zakura-chain's maybe-rayon/threads feature unification.
 zakura-halo2-proofs = { version = "=4.0.0", default-features = false, features = ["batch", "multicore"], optional = true }

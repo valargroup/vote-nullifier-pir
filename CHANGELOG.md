@@ -12,9 +12,10 @@
 - `voting-crypto-deps 0.4.0` must be published to crates.io first; the
   workspace then switches from the tagged source to the registry, followed by
   `imt-tree`, `pir-types`, and `pir-client` in that order.
-- The server block decoder is pinned to the Zakura source revision that adopts
-  Common 4.0.0 pending its merge and crate release; client crates do not
-  depend on it.
+- The server block decoder is pinned to the head of Zakura PR #1588, which
+  adopts Common 4.0.0, pending its merge and crate release; client crates do
+  not depend on it. That revision also schedules NU7 on Mainnet at the
+  ZIP 259 height 3,543,405, matching Common 4.0.0's protocol parameters.
 
 # v0.13.0
 
