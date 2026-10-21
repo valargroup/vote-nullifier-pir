@@ -19,7 +19,7 @@ upstream = [
 ]
 zakura = [
     "dep:zakura-chain",
-    # Keep the shared Common 3.0.0 proofs line on multicore too, or the
+    # Keep the shared Common 4.0.0 proofs line on multicore too, or the
     # shared maybe-rayon crate compiles parallel iterators against serial APIs.
     "dep:zakura-halo2-proofs",
     "voting-crypto-deps/vct",
@@ -55,9 +55,9 @@ prometheus         = { version = "0.13", default-features = false, features = ["
 # Always needed
 # Select the protocol parser matching the tree's crypto backend. Both versions
 # support Ironwood; neither backend may pull the other's crypto dependency graph.
-zakura-chain = { git = "https://github.com/zakura-core/zakura", rev = "22e05770f88ce82d3f0cd83e2e8379e808cd69e0", version = "=10.0.0-rc0", default-features = false, optional = true }
+zakura-chain = { git = "https://github.com/zakura-core/zakura", rev = "5f44523d482787e298049d901272d1620e1ded85", version = "=10.0.0-rc1", default-features = false, optional = true }
 # Align multicore with zakura-chain's maybe-rayon/threads feature unification.
-zakura-halo2-proofs = { version = "=3.0.0", default-features = false, features = ["batch", "multicore"], optional = true }
+zakura-halo2-proofs = { version = "=4.0.0", default-features = false, features = ["batch", "multicore"], optional = true }
 upstream-primitives = { package = "zcash_primitives", version = "=0.31.0-pre.0", default-features = false, features = ["std"], optional = true }
 upstream-orchard = { package = "orchard", version = "0.16", default-features = false, features = ["std"], optional = true }
 upstream-chain = { package = "zebra-chain", version = "=14.0.0", default-features = false, optional = true }

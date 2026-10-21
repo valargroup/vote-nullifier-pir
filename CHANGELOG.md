@@ -1,5 +1,21 @@
 # Unreleased
 
+# v0.14.0
+
+- Updated the default cryptography family to Zakura Common 4.0.0 through
+  `voting-crypto-deps 0.4.0` (`voting-circuits` `v0.14.0`). The upstream (LRZ)
+  backend is unchanged. No wire, snapshot, or database format changes.
+- Released `imt-tree 0.7.0`, `pir-types 0.8.0`, and `pir-client 0.9.0`.
+  Default-backend public types now belong to Common 4 and cannot be mixed with
+  the Common 3 types from the previous releases; consumers must move to the
+  same Common family.
+- `voting-crypto-deps 0.4.0` must be published to crates.io first; the
+  workspace then switches from the tagged source to the registry, followed by
+  `imt-tree`, `pir-types`, and `pir-client` in that order.
+- The server block decoder is pinned to the Zakura source revision that adopts
+  Common 4.0.0 pending its merge and crate release; client crates do not
+  depend on it.
+
 # v0.13.0
 
 - Updated the default cryptography family to Zakura Common 3.0.0 and Rust 1.97.

@@ -16,8 +16,9 @@ members = [
 rust-version = "1.97"
 
 [workspace.dependencies]
-imt-tree = { path = "imt-tree", version = "=0.6.0", default-features = false }
-voting-crypto-deps = { version = "=0.3.0", default-features = false }
+imt-tree = { path = "imt-tree", version = "=0.7.0", default-features = false }
+# voting-circuits v0.14.0; switch to the registry once voting-crypto-deps 0.4.0 is published.
+voting-crypto-deps = { git = "https://github.com/valargroup/voting-circuits", rev = "107893858cf489e0ff5a3790434142710be915c3", version = "=0.4.0", default-features = false }
 
 [profile.release]
 lto = "fat"
