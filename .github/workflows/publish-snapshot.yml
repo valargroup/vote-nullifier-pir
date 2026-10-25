@@ -55,6 +55,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment }}
     steps:
+      - name: Check out deployment actions
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
       - name: Round explicit height (if provided)
         id: round_height
         run: |
@@ -70,7 +75,7 @@ jobs:
           fi
 
       - name: Build snapshot, upload to DO Spaces, verify
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262  # v1.0.3
+        uses: ./.github/actions/pinned-ssh
         env:
           DO_ACCESS_KEY: ${{ secrets.DO_ACCESS_KEY }}
           DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
