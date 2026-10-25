@@ -52,11 +52,11 @@ jobs:
       SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
       SNAPSHOT_HEIGHT: ${{ inputs.snapshot_height }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@f08ac54821369508305fcb9e0121ec6e30ae9ada  # 1.97.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2
         with:
           cache-targets: "true"
 
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: loadtest-summary
           path: summary.json

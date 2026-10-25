@@ -72,7 +72,7 @@ runs:
         chmod +x nf-server pir-apm
 
     - name: Check host ownership before upload
-      uses: appleboy/ssh-action@v1.0.3
+      uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262  # v1.0.3
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.deploy_user }}
@@ -89,7 +89,7 @@ runs:
           PIR_PREFLIGHT
 
     - name: Copy deploy artifacts
-      uses: appleboy/scp-action@v0.1.7
+      uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634  # v0.1.7
       with:
         host: ${{ inputs.host }}
         username: ${{ inputs.deploy_user }}
@@ -98,7 +98,7 @@ runs:
         target: /tmp/pir-deploy-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.host_role }}
 
     - name: Install and restart
-      uses: appleboy/ssh-action@v1.0.3
+      uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262  # v1.0.3
       env:
         SENTRY_DSN: ${{ inputs.sentry_dsn }}
         SENTRY_ENVIRONMENT: ${{ inputs.target_environment }}
