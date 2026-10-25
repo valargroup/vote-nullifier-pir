@@ -210,6 +210,15 @@ runs:
             sudo install -m 0600 -o root -g root "$tmp" /etc/default/caddy-env
             rm -f "$tmp"
           fi
+          # Caddy here comes from the host's unpinned package install, so assert
+          # the security floor before the Caddyfile is replaced and reloaded.
+          # Caddy's 2026 advisory cluster (CVE-2026-77281, CVE-2026-92284,
+          # CVE-2026-92700, CVE-2026-52845) is fixed only in 2.11.4.
+          caddy_version="$(caddy version 2>/dev/null | awk '{print $1}' | sed 's/^v//')"
+          if [ "$(printf '%s\n%s\n' 2.11.4 "$caddy_version" | sort -V | head -n1)" != "2.11.4" ]; then
+            echo "Caddy ${caddy_version:-unknown} is older than the required 2.11.4; not reloading" >&2
+            exit 1
+          fi
           sudo install -m 0644 -o root -g root "$staging/pir-apm.Caddyfile" /etc/caddy/Caddyfile
           sudo systemd-run --pipe --wait --collect \
             --property=EnvironmentFile=/etc/default/caddy-env \
