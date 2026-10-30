@@ -1,5 +1,8 @@
 # Unreleased
 
+- Add PIR operator instructions for disabling MPTCP and verifying Caddy and
+  `nf-server` listeners without restarting the PIR backend.
+
 # v0.14.0
 
 - Updated the default cryptography family to Zakura Common 4.0.0 through the

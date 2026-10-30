@@ -127,6 +127,8 @@ Override via environment variables or Make arguments:
 
 See [docs/runbooks/server-setup.md](docs/runbooks/server-setup.md) for production deployment instructions, hardware sizing, install, and systemd configuration. For the CI/CD pipeline and GitHub Actions workflow details, see [docs/runbooks/ci-setup.md](docs/runbooks/ci-setup.md).
 
+For existing Linux hosts using Caddy, see [Disable MPTCP](docs/runbooks/disable-mptcp.md).
+
 ## Storage Format
 
 All data is stored as flat binary files under one network-specific directory (overridable via `PIR_DATA_DIR` / `SVOTE_PIR_DATA_DIR`):
