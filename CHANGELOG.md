@@ -1,6 +1,8 @@
 # Unreleased
 
-- Add PIR operator instructions for disabling MPTCP and verifying Caddy and
+- Disable MPTCP persistently in the Linux PIR installer before package
+  installation or service startup, and stop if the setting cannot be applied.
+  Add operator instructions for disabling MPTCP and verifying Caddy and
   `nf-server` listeners without restarting the PIR backend.
 
 # v0.14.0

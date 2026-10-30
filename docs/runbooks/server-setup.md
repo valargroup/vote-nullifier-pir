@@ -30,11 +30,16 @@ Use `main` for production and `test` for staging.
 
 What it does:
 - Downloads the latest binaries and verifies `nf-server` against `SHA256SUMS` for the pinned release.
+- Disables MPTCP persistently before installing packages or starting the service;
+  skips kernels without MPTCP support and stops if the setting cannot be applied.
 - Configures the service per the recommended parameters
 - Creates an automated **systemd** unit that auto-restarts on start-up and on failure
 - Bootstraps from pre-computed snapshots
 - Installs the binary to `/opt/nf-ingest/nf-server` and symlinks it into `/usr/local/bin`, so `nf-server doctor` (and friends) work from any shell
 - Serves PIR queries
+
+The installer does not manage Caddy. Existing proxy listeners still need a
+service restart and socket verification after MPTCP is disabled.
 
 After install, operate the service with:
 
