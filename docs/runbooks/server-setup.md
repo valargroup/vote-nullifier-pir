@@ -380,6 +380,9 @@ pir.example.org {
 }
 ```
 
+For Linux hosts using Caddy, follow [Disable MPTCP](disable-mptcp.md) to disable
+MPTCP and verify the running listeners.
+
 Caddy obtains a certificate automatically. For nginx, use any standard `proxy_pass` config to `127.0.0.1:3000` and block the `/tier1/row/*` path.
 
 ## Observability
