@@ -37,4 +37,10 @@ if [ -n "$updater" ]; then
   docker_args+=(-v "${updater}:/update_pir.sh:ro")
 fi
 
+# Docker mounts /proc/sys read-only. Set the private network namespace before
+# starting the container; kernels without MPTCP have no setting to pass.
+if docker run --rm ubuntu:24.04 test -e /proc/sys/net/mptcp/enabled; then
+  docker_args+=(--sysctl net.mptcp.enabled=0)
+fi
+
 docker run "${docker_args[@]}" ubuntu:24.04 bash /inner.sh

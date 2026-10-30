@@ -1,5 +1,8 @@
 # Unreleased
 
+- Disable MPTCP persistently in the Linux PIR installer before package
+  installation or service startup, and stop if the setting cannot be applied.
+
 # v0.14.0
 
 - Updated the default cryptography family to Zakura Common 4.0.0 through the

@@ -76,6 +76,33 @@ PIR_DATA_DIR="/opt/nf-ingest/pir-data/${ZCASH_NETWORK}"
 
 PRECOMPUTED_BASE_URL="${SVOTE_PIR_PRECOMPUTED_BASE_URL-$START_PRECOMPUTED_BASE_URL}"
 
+# Disable new MPTCP sockets before packages or services can open listeners.
+# Existing listeners still need their owning services restarted.
+disable_mptcp() {
+  [ "$(uname -s)" = Linux ] || return 0
+  if [ ! -d /proc/sys/net/ipv4 ]; then
+    echo "ERROR: Cannot inspect Linux network settings under /proc/sys/net." >&2
+    return 1
+  fi
+  if [ ! -e /proc/sys/net/mptcp/enabled ]; then
+    echo "MPTCP is unavailable in this kernel; skipping."
+    return 0
+  fi
+  echo "Disabling MPTCP for this host..."
+  if ! install -d -m 0755 /etc/sysctl.d ||
+     ! printf '%s\n' 'net.mptcp.enabled = 0' | tee /etc/sysctl.d/90-vote-disable-mptcp.conf > /dev/null; then
+    echo "ERROR: Could not persist the MPTCP setting." >&2
+    return 1
+  fi
+  if ! { [ "$(cat /proc/sys/net/mptcp/enabled)" = 0 ] ||
+         printf '0\n' | tee /proc/sys/net/mptcp/enabled > /dev/null; } ||
+     [ "$(cat /proc/sys/net/mptcp/enabled)" != 0 ]; then
+    echo "ERROR: Could not disable MPTCP; stopping installation." >&2
+    return 1
+  fi
+  echo "MPTCP disabled. Existing listeners still require service restarts."
+}
+
 # Minimal cloud images often omit curl; HTTPS needs a CA bundle on Debian/Ubuntu.
 ensure_curl_and_ca_certificates() {
   local need=false
@@ -105,6 +132,7 @@ ensure_curl_and_ca_certificates() {
   apt-get install -y --no-install-recommends curl ca-certificates
 }
 
+disable_mptcp
 ensure_curl_and_ca_certificates
 
 tmp="$(mktemp -d)"

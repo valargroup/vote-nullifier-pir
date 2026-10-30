@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "scripts/start_pir.sh.template"
+      - "scripts/test_installer_mptcp.py"
       - "scripts/update_pir.sh.template"
       - "scripts/publish-release-pointers.sh"
       - "scripts/release-channel.sh"
@@ -28,6 +29,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Test MPTCP installer gate
+        run: python3 scripts/test_installer_mptcp.py
 
       - name: Resolve latest release tag and SHA256SUMS asset
         id: rel
