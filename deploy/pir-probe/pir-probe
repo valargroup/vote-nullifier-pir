@@ -21,6 +21,9 @@ from pathlib import Path
 
 VERSION = "0.1.0"
 DEFAULT_CONFIG = "/etc/pir-probe/config.json"
+# Consecutive failures that open an incident, unless a target sets
+# `availability_alert_failures` for its availability checks (see README).
+ALERT_FAILURES = 2
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -258,7 +261,9 @@ class State:
             }
         )
 
-    def result(self, key, result, now=None, immediate=False):
+    def result(
+        self, key, result, now=None, immediate=False, failures_to_alert=ALERT_FAILURES
+    ):
         now = time.time() if now is None else now
         with self.lock:
             c = self.data["checks"].setdefault(
@@ -274,7 +279,9 @@ class State:
             else:
                 c["successes"] = 0
                 c["failures"] += 1
-                if not c["active"] and (immediate or c["failures"] >= 2):
+                if not c["active"] and (
+                    immediate or c["failures"] >= failures_to_alert
+                ):
                     c["active"] = True
                     c["last_notice"] = now
                     self.queue(key, "ALERT", c, now)
@@ -308,6 +315,9 @@ def validate_config(c):
         if not t["name"] or t["name"] in names:
             raise ValueError("duplicate/empty target name")
         names.add(t["name"])
+        n = t.get("availability_alert_failures", ALERT_FAILURES)
+        if type(n) is not int or n < 1:
+            raise ValueError("availability_alert_failures must be a positive integer")
         t["url"] = t["url"].rstrip("/")
     for k, default in [
         ("availability_seconds", 60),
@@ -353,8 +363,11 @@ class Monitor:
             for t, results in zip(
                 self.c["targets"], pool.map(availability, self.c["targets"])
             ):
+                threshold = t.get("availability_alert_failures", ALERT_FAILURES)
                 for kind, result in results.items():
-                    self.s.result(t["name"] + "/" + kind, result)
+                    self.s.result(
+                        t["name"] + "/" + kind, result, failures_to_alert=threshold
+                    )
         self.s.cycle("availability")
         if self.hb["availability"] and not heartbeat(self.hb["availability"]):
             emit("heartbeat_delivery_failed", loop="availability")

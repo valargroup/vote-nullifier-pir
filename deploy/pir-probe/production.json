@@ -8,7 +8,7 @@
     {"name":"backup","url":"https://pir-backup.valargroup.org","apm":true},
     {"name":"primary-beta","url":"https://pir-primary-beta.valargroup.org","apm":true},
     {"name":"backup-beta","url":"https://pir-backup-beta.valargroup.org","apm":true},
-    {"name":"lb-primary","url":"https://lb-pir-primary.valargroup.org"},
-    {"name":"lb-backup","url":"https://lb-pir-backup.valargroup.org"}
+    {"name":"lb-primary","url":"https://lb-pir-primary.valargroup.org","availability_alert_failures":5},
+    {"name":"lb-backup","url":"https://lb-pir-backup.valargroup.org","availability_alert_failures":5}
   ]
 }
