@@ -33,7 +33,11 @@ loop failure terminates the service so systemd can restart it.
 ## Alert state and secrets
 
 Two consecutive failures open availability/query incidents; invalid proofs and
-inconsistent responses open immediately. Two successes recover an incident.
+inconsistent responses open immediately. Two successes recover an incident. A
+target's `availability_alert_failures` overrides the two for its availability
+checks. The load balancers use five: Cloudflare-to-origin stalls of two to three
+minutes recur while every origin passes its own checks, and those origin checks
+still alert after two.
 State, reminders, and an ordered notification queue survive restarts in
 `/var/lib/pir-probe/status.json`. Reminders occur every 30 minutes; at most one
 reminder per check remains queued. Slack requests have a 10-second deadline and

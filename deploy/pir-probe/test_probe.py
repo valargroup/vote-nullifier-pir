@@ -145,6 +145,38 @@ class ProbeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 p.validate_config({"targets": targets})
 
+    def test_a_target_can_require_more_failures_before_alerting(self):
+        m = self.monitor()
+        m.c["targets"] = [
+            {"name": "origin", "url": "https://origin"},
+            {"name": "lb", "url": "https://lb", "availability_alert_failures": 5},
+        ]
+        failed = {"ready": {"ok": False, "error": "ready_transport_or_json"}}
+        with patch.object(p, "availability", return_value=failed):
+            for _ in range(4):
+                m.availability_cycle()
+            self.assertEqual(
+                [x["key"] for x in self.state.data["pending"]], ["origin/ready"]
+            )
+            m.availability_cycle()
+        self.assertEqual(
+            [x["key"] for x in self.state.data["pending"]],
+            ["origin/ready", "lb/ready"],
+        )
+
+    def test_alert_thresholds_are_validated_and_set_for_load_balancers(self):
+        shipped = p.validate_config(
+            p.json.loads(Path(__file__).with_name("production.json").read_text())
+        )
+        raised = [
+            t["name"] for t in shipped["targets"] if "availability_alert_failures" in t
+        ]
+        self.assertEqual(raised, ["lb-primary", "lb-backup"])
+        for n in [0, True, "5"]:
+            t = {"name": "x", "url": "https://x", "availability_alert_failures": n}
+            with self.assertRaises(ValueError):
+                p.validate_config({"targets": [t]})
+
     def test_slow_http_response_has_a_wall_clock_deadline(self):
         import http.server
 
