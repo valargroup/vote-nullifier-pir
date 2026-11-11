@@ -1,5 +1,15 @@
 # Unreleased
 
+- Updated the default cryptography family to Zakura Common 5.4.0 through the
+  published `voting-crypto-deps 0.5.0` (`voting-circuits` `v0.15.0`). The
+  upstream (LRZ) backend is unchanged. No wire, snapshot, or database format
+  changes.
+- Prepared `imt-tree 0.8.0`, `pir-types 0.9.0`, and `pir-client 0.10.0` for
+  release, to be published in that order. Default-backend public types now
+  belong to Common 5 and cannot be mixed with the Common 4 types from the
+  previous releases; consumers must move to the same Common family.
+- The server block decoder now uses the published `zakura-chain 14.0.0`, which
+  adopts Common 5.4.0, instead of a Zakura source revision.
 - Disable MPTCP persistently in the Linux PIR installer before package
   installation or service startup, and stop if the setting cannot be applied.
   Add operator instructions for disabling MPTCP and verifying Caddy and
