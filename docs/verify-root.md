@@ -129,10 +129,10 @@ the complete history has been verified and the tree has been built:
   `Content-Length`. Provider error text and URL-bearing transport errors are not
   echoed, to prevent accidental credential disclosure.
 - V1 holds action nullifiers and the resulting tree in memory. It caps action
-  occurrences at 16,777,216 (twice the publisher's maximum range capacity);
+  occurrences at 2,097,152 (twice the publisher's maximum range capacity);
   the tree builder also enforces its exact range capacity
   after sentinel insertion. There is no resume cache, disk output, or partial
-  result. Tree depth grows from 19 through 23 as needed; larger datasets require
+  result. Tree depth grows from 19 to 20 as needed; larger datasets require
   a future explicit capacity/layout revision.
 
 `sync`, `serve`, lightwalletd protobufs, checkpoint files, and tier formats are

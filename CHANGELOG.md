@@ -1,7 +1,9 @@
 # Unreleased
 
-- Grow the snapshot publisher's public PIR tier when more than 524,288 ranges
-  are needed, preserving the private row format and depth-29 circuit root.
+- Widen the snapshot publisher's private PIR tier when more than 524,288 ranges
+  are needed, selecting 12+8 while preserving the depth-29 circuit root.
+  Keep 4,096 rows so queries fit the existing HTTP limit; reject snapshots
+  above 1,048,576 ranges until another layout is explicitly qualified.
   Resume larger tree checkpoints and validate their actual dimensions during
   publication. Larger snapshots require matching voting-layout configuration
   and deployed-client compatibility checks before coordinator authorization.

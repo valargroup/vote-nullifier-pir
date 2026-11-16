@@ -64,7 +64,7 @@ pub struct PirTree {
 }
 
 impl PirTree {
-    /// Layout for this checkpoint's actual depth, bounded by client resource limits.
+    /// The 12+7 or 12+8 layout for this checkpoint; reject unsupported depths or capacity.
     pub fn layout(&self) -> Result<PirLayout> {
         let layout = layout::layout_for_depth(self.levels.len())?;
         anyhow::ensure!(
@@ -438,8 +438,8 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
     }
 }
 
-/// Export tiers using the tree's depth, retaining seven private layers and
-/// expanding the public tier when the tree outgrows the default layout.
+/// Export tiers using the tree's depth and twelve public layers. Depth 20
+/// widens each private row from 128 to 256 leaves without increasing row count.
 pub fn export_all(
     tree: &PirTree,
     output_dir: &std::path::Path,
@@ -584,7 +584,7 @@ mod capacity_tests {
 
     #[test]
     fn expanded_checkpoint_exports_verifiable_proofs_with_the_same_circuit_root() {
-        let ranges = prepare_nullifiers((1..=400).map(|i| Fp::from(i * 1000)).collect());
+        let ranges = prepare_nullifiers((1..=800).map(|i| Fp::from(i * 1000)).collect());
         let original = build_pir_tree(ranges.clone()).unwrap();
         // A sparse tree exercises the deeper path and checkpoint format without
         // hashing a million leaves. Layout selection at the real capacity
@@ -607,8 +607,8 @@ mod capacity_tests {
             serde_json::from_slice(&std::fs::read(dir.path().join("pir_root.json")).unwrap())
                 .unwrap();
         assert_eq!(metadata.pir_layout, layout);
-        assert_eq!(metadata.tier1_rows, 8192);
-        assert_eq!(metadata.tier1_row_bytes, 12288);
+        assert_eq!(metadata.tier1_rows, 4096);
+        assert_eq!(metadata.tier1_row_bytes, 24576);
         let tier0 =
             Tier0Data::from_layout(std::fs::read(dir.path().join("tier0.bin")).unwrap(), layout)
                 .unwrap();

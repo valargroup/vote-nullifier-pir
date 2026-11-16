@@ -21,7 +21,7 @@ class SnapshotValidationTests(unittest.TestCase):
         cls.validator = textwrap.dedent(workflow[start:end])
 
     def metadata(self, depth):
-        rows = 1 << (depth - 7)
+        rows = 1 << 12
         return {
             "zcash_network": "main",
             "nullifier_pool": "ironwood",
@@ -31,12 +31,12 @@ class SnapshotValidationTests(unittest.TestCase):
             "pir_depth": depth,
             "pir_layout": {
                 "pir_depth": depth,
-                "tier0_layers": depth - 7,
-                "tier1_layers": 7,
+                "tier0_layers": 12,
+                "tier1_layers": depth - 12,
                 "poly_len": 4096,
             },
             "tier1_rows": rows,
-            "tier1_row_bytes": 12288,
+            "tier1_row_bytes": (1 << (depth - 12)) * 96,
             "tier0_bytes": rows * 96 - 32,
         }
 
@@ -61,7 +61,7 @@ class SnapshotValidationTests(unittest.TestCase):
             return result.returncode == 0
 
     def test_existing_and_expanded_layouts(self):
-        for depth in range(19, 24):
+        for depth in [19, 20]:
             with self.subTest(depth=depth):
                 self.assertTrue(self.valid(self.metadata(depth)))
         snapshot = self.metadata(20)
@@ -75,9 +75,9 @@ class SnapshotValidationTests(unittest.TestCase):
             "nullifier_pool": "orchard",
             "dataset_version": 1,
             "pir_depth": 19,
-            "tier1_rows": 4096,
+            "tier1_rows": 8192,
             "tier1_row_bytes": 6144,
-            "tier0_bytes": 393184,
+            "tier0_bytes": 786400,
             "num_ranges": (1 << 20) + 1,
             "height": None,
         }.items():
@@ -85,9 +85,9 @@ class SnapshotValidationTests(unittest.TestCase):
                 metadata = copy.deepcopy(original)
                 metadata[key] = value
                 self.assertFalse(self.valid(metadata))
-        for depth in [18, 24]:
+        for depth in [18, 21, 23, 24]:
             self.assertFalse(self.valid(self.metadata(depth)))
-        for key, value in {"poly_len": 2048, "tier1_layers": 8, "tier0_layers": 13.5}.items():
+        for key, value in {"poly_len": 2048, "tier1_layers": 9, "tier0_layers": 13.5}.items():
             metadata = copy.deepcopy(original)
             metadata["pir_layout"][key] = value
             self.assertFalse(self.valid(metadata))

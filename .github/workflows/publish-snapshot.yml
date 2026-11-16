@@ -179,12 +179,13 @@ jobs:
                   and .nullifier_pool == $pool and .dataset_version == $version
                   and ($layout.pir_depth | integer)
                   and ($layout.tier0_layers | integer)
-                  and $layout.tier0_layers >= 12 and $layout.tier0_layers <= 16
-                  and $layout.tier1_layers == 7 and $layout.poly_len == 4096
+                  and $layout.tier0_layers == 12
+                  and ($layout.tier1_layers == 7 or $layout.tier1_layers == 8)
+                  and $layout.poly_len == 4096
                   and $layout.pir_depth == ($layout.tier0_layers + $layout.tier1_layers)
                   and .pir_depth == $layout.pir_depth
                   and .tier1_rows == pow(2; $layout.tier0_layers)
-                  and .tier1_row_bytes == 12288
+                  and .tier1_row_bytes == (pow(2; $layout.tier1_layers) * 96)
                   and .tier0_bytes == (pow(2; $layout.tier0_layers) * 96 - 32)
                   and (.num_ranges | integer)
                   and .num_ranges >= 0 and .num_ranges <= pow(2; $layout.pir_depth)
