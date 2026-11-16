@@ -35,6 +35,11 @@ pub fn export_layout(
         .map_err(anyhow::Error::msg)
         .context("invalid Tier 1 export layout")?;
 
+    anyhow::ensure!(
+        ranges.len() <= 1 << layout.pir_depth,
+        "Tier 1 export would truncate ranges beyond the requested layout's capacity"
+    );
+
     let num_rows = layout.tier1_rows().map_err(anyhow::Error::msg)?;
     let leaves = layout.tier1_leaves().map_err(anyhow::Error::msg)?;
     let row_bytes = layout.tier1_row_bytes().map_err(anyhow::Error::msg)?;

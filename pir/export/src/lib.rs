@@ -668,5 +668,14 @@ mod capacity_tests {
         )
         .is_err());
         assert!(!dir.path().join("tier0.bin").exists());
+        assert!(export_for_layout(&tree, expanded_layout).is_err());
+    }
+
+    #[test]
+    fn private_export_rejects_overflow_without_writing_a_truncated_database() {
+        let ranges = vec![[Fp::from(1), Fp::from(2), Fp::from(3)]; (1 << PIR_DEPTH) + 1];
+        let mut output = Vec::new();
+        assert!(tier1::export_layout(&ranges, &mut output, COMPILED_PIR_LAYOUT).is_err());
+        assert!(output.is_empty());
     }
 }

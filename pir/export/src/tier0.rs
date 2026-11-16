@@ -50,6 +50,11 @@ pub fn export_layout(
         .map_err(anyhow::Error::msg)
         .context("invalid Tier 0 export layout")?;
 
+    anyhow::ensure!(
+        levels.len() == layout.pir_depth && ranges.len() <= 1 << layout.pir_depth,
+        "Tier 0 export layout does not match the tree depth or capacity"
+    );
+
     let tier0_layers = layout.tier0_layers;
     let num_subtrees = layout.tier1_rows().map_err(anyhow::Error::msg)?;
     let expected = layout.tier0_bytes().map_err(anyhow::Error::msg)?;
