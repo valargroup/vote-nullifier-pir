@@ -1,5 +1,8 @@
 # Unreleased
 
+- Raise the HTTP request body limit from 2 MiB to 8 MiB in both PIR servers,
+  allowing larger query envelopes while retaining exact query-section checks.
+
 - Updated the default cryptography family to Zakura Common 5.4.0 through the
   published `voting-crypto-deps 0.5.0` (`voting-circuits` `v0.15.0`). The
   upstream (LRZ) backend is unchanged. No wire, snapshot, or database format

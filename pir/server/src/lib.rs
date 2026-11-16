@@ -34,7 +34,7 @@ const U64_BYTES: usize = std::mem::size_of::<u64>();
 const AVX512_ALIGN: usize = 64;
 
 /// Maximum accepted HTTP request body size for a PIR query.
-pub const MAX_QUERY_BODY_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_QUERY_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// 64-byte aligned u64 buffer for AVX-512 operations.
 struct Aligned64 {
