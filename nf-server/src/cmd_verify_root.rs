@@ -67,9 +67,9 @@ pub(crate) async fn run(args: Args) -> Result<()> {
         expected_hash = verified.previous_hash;
         nullifiers.extend(verified.nullifiers);
         // This v1 keeps action occurrences in memory. Bound them to the current
-        // tree's approximate capacity; the tree builder checks exact range capacity.
+        // publisher's maximum approximate capacity; the tree builder checks exact range capacity.
         ensure!(
-            nullifiers.len() <= 2 * (1 << pir_types::PIR_DEPTH),
+            nullifiers.len() <= 2 * (1 << pir_export::MAX_EXPORT_DEPTH),
             "Ironwood action count exceeds verifier capacity"
         );
         if height == activation || (args.height - height).is_multiple_of(100) {

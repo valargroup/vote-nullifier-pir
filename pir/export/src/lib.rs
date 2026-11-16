@@ -1,17 +1,20 @@
 //! PIR tree builder and tier data exporter.
 //!
-//! Builds a depth-19 Merkle tree from punctured-range leaves (K=2) and exports
+//! Builds a capacity-sized Merkle tree from punctured-range leaves (K=2) and exports
 //! the two tier files consumed by `pir-server`:
 //!
-//! - **Tier 0** (~384 KB): plaintext internal nodes + subtree records.
-//! - **Tier 1** (48 MiB): TIER1_ROWS rows × TIER1_ROW_BYTES. Each row contains
+//! - **Tier 0** (~384 KB at depth 19): plaintext internal nodes + subtree records.
+//! - **Tier 1** (48 MiB at depth 19): layout rows × private row bytes. Each row contains
 //!   TIER1_LEAVES punctured-range leaf records (nf_lo + nf_mid + nf_hi). No
 //!   internal nodes; the client rebuilds the subtree locally.
 
 pub mod tier0;
 pub mod tier1;
 
+mod layout;
 mod tree_checkpoint;
+
+pub use layout::MAX_EXPORT_DEPTH;
 
 pub use tree_checkpoint::{
     load_tree_checkpoint, read_tree_checkpoint_header, save_tree_checkpoint, TREE_HEADER_LEN,
@@ -52,7 +55,7 @@ pub struct PirTree {
     pub pir_root: Fp,
     /// Depth-29 Merkle root (extended with empty hashes for circuit compatibility).
     pub circuit_root: Fp,
-    /// Tree levels (bottom-up): levels[0] = leaf hashes, levels[PIR_DEPTH-1] = root's children.
+    /// Tree levels (bottom-up): level 0 holds leaves; the last level holds the root's children.
     pub levels: Vec<Vec<Fp>>,
     /// Punctured ranges (K=2): each element is `[nf_lo, nf_mid, nf_hi]`.
     pub ranges: Vec<PuncturedRange>,
@@ -60,19 +63,31 @@ pub struct PirTree {
     pub empty_hashes: [Fp; TREE_DEPTH],
 }
 
-/// Build a depth-19 PIR tree from punctured ranges (K=2).
+impl PirTree {
+    /// Layout for this checkpoint's actual depth, bounded by client resource limits.
+    pub fn layout(&self) -> Result<PirLayout> {
+        let layout = layout::layout_for_depth(self.levels.len())?;
+        anyhow::ensure!(
+            self.ranges.len() <= 1 << layout.pir_depth,
+            "checkpoint range count exceeds its tree capacity"
+        );
+        Ok(layout)
+    }
+}
+
+/// Build the smallest supported PIR tree that fits the punctured ranges (K=2).
 ///
 /// The ranges must already be constructed via `build_punctured_ranges`.
 /// This function hashes them into leaf commitments and builds the Merkle
 /// tree, then extends the root to depth 29 for circuit compatibility.
 pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
-    anyhow::ensure!(
-        ranges.len() <= 1 << PIR_DEPTH,
-        "too many ranges ({}) for PIR depth {} (max {})",
-        ranges.len(),
-        PIR_DEPTH,
-        1 << PIR_DEPTH
-    );
+    let layout = layout::layout_for_ranges(ranges.len())?;
+    build_pir_tree_at_depth(ranges, layout.pir_depth)
+}
+
+fn build_pir_tree_at_depth(ranges: Vec<PuncturedRange>, depth: usize) -> Result<PirTree> {
+    layout::layout_for_depth(depth)?;
+    anyhow::ensure!(ranges.len() <= 1 << depth, "ranges exceed tree capacity");
     verify_punctured_range_spans(&ranges)?;
     let t0 = Instant::now();
     let leaves = commit_punctured_ranges(&ranges);
@@ -85,14 +100,14 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     let empty_hashes = precompute_empty_hashes();
 
     let t1 = Instant::now();
-    let (pir_root, levels) = build_levels(leaves, &empty_hashes, PIR_DEPTH);
+    let (pir_root, levels) = build_levels(leaves, &empty_hashes, depth);
     info!(
         level_count = levels.len(),
         elapsed_s = format!("{:.1}", t1.elapsed().as_secs_f64()),
         "PIR tree built"
     );
 
-    let circuit_root = extend_root(pir_root, &empty_hashes);
+    let circuit_root = extend_root_from_depth(pir_root, &empty_hashes, depth);
     info!(
         circuit_root = hex::encode(circuit_root.to_repr()),
         "circuit root"
@@ -107,15 +122,19 @@ pub fn build_pir_tree(ranges: Vec<PuncturedRange>) -> Result<PirTree> {
     })
 }
 
-/// Extend the PIR-depth root to a depth-29 root by hashing with empty subtrees.
+/// Extend a default depth-19 root to depth 29 by hashing with empty subtrees.
 ///
 /// At each extension level, the existing root is the left child and an empty
 /// subtree of the appropriate height is the right child. This produces the
 /// same root as building a depth-29 tree with the same leaves.
 pub fn extend_root(pir_root: Fp, empty_hashes: &[Fp; TREE_DEPTH]) -> Fp {
+    extend_root_from_depth(pir_root, empty_hashes, PIR_DEPTH)
+}
+
+fn extend_root_from_depth(pir_root: Fp, empty_hashes: &[Fp; TREE_DEPTH], depth: usize) -> Fp {
     let hasher = PoseidonHasher::new();
     let mut root = pir_root;
-    for empty_hash in &empty_hashes[PIR_DEPTH..FULL_DEPTH] {
+    for empty_hash in &empty_hashes[depth..FULL_DEPTH] {
         root = hasher.hash(root, *empty_hash);
     }
     root
@@ -226,7 +245,7 @@ pub fn prepare_nullifiers(mut nfs: Vec<Fp>) -> Vec<PuncturedRange> {
     build_punctured_ranges(&nfs)
 }
 
-/// Sort / sentinel-inject nullifiers and build the depth-19 PIR Merkle structure.
+/// Sort / sentinel-inject nullifiers and build a PIR tree sized for the resulting ranges.
 pub fn build_pir_tree_from_nullifiers(nfs: Vec<Fp>) -> Result<PirTree> {
     let ranges = prepare_nullifiers(nfs);
     build_pir_tree(ranges)
@@ -249,10 +268,9 @@ pub fn materialize_tree_checkpoint_with_progress(
     );
 
     on_progress("building Merkle tree", 15);
-    info!(depth = PIR_DEPTH, "building PIR tree");
     let tree = build_pir_tree(ranges)?;
     info!(
-        depth = PIR_DEPTH,
+        depth = tree.levels.len(),
         root = hex::encode(tree.pir_root.to_repr()),
         "PIR-depth root"
     );
@@ -381,7 +399,7 @@ pub fn build_and_export_with_progress(
 
     on_progress("building Merkle tree", 15);
     info!(
-        depth = PIR_DEPTH,
+        depth = tree.levels.len(),
         root = hex::encode(tree.pir_root.to_repr()),
         "PIR-depth root"
     );
@@ -420,15 +438,15 @@ fn evict_stale_precompute(tier_path: &std::path::Path) {
     }
 }
 
-/// Export all tier files and metadata to the given directory using the
-/// compiled production layout.
+/// Export tiers using the tree's depth, retaining seven private layers and
+/// expanding the public tier when the tree outgrows the default layout.
 pub fn export_all(
     tree: &PirTree,
     output_dir: &std::path::Path,
     network: pir_types::ZcashNetwork,
     height: Option<u64>,
 ) -> Result<()> {
-    export_all_with_layout(tree, output_dir, network, height, COMPILED_PIR_LAYOUT)
+    export_all_with_layout(tree, output_dir, network, height, tree.layout()?)
 }
 
 /// Export tier blobs and metadata for a supported two-tier layout.
@@ -443,6 +461,11 @@ pub fn export_all_with_layout(
         .validate_supported()
         .map_err(anyhow::Error::msg)
         .context("invalid export layout")?;
+
+    anyhow::ensure!(
+        layout.pir_depth == tree.levels.len() && tree.ranges.len() <= 1 << layout.pir_depth,
+        "export layout does not match the tree depth or capacity"
+    );
 
     std::fs::create_dir_all(output_dir)?;
     // Dataset v1 used a second PIR database. Remove its artifacts so a
@@ -551,4 +574,99 @@ pub fn build_ranges_with_sentinels(raw_nfs: &[Fp]) -> Vec<PuncturedRange> {
         all_nfs.insert(1, Fp::from(2u64));
     }
     build_punctured_ranges(&all_nfs)
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use imt_tree::ImtProofData;
+    use pir_types::{tier0::Tier0Data, tier1::Tier1Row, ZcashNetwork};
+
+    #[test]
+    fn expanded_checkpoint_exports_verifiable_proofs_with_the_same_circuit_root() {
+        let ranges = prepare_nullifiers((1..=400).map(|i| Fp::from(i * 1000)).collect());
+        let original = build_pir_tree(ranges.clone()).unwrap();
+        // A sparse tree exercises the deeper path and checkpoint format without
+        // hashing a million leaves. Layout selection at the real capacity
+        // boundary is tested separately in the layout module.
+        let expanded = build_pir_tree_at_depth(ranges, 20).unwrap();
+        assert_eq!(expanded.circuit_root, original.circuit_root);
+        assert_ne!(expanded.pir_root, original.pir_root);
+
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint = dir.path().join("nullifiers.tree");
+        save_tree_checkpoint(&checkpoint, &expanded, 3_578_540).unwrap();
+        let tree = load_tree_checkpoint(&checkpoint, 3_578_540)
+            .unwrap()
+            .unwrap();
+        let layout = tree.layout().unwrap();
+        assert_eq!(layout.pir_depth, 20);
+        export_tiers_from_tree(&tree, dir.path(), ZcashNetwork::Main, Some(3_578_540)).unwrap();
+        assert!(tiers_complete_for_height(dir.path(), ZcashNetwork::Main, 3_578_540).unwrap());
+        let metadata: PirMetadata =
+            serde_json::from_slice(&std::fs::read(dir.path().join("pir_root.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata.pir_layout, layout);
+        assert_eq!(metadata.tier1_rows, 8192);
+        assert_eq!(metadata.tier1_row_bytes, 12288);
+        let tier0 =
+            Tier0Data::from_layout(std::fs::read(dir.path().join("tier0.bin")).unwrap(), layout)
+                .unwrap();
+        let tier1 = std::fs::read(dir.path().join("tier1.bin")).unwrap();
+        let leaves = layout.tier1_leaves().unwrap();
+        let row_bytes = layout.tier1_row_bytes().unwrap();
+        for index in [0, leaves - 1, leaves, tree.ranges.len() - 1] {
+            let bounds = tree.ranges[index];
+            let value = bounds[0] + Fp::one();
+            let row_index = tier0.find_subtree(value).unwrap();
+            let row = Tier1Row::from_layout(
+                &tier1[row_index * row_bytes..(row_index + 1) * row_bytes],
+                layout,
+            )
+            .unwrap();
+            let valid = (tree.ranges.len() - row_index * leaves).min(leaves);
+            let leaf = row.find_leaf(value, valid).unwrap();
+            let mut path = tree.empty_hashes;
+            path[..layout.tier1_layers].copy_from_slice(&row.extract_siblings(
+                leaf,
+                valid,
+                &PoseidonHasher::new(),
+            ));
+            path[layout.tier1_layers..layout.pir_depth]
+                .copy_from_slice(&tier0.extract_siblings(row_index));
+            let mut proof = ImtProofData {
+                root: tree.circuit_root,
+                nf_bounds: bounds,
+                leaf_pos: (row_index * leaves + leaf) as u32,
+                path,
+            };
+            assert_eq!(proof.leaf_pos as usize, index);
+            assert!(proof.verify(value));
+            assert!(
+                !proof.verify(bounds[1]),
+                "a spent nullifier must remain excluded"
+            );
+            proof.path[19] += Fp::one();
+            assert!(
+                !proof.verify(value),
+                "the additional tree level must be authenticated"
+            );
+        }
+    }
+
+    #[test]
+    fn mismatched_export_depth_is_rejected_before_writing() {
+        let tree = build_pir_tree_from_nullifiers(vec![Fp::from(1000)]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let expanded_layout = layout::layout_for_depth(20).unwrap();
+        assert!(export_all_with_layout(
+            &tree,
+            dir.path(),
+            ZcashNetwork::Main,
+            Some(3_578_540),
+            expanded_layout,
+        )
+        .is_err());
+        assert!(!dir.path().join("tier0.bin").exists());
+    }
 }

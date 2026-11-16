@@ -1,7 +1,8 @@
 # PIR Parameters
 
 This document derives the concrete tree and YPIR parameters for the
-depth-19, 12+7 Ironwood layout.
+default depth-19, 12+7 Ironwood layout. The publisher grows the public tier
+for larger datasets as described in [the tree specification](pir-tree-spec.md#ironwood-sizing).
 
 ## Parameter flow
 
@@ -28,8 +29,8 @@ the row count and byte width. Client construction receives the expected layout
 from dynamic voting configuration and requires that config match the server
 advertisement before parsing Tier 0 or issuing a query. Within the two-tier
 envelope, any split that satisfies YPIR minima and circuit depth is accepted;
-`COMPILED_PIR_LAYOUT` (12+7) remains the production default identity for
-export and server advertise, not a connect-time gate.
+`COMPILED_PIR_LAYOUT` (12+7) remains the minimum publisher layout, not a connect-time gate. Larger exports advertise
+their actual layout, and servers derive their dimensions from that metadata.
 
 ## Tree constants
 
@@ -162,9 +163,11 @@ This gives the 29-element authentication path expected by `ImtProofData`:
 7 + 12 + 10 = 29
 ```
 
-The leaf position fits in 19 bits. The exporter enforces at most `2^19`
-punctured ranges, corresponding to approximately 1.05 million K=2 nullifier
-boundaries.
+In the default layout the leaf position fits in 19 bits. Above `2^19`
+punctured ranges, the publisher increases the public tier and the number of
+PIR siblings, reducing empty padding by the same amount. The authentication
+path remains 29 elements long. The next layout is depth 20 / 13+7; its
+private database has 8,192 rows and occupies 96 MiB.
 
 ## Upstream references
 

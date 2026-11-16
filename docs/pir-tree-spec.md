@@ -22,9 +22,23 @@ The PIR tree now has depth 19:
   current Ironwood set;
 - the exporter rejects more than `2^19` ranges.
 
-Crossing that limit requires changing the layout constants and regenerating
-all snapshots. It does not require a circuit change as long as the PIR depth
-does not exceed the circuit depth.
+The publisher now keeps depth 19 for sets that fit and increases the public
+index by one layer whenever the range count crosses a power-of-two boundary.
+Private rows retain seven layers (128 leaves / 12,288 bytes), and `poly_len`
+remains 4096. For example, 619,172 ranges use depth 20 with a 13+7 split:
+8,192 rows, a 786,400-byte public index, and a 96 MiB private database.
+
+Growth stops at the existing client limit of 16 public layers (depth 23 with
+seven private layers). Larger sets fail before hashing or export. Checkpoints
+retain their actual depth so resuming does not rebuild or truncate a larger tree.
+Existing depth-19 checkpoints and snapshots remain readable.
+
+This changes the snapshot layout, not the depth-29 circuit commitment: empty
+subtree padding gives the same circuit root for the same range set. Before
+serving a larger snapshot, verify the deployed server and wallet clients accept
+its advertised layout, update the voting configuration's `pir_layout`, and
+authorize the snapshot through the coordinator-signed PIR configuration.
+Publishing does not switch the serving fleet.
 
 ## Leaves and roots
 
@@ -63,7 +77,7 @@ Depth 12  4,096 subtree roots and min_key boundaries
 Depth 19  up to 524,288 punctured-range leaves
 ```
 
-The invariant is enforced at compile time:
+The default layout satisfies:
 
 ```text
 PIR_DEPTH == TIER0_LAYERS + TIER1_LAYERS

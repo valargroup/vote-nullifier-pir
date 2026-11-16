@@ -46,7 +46,7 @@ graph TD
 |-------|------|-------------|
 | **imt-tree** | `imt-tree/` | Indexed Merkle Tree library. Poseidon hashing, punctured-range exclusion proofs (K=2), and tree-building primitives for circuit compatibility. |
 | **pir-types** | `pir/types/` | Lightweight shared types (`YpirScenario`, `RootInfo`, `HealthInfo`) serialised over HTTP between server and client. Also contains YPIR wire-format helpers. |
-| **pir-export** | `pir/export/` | Builds the depth-19 PIR tree from punctured-range leaves (K=2), persists `nullifiers.tree` checkpoints, and exports the plaintext `tier0.bin` plus PIR-backed `tier1.bin`. |
+| **pir-export** | `pir/export/` | Builds a capacity-sized PIR tree from punctured-range leaves (K=2), persists `nullifiers.tree` checkpoints, and exports the plaintext `tier0.bin` plus PIR-backed `tier1.bin`. |
 | **pir-server** | `pir/server/` | YPIR server-side logic: loads tier data, processes encrypted PIR queries, and returns encrypted responses. |
 | **pir-client** | `pir/client/` | YPIR client-side logic: generates encrypted queries, decodes responses, and assembles circuit-ready `ImtProofData`. Provides an async `PirClient` API and a local in-process mode. |
 | **nf-ingest** | `nf-ingest/` | Shared library for nullifier sync from lightwalletd, flat-file storage (`nullifiers.bin`), and configuration. |

@@ -1,5 +1,11 @@
 # Unreleased
 
+- Grow the snapshot publisher's public PIR tier when more than 524,288 ranges
+  are needed, preserving the private row format and depth-29 circuit root.
+  Resume larger tree checkpoints and validate their actual dimensions during
+  publication. Larger snapshots require matching voting-layout configuration
+  and deployed-client compatibility checks before coordinator authorization.
+
 - Updated the default cryptography family to Zakura Common 5.4.0 through the
   published `voting-crypto-deps 0.5.0` (`voting-circuits` `v0.15.0`). The
   upstream (LRZ) backend is unchanged. No wire, snapshot, or database format
