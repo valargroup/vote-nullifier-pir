@@ -67,6 +67,7 @@ mod tests {
             for (rows, item_bits, query_words) in [
                 (2048, 196_608, poly_len), // Supported 11+8 layout.
                 (4096, 98_304, 4096),
+                (4096, 196_608, 4096), // Expanded publisher 12+8 layout.
                 (4097, 98_304, 8192),
             ] {
                 let client = YPIRClient::from_db_sz_simplepir_with_config(
@@ -78,6 +79,10 @@ mod tests {
                 assert_eq!(pqr.len(), query_words);
                 assert_eq!(pub_params.len(), parameter_words);
                 let body = serialize_ypir_query(pqr.as_slice(), pub_params.as_slice());
+                assert!(body.len() <= crate::MAX_QUERY_BODY_BYTES);
+                if poly_len == 4096 && rows == 4096 {
+                    assert_eq!(body.len(), 1_605_640, "include the wire length prefix");
+                }
                 let (parsed_pqr, parsed_params) = parse_query(&body, client.params()).unwrap();
                 assert_eq!(parsed_pqr.len(), pqr.len() * U64_BYTES);
                 assert_eq!(parsed_params.len(), pub_params.len() * U64_BYTES);

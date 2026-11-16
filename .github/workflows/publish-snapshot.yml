@@ -167,15 +167,36 @@ jobs:
             NF_DIR="$SVOTE_PIR_DATA_DIR"
             DATASET_MARKER="$NF_DIR/nullifiers.dataset.json"
 
+            # Validate both the local export and the downloaded published root.
+            validate_snapshot_root() {
+              jq -e \
+                --arg network "$SVOTE_ZCASH_NETWORK" \
+                --arg pool "$EXPECTED_NULLIFIER_POOL" \
+                --argjson version "$EXPECTED_DATASET_VERSION" '
+                def integer: type == "number" and . == floor;
+                .pir_layout as $layout
+                | .zcash_network == $network
+                  and .nullifier_pool == $pool and .dataset_version == $version
+                  and ($layout.pir_depth | integer)
+                  and ($layout.tier0_layers | integer)
+                  and $layout.tier0_layers == 12
+                  and ($layout.tier1_layers == 7 or $layout.tier1_layers == 8)
+                  and $layout.poly_len == 4096
+                  and $layout.pir_depth == ($layout.tier0_layers + $layout.tier1_layers)
+                  and .pir_depth == $layout.pir_depth
+                  and .tier1_rows == pow(2; $layout.tier0_layers)
+                  and .tier1_row_bytes == (pow(2; $layout.tier1_layers) * 96)
+                  and .tier0_bytes == (pow(2; $layout.tier0_layers) * 96 - 32)
+                  and (.num_ranges | integer)
+                  and .num_ranges >= 0 and .num_ranges <= pow(2; $layout.pir_depth)
+                  and (.height | integer) and .height > 0
+                ' "$1" >/dev/null
+            }
+            # End snapshot root validation.
+
             echo "==> Validate Ironwood dataset identity"
-            if ! jq -e \
-              --arg network "$SVOTE_ZCASH_NETWORK" \
-              --arg pool "$EXPECTED_NULLIFIER_POOL" \
-              --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version
-               and .pir_depth == 19 and .tier1_rows == 4096 and .tier1_row_bytes == 12288' \
-              "$STAGE/pir_root.json" >/dev/null; then
-              echo "ERROR: pir_root.json is not the expected Ironwood dataset version and 12+7 layout" >&2
+            if ! validate_snapshot_root "$STAGE/pir_root.json"; then
+              echo "ERROR: pir_root.json is not the expected Ironwood dataset version and supported publisher layout" >&2
               exit 1
             fi
             if [ ! -f "$DATASET_MARKER" ] || ! jq -e \
@@ -196,8 +217,8 @@ jobs:
             fi
             echo "    Exported height: $H"
 
-            if [ -n "$REQUESTED_H" ] && [ "$H" -gt "$REQUESTED_H" ]; then
-              echo "ERROR: exported height ($H) exceeds requested ($REQUESTED_H)"
+            if [ -n "$REQUESTED_H" ] && [ "$H" -ne "$REQUESTED_H" ]; then
+              echo "ERROR: exported height ($H) differs from requested ($REQUESTED_H)"
               exit 1
             fi
 
@@ -313,13 +334,7 @@ jobs:
             fi
             curl -fsSL "$SNAPSHOT_PUBLIC_BASE/$H/pir_root.json" -o "$VERIFY_DIR/pir_root.json"
             REMOTE_ROOT_HEIGHT=$(jq -r '.height // empty' "$VERIFY_DIR/pir_root.json")
-            if ! jq -e \
-              --arg network "$SVOTE_ZCASH_NETWORK" \
-              --arg pool "$EXPECTED_NULLIFIER_POOL" \
-              --argjson version "$EXPECTED_DATASET_VERSION" \
-              '.zcash_network == $network and .nullifier_pool == $pool and .dataset_version == $version
-               and .pir_depth == 19 and .tier1_rows == 4096 and .tier1_row_bytes == 12288' \
-              "$VERIFY_DIR/pir_root.json" >/dev/null; then
+            if ! validate_snapshot_root "$VERIFY_DIR/pir_root.json"; then
               echo "ERROR: remote pir_root.json has the wrong dataset identity or tier shape"
               exit 1
             fi
@@ -381,7 +396,7 @@ jobs:
               staging) CONFIG_ENV=stage ;;
               *) CONFIG_ENV="${{ inputs.target_environment }}" ;;
             esac
-            echo "Next step: update ${CONFIG_ENV}/pir.json to snapshot_height=$H, then restart the fleet."
+            echo "Next step: update ${CONFIG_ENV}/pir.json to snapshot_height=$H, and its coordinator attestations, then verify automatic fleet convergence."
 
   notify-slack:
     name: Slack Notification

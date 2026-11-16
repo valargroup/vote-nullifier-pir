@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use voting_crypto_deps::pasta_curves::group::ff::PrimeField;
 use voting_crypto_deps::pasta_curves::Fp;
 
-use super::{PirTree, PIR_DEPTH};
+use super::PirTree;
 
 /// Magic ASCII tag for the Ironwood `nullifiers.tree` format.
 pub const TREE_MAGIC: &[u8; 8] = b"SVOTEPT2";
@@ -163,14 +163,9 @@ pub fn load_tree_checkpoint(path: &Path, expected_height: u64) -> Result<Option<
     f.read_to_end(&mut payload)
         .with_context(|| format!("read payload {}", path.display()))?;
     let tree = decode_tree(&payload)?;
-    // Light sanity: level count matches PIR depth.
-    anyhow::ensure!(
-        tree.levels.len() == PIR_DEPTH,
-        "nullifiers.tree has {} Merkle levels but this binary requires PIR_DEPTH={}; \
-         remove the checkpoint and tier files, then re-run sync",
-        tree.levels.len(),
-        PIR_DEPTH
-    );
+    tree.layout().context(
+        "unsupported nullifiers.tree layout; remove the checkpoint and tier files, then re-run sync",
+    )?;
     Ok(Some(tree))
 }
 
@@ -205,6 +200,7 @@ pub fn save_tree_checkpoint(path: &Path, tree: &PirTree, chain_height: u64) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PIR_DEPTH;
     use imt_tree::tree::PuncturedRange;
     use tempfile::tempdir;
 
@@ -259,7 +255,7 @@ mod tests {
             Ok(_) => panic!("wrong-depth checkpoint must be rejected"),
             Err(err) => err.to_string(),
         };
-        assert!(err.contains("requires PIR_DEPTH=19"), "{err}");
+        assert!(err.contains("unsupported nullifiers.tree layout"), "{err}");
         assert!(err.contains("re-run sync"), "{err}");
     }
 

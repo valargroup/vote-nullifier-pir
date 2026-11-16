@@ -15,7 +15,7 @@ This runbook covers the operator side: standing up an `nf-server` host that answ
 There are two data-source modes the server can run in:
 
 1. **Bootstrapped** — the PIR server downloads pre-computed snapshot data from Valar Group–hosted object storage. This is the **default** mode under the shipped systemd unit.
-2. **Synced** — the PIR server runs `nf-server sync`: stream Ironwood nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the 12+7 two-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from compatible on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
+2. **Synced** — the PIR server runs `nf-server sync`: stream Ironwood nullifiers from lightwalletd up to a chosen height (or chain tip), materialize a versioned `nullifiers.tree` checkpoint, then write the capacity-sized two-tier representation per [PIR tree spec](../pir-tree-spec.md). Each stage resumes from compatible on-disk artifacts after failure. Operators run `nf-server sync` ad-hoc; the systemd unit only covers `serve`.
 
 ## Quick start
 
@@ -526,7 +526,7 @@ Everything under `SVOTE_PIR_DATA_DIR` belongs to exactly one Zcash network. Flee
 | `nullifiers.dataset.json` | Stage 1 — sync | Required identity marker with `zcash_network`, `nullifier_pool: "ironwood"`, and `dataset_version: 2`. |
 | `nullifiers.checkpoint` | Stage 1 — sync | Durable commit point for `nullifiers.bin`; half-written batches are discarded on startup. |
 | `nullifiers.index` | Stage 1 — sync | Per-batch height index; lets `sync` and `POST /snapshot/prepare` export a snapshot at a past height. Auto-rebuilt if missing. |
-| `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the depth-19 PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
+| `nullifiers.tree` | Stage 2 — sync | Versioned checkpoint of the capacity-sized PIR tree at a specific height. Lets Stage 3 skip the tree rebuild. Safe to delete to force a rebuild. |
 | `tier0.bin`, `tier1.bin` | Stage 3 — sync **or** serve bootstrap | The public index and 48 MiB PIR database. Identical to `<precomputed-base>/snapshots/<network>/<height>/tier*.bin`. |
 | `pir_root.json` | Stage 3 — sync **or** serve bootstrap | Metadata: dataset identity, tree roots, tier byte sizes, and `height`. Installed **last** so a half-applied bootstrap retries cleanly next start. |
 | `tier1.precompute` | Stage 4: written by `serve` after first YPIR setup | Warm-restart cache for YPIR pre-computed material. Auto-invalidated by the Tier 1 content hash; safe to delete (next boot recomputes). **Not** distributed via the CDN; each host writes its own. |

@@ -1,7 +1,6 @@
 # Private Merkle-Path Retrieval via PIR
 
-**Version:** 0.9 — 12+7 Tier Layout
-**Date:** 2026-08-06
+**Layouts:** depth 19 (12+7) and depth 20 (12+8)
 
 This document specifies how a client privately retrieves a circuit-compatible
 Merkle authentication path for an Ironwood nullifier non-membership proof.
@@ -9,22 +8,33 @@ The client downloads one small public index and performs one YPIR query.
 
 ## Ironwood sizing
 
-Ironwood has approximately 31,000 nullifiers at the time of this design. The
-previous depth-25 layout was sized for roughly 51 million Orchard nullifiers
-and imposed a second sequential PIR query that is unnecessary at Ironwood
-scale.
+The August 2026 design sized a depth-19 layout for approximately 31,000
+Ironwood nullifiers. Its 524,288 punctured-range slots cover roughly 1.05
+million nullifiers because each K=2 leaf represents two adjacent gaps.
+This remains the default for snapshots that fit.
 
-The PIR tree now has depth 19:
+When the range count exceeds 524,288, the publisher selects depth 20 with a
+12+8 split. It retains 4,096 rows and a 393,184-byte public index, but each
+private row grows from 128 to 256 leaves (12,288 to 24,576 bytes). The private
+database grows from 48 to 96 MiB. The polynomial degree remains 4096.
 
-- 524,288 punctured-range leaf slots (`2^19`);
-- each K=2 leaf represents two adjacent nullifier gaps;
-- capacity is approximately 1.05 million nullifiers, about 34 times the
-  current Ironwood set;
-- the exporter rejects more than `2^19` ranges.
+Both layouts serialize a 1,605,640-byte query, including its eight-byte length
+prefix, below the existing 2,097,152-byte HTTP body limit. Wider rows increase
+the response and client subtree work; the fixed upload size does not imply
+unchanged latency.
 
-Crossing that limit requires changing the layout constants and regenerating
-all snapshots. It does not require a circuit change as long as the PIR depth
-does not exceed the circuit depth.
+The publisher stops at depth 20 (1,048,576 ranges). Larger sets fail before
+hashing or export, rather than silently selecting a layout that has not been
+qualified against the HTTP and wallet limits. Checkpoints retain their actual
+depth; resuming a depth-20 checkpoint exports 12+8. Existing depth-19
+checkpoints and snapshots remain readable.
+
+This changes the snapshot layout, not the depth-29 circuit commitment: empty
+subtree padding gives the same circuit root for the same range set. Before
+serving a larger snapshot, verify the deployed server and wallet clients accept
+its advertised layout, update the voting configuration's `pir_layout`, and
+authorize the snapshot through the coordinator-signed PIR configuration.
+Publishing does not switch the serving fleet.
 
 ## Leaves and roots
 
@@ -45,11 +55,11 @@ and differs from `nf_mid`. Sentinel nullifiers at `k * 2^249` for
 `k = 0..=32`, plus `p - 1`, preserve the circuit's range-check invariant and
 cover the Pallas field tail.
 
-The exporter builds a depth-19 PIR root, then extends it to the delegation
+The exporter builds a depth-19 or depth-20 PIR root, then extends it to the delegation
 circuit's depth-29 root by repeatedly hashing the current root as the left
 child with the corresponding empty subtree as the right child.
 
-## Architecture: 12 + 7
+## Default architecture: 12 + 7
 
 ```text
 Depth 0   root
@@ -63,7 +73,7 @@ Depth 12  4,096 subtree roots and min_key boundaries
 Depth 19  up to 524,288 punctured-range leaves
 ```
 
-The invariant is enforced at compile time:
+The default layout satisfies:
 
 ```text
 PIR_DEPTH == TIER0_LAYERS + TIER1_LAYERS
