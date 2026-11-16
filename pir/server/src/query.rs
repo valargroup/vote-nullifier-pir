@@ -55,11 +55,88 @@ pub(super) fn parse_query<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::{Body, Bytes},
+        extract::{DefaultBodyLimit, State},
+        http::{Request, StatusCode},
+        routing::post,
+        Router,
+    };
     use pir_types::serialize_ypir_query;
+    use std::sync::Arc;
+    use tower::ServiceExt;
     use ypir::{
         client::YPIRClient,
         params::{params_for_scenario_simplepir_with_config, YPIRSPConfig},
     };
+
+    #[tokio::test]
+    async fn http_body_limit_accepts_eight_mib_and_rejects_one_byte_more() {
+        let app = Router::new()
+            .route(
+                "/tier1/query",
+                post(|_: Bytes| async { StatusCode::NO_CONTENT }),
+            )
+            .layer(DefaultBodyLimit::max(crate::MAX_QUERY_BODY_BYTES));
+        for (bytes, expected) in [
+            (8 * 1024 * 1024, StatusCode::NO_CONTENT),
+            (8 * 1024 * 1024 + 1, StatusCode::PAYLOAD_TOO_LARGE),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/tier1/query")
+                        .body(Body::from(vec![0; bytes]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "body length {bytes}");
+        }
+    }
+
+    #[tokio::test]
+    async fn query_above_two_mib_reaches_parser_and_still_requires_exact_sections() {
+        async fn validate(State(params): State<Arc<Params>>, body: Bytes) -> StatusCode {
+            if parse_query(&body, &params).is_ok() {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        }
+
+        let params =
+            params_for_scenario_simplepir_with_config(65_536, 98_304, YPIRSPConfig::degree_4096());
+        let app = Router::new()
+            .route("/tier1/query", post(validate))
+            .layer(DefaultBodyLimit::max(crate::MAX_QUERY_BODY_BYTES))
+            .with_state(Arc::new(params));
+        // Contents do not enter cryptographic processing: this test checks the
+        // HTTP envelope and the exact section sizes for a 16+7 layout.
+        let body = serialize_ypir_query(&vec![0; 65_536], &vec![0; 196_608]);
+        assert_eq!(
+            body.len(),
+            2_097_160,
+            "include the eight-byte length prefix"
+        );
+        let mut truncated = body.clone();
+        truncated.pop();
+        for (body, expected) in [
+            (body, StatusCode::NO_CONTENT),
+            (truncated, StatusCode::BAD_REQUEST),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/tier1/query")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
 
     #[test]
     fn accepts_client_queries_with_both_degrees_and_row_padding() {

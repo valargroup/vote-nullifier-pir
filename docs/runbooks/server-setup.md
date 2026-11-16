@@ -558,6 +558,13 @@ is 3 for degree 2048 and 4 for degree 4096. Invalid lengths, truncated sections,
 and trailing data return HTTP 400 before PIR computation. Valid client queries
 use the existing wire format without changes.
 
+Both `nf-server serve` and the standalone `pir-server` accept HTTP request
+bodies up to 8 MiB, including the query length prefix. Larger bodies receive
+HTTP 413 before query parsing. Bodies within the limit still require exact
+section dimensions; malformed queries receive HTTP 400. This limit permits
+more HTTP buffering per concurrent request and requires an updated serving
+binary to take effect on existing hosts.
+
 ## Troubleshooting
 
 Start with `journalctl -u nullifier-query-server -n 200 --no-pager` and `curl -fsS http://127.0.0.1:3000/health | jq .`. The JSON `status` field mirrors the internal lifecycle (`starting` / `ok` / `rebuilding` / `error`). For finer-grained `Starting { progress: ... }` payloads, inspect logs or `curl` `/ready` while it still returns 503.
