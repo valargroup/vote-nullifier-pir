@@ -107,12 +107,55 @@ class ProbeTests(unittest.TestCase):
         m = self.monitor()
         m.c["config_url"] = "https://test"
         with (
-            patch.object(p, "load_layout", side_effect=ValueError),
+            patch.object(
+                p, "http", side_effect=p.subprocess.TimeoutExpired("worker", 5)
+            ) as fetch,
+            patch.object(p, "query_once") as query,
             patch.object(p, "heartbeat") as hb,
         ):
             m.query_cycle()
+            self.assertEqual(fetch.call_count, 2)
+            query.assert_not_called()
             hb.assert_not_called()
         self.assertNotIn("query", self.state.data["cycles"])
+        self.assertIn(
+            "Observed: config_fetch_timeout", self.state.data["pending"][0]["text"]
+        )
+
+    def test_transient_config_fetch_failure_still_runs_queries(self):
+        m = self.monitor()
+        m.c.update(
+            config_url="https://config",
+            targets=[{"name": "one", "url": "https://one"}],
+            query_timeout_seconds=30,
+        )
+        layout = {"pir_depth": 20, "tier0_layers": 12, "tier1_layers": 8, "poly_len": 4096}
+        response = (200, p.json.dumps({"pir_layout": layout}).encode())
+        unavailable = p.urllib.error.HTTPError("https://config", 503, "", {}, None)
+        with (
+            patch.object(p, "http", side_effect=[unavailable, response]) as fetch,
+            patch.object(p, "validate_layout") as validate,
+            patch.object(p, "query_once", return_value={"ok": True}) as query,
+        ):
+            m.query_cycle()
+        self.assertEqual(fetch.call_count, 2)
+        validate.assert_called_once_with("worker", layout)
+        query.assert_called_once_with("worker", "https://one", layout, 30)
+        self.assertEqual(self.state.data["pending"], [])
+        self.assertIn("query", self.state.data["cycles"])
+
+    def test_permanent_config_errors_report_stage_without_retry(self):
+        for status, body, expected in [
+            (404, b"private response", "config_fetch_http_404"),
+            (200, b"private response", "config_json_invalid"),
+            (200, b'{"unrelated": "private response"}', "config_layout_missing"),
+        ]:
+            with self.subTest(expected=expected):
+                with patch.object(p, "http", return_value=(status, body)) as fetch:
+                    with self.assertRaises(p.ConfigError) as error:
+                        p.load_layout("https://config")
+                self.assertEqual(str(error.exception), expected)
+                fetch.assert_called_once()
 
     def test_target_failures_still_complete_monitor_cycle(self):
         m = self.monitor()
@@ -206,12 +249,22 @@ class ProbeTests(unittest.TestCase):
         )
         with (
             patch.object(p, "load_layout", return_value={}),
-            patch.object(p, "validate_layout", side_effect=ValueError),
+            patch.object(
+                p.subprocess,
+                "run",
+                return_value=p.subprocess.CompletedProcess(
+                    ["worker"], 1, stdout='{"ok": false, "error": "private details"}'
+                ),
+            ),
             patch.object(p, "query_once") as query,
         ):
             m.query_cycle()
             query.assert_not_called()
         self.assertEqual(list(self.state.data["checks"]), ["monitor/config"])
+        self.assertIn(
+            "Observed: config_layout_rejected", self.state.data["pending"][0]["text"]
+        )
+        self.assertNotIn("private details", self.state.data["pending"][0]["text"])
 
     def test_corrupt_state_fails_closed(self):
         self.path.write_text("{")

@@ -9,7 +9,10 @@ introduced. Run it on the production explorer, outside the PIR hosts.
 `production.json` names four origins and two load balancers. Each minute the
 supervisor checks `/ready` and, for origins, APM scrape freshness. Every five
 minutes it resolves the production config layout and performs one fresh private
-query against each target, sequentially. The Rust worker checks dataset/layout
+query against each target, sequentially. A transient config fetch failure gets
+one more attempt. Each attempt has a five-second deadline. If the monitor still
+lacks a valid layout, it skips the query cycle and reports whether fetching,
+parsing, or validating the layout failed. The Rust worker checks dataset/layout
 compatibility, verifies the proof, and binds it to the root obtained during client
 initialization. It rejects the wrong network. If the snapshot changes during a
 query it retries once, within the parent's 30-second process deadline.

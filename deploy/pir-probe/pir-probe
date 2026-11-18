@@ -31,6 +31,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class ConfigError(ValueError):
+    """A fixed, alert-safe description of a configuration failure."""
+
+
 HTTP = urllib.request.build_opener(NoRedirect())
 
 
@@ -194,15 +198,25 @@ def query_once(binary, url, layout, timeout=30):
 
 
 def validate_layout(binary, layout):
-    result = subprocess.run(
-        [binary, "--validate-layout", json.dumps(layout)],
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=5,
-    )
-    if result.returncode != 0 or not json.loads(result.stdout).get("ok"):
-        raise ValueError("invalid_config_layout")
+    try:
+        result = subprocess.run(
+            [binary, "--validate-layout", json.dumps(layout)],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+        report = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError, RecursionError):
+        raise ConfigError("config_validator_failed") from None
+    if result.returncode == 1 and isinstance(report, dict) and report.get("ok") is False:
+        raise ConfigError("config_layout_rejected")
+    if (
+        result.returncode != 0
+        or not isinstance(report, dict)
+        or report.get("ok") is not True
+    ):
+        raise ConfigError("config_validator_failed")
 
 
 def atomic_json(path, value):
@@ -330,17 +344,49 @@ def validate_config(c):
     return c
 
 
+def fetch_voting_config(config_url):
+    # Each attempt is independently bounded by http's five-second deadline.
+    for _ in range(2):
+        try:
+            status, body = http(config_url)
+        except urllib.error.HTTPError as error:
+            status = error.code
+        except subprocess.TimeoutExpired:
+            failure = "config_fetch_timeout"
+            continue
+        except RuntimeError:
+            failure = "config_fetch_failed"
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
+            raise ConfigError("config_fetch_failed") from None
+        else:
+            if status == 200:
+                return body
+
+        failure = f"config_fetch_http_{status}"
+        if status != 408 and not 500 <= status < 600:
+            break
+    raise ConfigError(failure)
+
+
 def load_layout(config_url):
-    u = urllib.parse.urlsplit(config_url)
-    if u.scheme != "https" or u.username or u.password:
-        raise ValueError("HTTPS config required")
-    _, body = http(config_url)
-    layout = json.loads(body)["pir_layout"]
+    try:
+        u = urllib.parse.urlsplit(config_url)
+    except ValueError:
+        raise ConfigError("config_url_invalid") from None
+    if u.scheme != "https" or not u.hostname or u.username or u.password:
+        raise ConfigError("config_url_invalid")
+    body = fetch_voting_config(config_url)
+    try:
+        config = json.loads(body)
+    except (ValueError, RecursionError):
+        raise ConfigError("config_json_invalid") from None
+    layout = config.get("pir_layout") if isinstance(config, dict) else None
     if (
         not isinstance(layout, dict)
         or {"pir_depth", "tier0_layers", "tier1_layers", "poly_len"} - layout.keys()
     ):
-        raise ValueError("layout missing")
+        raise ConfigError("config_layout_missing")
     return layout
 
 
@@ -376,10 +422,10 @@ class Monitor:
         try:
             layout = load_layout(self.c["config_url"])
             validate_layout(self.binary, layout)
-        except Exception:  # noqa: BLE001 -- classify failures without leaking URLs or bodies
+        except ConfigError as error:
             self.s.result(
                 "monitor/config",
-                {"ok": False, "error": "configuration_unavailable"},
+                {"ok": False, "error": str(error)},
                 immediate=True,
             )
             # No scheduled query outcomes exist: deliberately do not acknowledge the query heartbeat.
