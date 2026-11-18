@@ -16,6 +16,10 @@ name: Publish nullifier snapshot
 on:
   workflow_dispatch:
     inputs:
+      publisher_release_tag:
+        description: "Release to use for snapshot building, independently of the serving binary."
+        required: true
+        type: string
       height:
         description: "Target block height (rounded down to nearest multiple of 10). If empty, uses the latest chain tip."
         required: false
@@ -76,11 +80,12 @@ jobs:
           DO_SECRET_KEY: ${{ secrets.DO_SECRET_KEY }}
           LWD_URLS: ${{ vars.LWD_URLS }}
           SVOTE_ZCASH_NETWORK: ${{ inputs.target_environment == 'staging' && 'test' || 'main' }}
+          PUBLISHER_RELEASE_TAG: ${{ inputs.publisher_release_tag }}
         with:
           host: ${{ secrets.PIR_SNAPSHOT_PUBLISHER_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
-          envs: DO_ACCESS_KEY,DO_SECRET_KEY,LWD_URLS,SVOTE_ZCASH_NETWORK
+          envs: DO_ACCESS_KEY,DO_SECRET_KEY,LWD_URLS,SVOTE_ZCASH_NETWORK,PUBLISHER_RELEASE_TAG
           command_timeout: 90m
           script: |
             set -euo pipefail
@@ -127,13 +132,29 @@ jobs:
             use_https = True
             EOF
 
+            echo "==> Fetch isolated publisher binary"
+            [[ "$PUBLISHER_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][a-zA-Z0-9.-]+)?$ ]] || { echo "Invalid publisher release tag" >&2; exit 1; }
+            case "$(uname -m)" in
+              x86_64) PLATFORM=linux-amd64 ;;
+              aarch64|arm64) PLATFORM=linux-arm64 ;;
+              *) echo "Unsupported publisher architecture" >&2; exit 1 ;;
+            esac
+            mkdir -p "$STAGE"
+            RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/$PUBLISHER_RELEASE_TAG"
+            curl --fail --location --silent --show-error --max-time 180 "$RELEASE_URL/SHA256SUMS" -o "$STAGE/SHA256SUMS"
+            curl --fail --location --silent --show-error --max-time 180 "$RELEASE_URL/nf-server-$PLATFORM" -o "$STAGE/nf-server-$PLATFORM"
+            (cd "$STAGE"; grep " nf-server-$PLATFORM\$" SHA256SUMS | sha256sum --check --strict -)
+            PUBLISHER_BINARY="$STAGE/nf-server-$PLATFORM"
+            chmod 0755 "$PUBLISHER_BINARY"
+            "$PUBLISHER_BINARY" build-info --json | jq -e --arg tag "$PUBLISHER_RELEASE_TAG" '.release_tag == $tag' >/dev/null
+
             echo "==> Sync $SVOTE_ZCASH_NETWORK nullifiers + tree checkpoint + PIR tiers"
             cd "${{ env.DEPLOY_PATH }}"
             export SVOTE_PIR_VOTING_CONFIG_URL=
             export SVOTE_PIR_DATA_DIR="${{ env.DEPLOY_PATH }}/pir-data/${SVOTE_ZCASH_NETWORK}"
             EXPECTED_NULLIFIER_POOL=ironwood
             EXPECTED_DATASET_VERSION=2
-            if ! DATASET_INFO=$(./nf-server dataset-info 2>/dev/null) || ! jq -e \
+            if ! DATASET_INFO=$("$PUBLISHER_BINARY" dataset-info 2>/dev/null) || ! jq -e \
               --arg pool "$EXPECTED_NULLIFIER_POOL" \
               --argjson version "$EXPECTED_DATASET_VERSION" \
               '.nullifier_pool == $pool and .dataset_version == $version' \
@@ -147,18 +168,17 @@ jobs:
             else
               unset SVOTE_PIR_SYNC_RESET
             fi
-            rm -rf "$STAGE"
             mkdir -p "$STAGE"
             if [ -n "$REQUESTED_H" ]; then
               echo "    up to explicit height $REQUESTED_H"
-              ./nf-server sync \
+              "$PUBLISHER_BINARY" sync \
                 --output-dir "$STAGE" \
                 --non-interactive \
                 --invalidate-after-blocks \
                 --max-height "$REQUESTED_H"
             else
               echo "    to latest chain tip"
-              ./nf-server sync \
+              "$PUBLISHER_BINARY" sync \
                 --output-dir "$STAGE" \
                 --non-interactive \
                 --invalidate-after-blocks
@@ -223,7 +243,7 @@ jobs:
             fi
 
             echo "==> Building manifest.json"
-            BIN_SHA=$(sha256sum "${{ env.DEPLOY_PATH }}/nf-server" | awk '{print $1}')
+            BIN_SHA=$(sha256sum "$PUBLISHER_BINARY" | awk '{print $1}')
             CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
             TIER_JSON=$(
               cd "$STAGE"
