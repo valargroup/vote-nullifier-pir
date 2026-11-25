@@ -346,7 +346,9 @@ def validate_config(c):
 
 def fetch_voting_config(config_url):
     # Each attempt is independently bounded by http's five-second deadline.
-    for _ in range(2):
+    for attempt in range(3):
+        if attempt:
+            time.sleep(2)
         try:
             status, body = http(config_url)
         except urllib.error.HTTPError as error:
@@ -354,18 +356,12 @@ def fetch_voting_config(config_url):
         except subprocess.TimeoutExpired:
             failure = "config_fetch_timeout"
             continue
-        except RuntimeError:
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError):
             failure = "config_fetch_failed"
             continue
-        except (OSError, ValueError, KeyError, TypeError):
-            raise ConfigError("config_fetch_failed") from None
-        else:
-            if status == 200:
-                return body
-
+        if status == 200:
+            return body
         failure = f"config_fetch_http_{status}"
-        if status != 408 and not 500 <= status < 600:
-            break
     raise ConfigError(failure)
 
 
