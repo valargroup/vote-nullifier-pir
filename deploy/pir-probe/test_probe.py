@@ -6,7 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 loader = importlib.machinery.SourceFileLoader(
     "probe", str(Path(__file__).with_name("pir-probe"))
@@ -103,26 +103,30 @@ class ProbeTests(unittest.TestCase):
             m.notify_once()
         self.assertEqual(self.state.data["pending"], [])
 
-    def test_no_false_heartbeat_for_missing_config(self):
+    def test_config_fetch_exhaustion_alerts_once_and_skips_queries(self):
         m = self.monitor()
         m.c["config_url"] = "https://test"
+        m.hb["query"] = "https://example.test/heartbeat"
         with (
             patch.object(
                 p, "http", side_effect=p.subprocess.TimeoutExpired("worker", 5)
             ) as fetch,
+            patch.object(p.time, "sleep") as sleep,
             patch.object(p, "query_once") as query,
             patch.object(p, "heartbeat") as hb,
         ):
             m.query_cycle()
-            self.assertEqual(fetch.call_count, 2)
-            query.assert_not_called()
-            hb.assert_not_called()
+        self.assertEqual(fetch.call_args_list, [call("https://test")] * 3)
+        self.assertEqual(sleep.call_args_list, [call(2), call(2)])
+        query.assert_not_called()
+        hb.assert_not_called()
         self.assertNotIn("query", self.state.data["cycles"])
+        self.assertEqual([x["kind"] for x in self.state.data["pending"]], ["ALERT"])
         self.assertIn(
             "Observed: config_fetch_timeout", self.state.data["pending"][0]["text"]
         )
 
-    def test_transient_config_fetch_failure_still_runs_queries(self):
+    def test_successful_final_config_fetch_runs_queries_without_alerting(self):
         m = self.monitor()
         m.c.update(
             config_url="https://config",
@@ -133,29 +137,37 @@ class ProbeTests(unittest.TestCase):
         response = (200, p.json.dumps({"pir_layout": layout}).encode())
         unavailable = p.urllib.error.HTTPError("https://config", 503, "", {}, None)
         with (
-            patch.object(p, "http", side_effect=[unavailable, response]) as fetch,
+            patch.object(
+                p, "http", side_effect=[unavailable, unavailable, response]
+            ) as fetch,
+            patch.object(p.time, "sleep") as sleep,
             patch.object(p, "validate_layout") as validate,
             patch.object(p, "query_once", return_value={"ok": True}) as query,
         ):
             m.query_cycle()
-        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [call(2), call(2)])
         validate.assert_called_once_with("worker", layout)
         query.assert_called_once_with("worker", "https://one", layout, 30)
         self.assertEqual(self.state.data["pending"], [])
         self.assertIn("query", self.state.data["cycles"])
 
-    def test_permanent_config_errors_report_stage_without_retry(self):
-        for status, body, expected in [
-            (404, b"private response", "config_fetch_http_404"),
-            (200, b"private response", "config_json_invalid"),
-            (200, b'{"unrelated": "private response"}', "config_layout_missing"),
+    def test_config_errors_report_failed_stage(self):
+        for status, body, expected, attempts in [
+            (404, b"private response", "config_fetch_http_404", 3),
+            (200, b"private response", "config_json_invalid", 1),
+            (200, b'{"unrelated": "private response"}', "config_layout_missing", 1),
         ]:
             with self.subTest(expected=expected):
-                with patch.object(p, "http", return_value=(status, body)) as fetch:
+                with (
+                    patch.object(p, "http", return_value=(status, body)) as fetch,
+                    patch.object(p.time, "sleep") as sleep,
+                ):
                     with self.assertRaises(p.ConfigError) as error:
                         p.load_layout("https://config")
                 self.assertEqual(str(error.exception), expected)
-                fetch.assert_called_once()
+                self.assertEqual(fetch.call_count, attempts)
+                self.assertEqual(sleep.call_count, attempts - 1)
 
     def test_target_failures_still_complete_monitor_cycle(self):
         m = self.monitor()
